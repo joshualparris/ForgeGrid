@@ -1,0 +1,33 @@
+project: whispering-wilds
+
+tasks:
+  test:
+    description: Run automated tests
+    requirements:
+      min_ram_gb: 4
+    commands:
+      windows: godot.exe --headless --path . --quit-after 120
+      linux: godot --headless --path . --quit-after 120
+
+  windows-build:
+    requirements:
+      os: windows
+      min_ram_gb: 8
+    commands:
+      windows: godot.exe --headless --path . --export-release "Windows" build/game.exe
+    artefacts:
+      - build/**
+
+  linux-build:
+    requirements:
+      os: linux
+      min_ram_gb: 8
+    commands:
+      linux: godot --headless --path . --export-release "Linux" build/game.x86_64
+    artefacts:
+      - build/**
+
+  lint:
+    commands:
+      windows: scripts\lint.bat
+      linux: ./scripts/lint.sh

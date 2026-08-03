@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ForgeGrid - Dashboard</title>
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #121212; color: #ffffff; padding: 20px; }
+        .card { background-color: #1e1e1e; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
+        h1, h2 { color: #4facfe; margin-top: 0; }
+        button { background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); border: none; color: white; padding: 8px 16px; border-radius: 4px; cursor: pointer; }
+        button:hover { opacity: 0.9; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { text-align: left; padding: 10px; border-bottom: 1px solid #333; }
+        .status-online { color: #00ff00; }
+        .status-offline { color: #ff0000; }
+    </style>
+</head>
+<body>
+    <h1>ForgeGrid Dashboard</h1>
+    
+    <div class="card">
+        <h2>Coordinator Status</h2>
+        <p>IP Address: <span id="coordIP">...</span></p>
+        <p>Pairing Code: <strong id="pairingCode" style="font-size: 1.2em; color: #ffeb3b;">None</strong></p>
+        <button onclick="generateCode()">Generate Pairing Code</button>
+    </div>
+
+    <div class="card">
+        <h2>Connected Workers</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Node Name</th>
+                    <th>OS</th>
+                    <th>CPU / RAM</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="workersTable">
+            </tbody>
+        </table>
+    </div>
+    
+    <div class="card">
+        <h2>Recent Jobs</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Job ID</th>
+                    <th>Worker ID</th>
+                    <th>Task</th>
+                    <th>Status</th>
+                    <th>Result</th>
+                </tr>
+            </thead>
+            <tbody id="jobsTable">
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+        async function fetchStatus() {
+            const res = await fetch('/api/coordinator/status');
+            const data = await res.json();
+            document.getElementById('coordIP').innerText = data.ip;
+        }
+
+        async function generateCode() {
+            const res = await fetch('/api/pairing/code', { method: 'POST' });
+            const data = await res.json();
+            document.getElementById('pairingCode').innerText = data.code;
+        }
+
+        async function runTestJob(workerId) {
+            await fetch('/api/jobs/test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ worker_id: workerId })
+            });
+            fetchJobs();
+        }
+
+        async function fetchWorkers() {
+            const res = await fetch('/api/workers');
+            const workers = await res.json();
+            const tbody = document.getElementById('workersTable');
+            tbody.innerHTML = '';
+            if (workers) {
+                workers.forEach(w => {
+                    const statusClass = w.status === 'online' ? 'status-online' : 'status-offline';
+                    tbody.innerHTML += `
+                        <tr>
+                            <td>${w.node_name}</td>
+                            <td>${w.os}</td>
+                            <td>${w.cpu} / ${w.ram}GB</td>
+                            <td class="${statusClass}">${w.status}</td>
+                            <td>
+                                <button onclick="runTestJob('${w.id}')" ${w.status !== 'online' ? 'disabled' : ''}>Run Test Job</button>
+                            </td>
+                        </tr>
+                    `;
+                });
+            }
+        }
+        
+        async function fetchJobs() {
+            const res = await fetch('/api/jobs');
+            const jobs = await res.json();
+            const tbody = document.getElementById('jobsTable');
+            tbody.innerHTML = '';
+            if (jobs) {
+                jobs.forEach(j => {
+                    tbody.innerHTML += `
+                        <tr>
+                            <td>${j.id}</td>
+                            <td>${j.worker_id}</td>
+                            <td>${j.task}</td>
+                            <td>${j.status}</td>
+                            <td>${j.result || '-'}</td>
+                        </tr>
+                    `;
+                });
+            }
+        }
+
+        // Auto-refresh loops
+        fetchStatus();
+        setInterval(fetchWorkers, 2000);
+        setInterval(fetchJobs, 2000);
+    </script>
+</body>
+</html>

@@ -1,0 +1,29 @@
+?   	forgegrid/internal/coordinator	[no test files]
+?   	forgegrid/internal/models	[no test files]
+?   	forgegrid/internal/network	[no test files]
+?   	forgegrid/internal/store	[no test files]
+?   	forgegrid/internal/ui	[no test files]
+=== RUN   TestIntegration
+Coordinator starting on 0.0.0.0:8443 (LAN IP: 10.245.173.178)
+TLS Fingerprint: 7a0988f6db97c98fc38e276b2f82f16722d8bb782bf0d786464d79227c6a1263
+Successfully paired. Worker ID: worker-cf91447cfcd5128701564ff03ed3992e
+2026/08/04 09:45:02 http: TLS handshake error from 127.0.0.1:60350: remote error: tls: bad certificate
+Starting job: job-49a89a567736ebf90cd1fe0d0dea328a
+--- PASS: TestIntegration (6.03s)
+PASS
+ok  	forgegrid	6.029s
+=== RUN   TestWorkerCredentials
+--- PASS: TestWorkerCredentials (0.00s)
+=== RUN   TestHardwareDetection
+--- PASS: TestHardwareDetection (0.01s)
+PASS
+ok  	forgegrid/internal/worker	(cached)
+--- RACE ---
+?   	forgegrid/internal/coordinator	[no test files]
+?   	forgegrid/internal/models	[no test files]
+?   	forgegrid/internal/network	[no test files]
+?   	forgegrid/internal/store	[no test files]
+?   	forgegrid/internal/ui	[no test files]
+ok  	forgegrid	7.082s
+ok  	forgegrid/internal/worker	(cached)
+--- VET ---

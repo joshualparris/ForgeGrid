@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><title>Firewall Configuration for ForgeGrid</title></head>
+<body>
+    <h1>Firewall Configuration</h1>
+    <h2>Windows</h2>
+    <p>When you first launch the Coordinator, Windows Defender Firewall may prompt you to allow access. Ensure you allow access on <strong>Private networks</strong>.</p>
+    <h2>Fedora Linux</h2>
+    <p>By default, Fedora uses firewalld. You must open port 8080 to allow workers to connect to the coordinator:</p>
+    <code>sudo firewall-cmd --add-port=8080/tcp --permanent<br>sudo firewall-cmd --reload</code>
+</body>
+</html>
