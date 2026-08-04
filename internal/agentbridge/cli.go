@@ -10,7 +10,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -185,7 +187,7 @@ type ClientConfig struct {
 }
 
 func getConfigPath() string {
-	if os.PathSeparator == '\\' {
+	if runtime.GOOS == "windows" {
 		localAppData := os.Getenv("LOCALAPPDATA")
 		if localAppData == "" {
 			localAppData = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local")
@@ -252,6 +254,15 @@ func configureClientCmd(args []string) {
 	b, _ := json.Marshal(cfg)
 	if err := os.WriteFile(path, b, 0600); err != nil {
 		log.Fatalf("Failed to save config: %v", err)
+	}
+	if runtime.GOOS == "windows" {
+		username := os.Getenv("USERNAME")
+		if username != "" {
+			cmd := exec.Command("icacls", path, "/inheritance:r", "/grant", username+":F")
+			if err := cmd.Run(); err != nil {
+				log.Printf("Warning: Failed to set file ACLs: %v", err)
+			}
+		}
 	}
 	fmt.Printf("Client configured successfully at %s.\n", path)
 	fmt.Println("Note: Token is currently stored in plaintext on disk. Directory is restricted to current user (0700/0600).")
