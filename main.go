@@ -8,9 +8,15 @@ import (
 	"forgegrid/internal/coordinator"
 	"forgegrid/internal/store"
 	"forgegrid/internal/worker"
+	"forgegrid/internal/agentbridge"
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "agent-bridge" {
+		agentbridge.RunCLI(os.Args[2:])
+		return
+	}
+
 	mode := flag.String("mode", "", "coordinator or worker")
 	port := flag.String("port", "8080", "coordinator port")
 	nodeName := flag.String("name", "Unnamed-Node", "name of this node")
