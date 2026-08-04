@@ -8,8 +8,12 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"time"
 )
 
 type BundleData struct {
@@ -29,6 +33,15 @@ type EncryptedBundle struct {
 	EncryptedAESKey string `json:"encrypted_aes_key"`
 	Nonce           string `json:"nonce"`
 	Ciphertext      string `json:"ciphertext"`
+}
+
+type ReplayStore interface {
+	HasConsumed(id string) (bool, error)
+	MarkConsumed(id string) error
+}
+
+func getAAD(schemaVersion, bootstrapID string) []byte {
+	return []byte(schemaVersion + "|" + bootstrapID)
 }
 
 func GenerateBootstrapBundle(pub *rsa.PublicKey, bd BundleData) (*EncryptedBundle, error) {
@@ -54,7 +67,9 @@ func GenerateBootstrapBundle(pub *rsa.PublicKey, bd BundleData) (*EncryptedBundl
 	if err != nil {
 		return nil, err
 	}
-	ct := gcm.Seal(nil, nonce, pt, nil)
+
+	aad := getAAD(bd.SchemaVersion, bd.BootstrapID)
+	ct := gcm.Seal(nil, nonce, pt, aad)
 
 	hash := sha256.New()
 	encKey, err := rsa.EncryptOAEP(hash, rand.Reader, pub, aesKey, nil)
@@ -63,7 +78,7 @@ func GenerateBootstrapBundle(pub *rsa.PublicKey, bd BundleData) (*EncryptedBundl
 	}
 
 	return &EncryptedBundle{
-		SchemaVersion:   "1",
+		SchemaVersion:   bd.SchemaVersion,
 		BootstrapID:     bd.BootstrapID,
 		EncryptedAESKey: base64.StdEncoding.EncodeToString(encKey),
 		Nonce:           base64.StdEncoding.EncodeToString(nonce),
@@ -103,7 +118,8 @@ func DecryptBootstrapBundle(eb *EncryptedBundle, priv *rsa.PrivateKey) (*BundleD
 		return nil, err
 	}
 
-	pt, err := gcm.Open(nil, nonce, ct, nil)
+	aad := getAAD(eb.SchemaVersion, eb.BootstrapID)
+	pt, err := gcm.Open(nil, nonce, ct, aad)
 	if err != nil {
 		return nil, err
 	}
@@ -115,5 +131,76 @@ func DecryptBootstrapBundle(eb *EncryptedBundle, priv *rsa.PrivateKey) (*BundleD
 	if err := dec.Decode(&bd); err != nil {
 		return nil, err
 	}
+	var dummy interface{}
+	if err := dec.Decode(&dummy); err != io.EOF {
+		return nil, errors.New("trailing JSON data")
+	}
+
 	return &bd, nil
+}
+
+func ValidateBootstrapBundle(eb *EncryptedBundle, priv *rsa.PrivateKey, expectedAgent string, rs ReplayStore) (*BundleData, error) {
+	if eb.SchemaVersion != "1" {
+		return nil, errors.New("invalid outer schema_version")
+	}
+
+	consumed, err := rs.HasConsumed(eb.BootstrapID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check replay store: %v", err)
+	}
+	if consumed {
+		return nil, errors.New("bootstrap bundle has already been consumed")
+	}
+
+	bd, err := DecryptBootstrapBundle(eb, priv)
+	if err != nil {
+		return nil, fmt.Errorf("decryption failed: %v", err)
+	}
+
+	if bd.SchemaVersion != "1" {
+		return nil, errors.New("invalid inner schema_version")
+	}
+	if bd.BootstrapID != eb.BootstrapID {
+		return nil, errors.New("mismatched bootstrap_id")
+	}
+	if bd.AgentName != expectedAgent {
+		return nil, errors.New("unexpected agent_name")
+	}
+
+	if len(bd.Fingerprint) != 64 {
+		return nil, errors.New("fingerprint must be exactly 64 hexadecimal characters")
+	}
+	if _, err := hex.DecodeString(bd.Fingerprint); err != nil {
+		return nil, errors.New("fingerprint is not valid hex")
+	}
+
+	if bd.Token == "" || bd.RelayURL == "" || bd.Issued == "" || bd.Expiry == "" || bd.BootstrapID == "" || bd.AgentName == "" || bd.SchemaVersion == "" {
+		return nil, errors.New("missing required fields")
+	}
+
+	issued, err := time.Parse(time.RFC3339, bd.Issued)
+	if err != nil {
+		return nil, errors.New("invalid issued timestamp format")
+	}
+	expiry, err := time.Parse(time.RFC3339, bd.Expiry)
+	if err != nil {
+		return nil, errors.New("invalid expiry timestamp format")
+	}
+
+	now := time.Now()
+	if issued.After(now.Add(5 * time.Minute)) {
+		return nil, errors.New("issued timestamp is in the future")
+	}
+	if !expiry.After(issued) {
+		return nil, errors.New("expiry must be after issued time")
+	}
+	if now.After(expiry) {
+		return nil, errors.New("bootstrap bundle has expired")
+	}
+
+	if err := rs.MarkConsumed(bd.BootstrapID); err != nil {
+		return nil, fmt.Errorf("failed to mark bundle as consumed: %v", err)
+	}
+
+	return bd, nil
 }
