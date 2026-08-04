@@ -273,13 +273,13 @@ func configureClientCmd(args []string) {
 		
 		verifyCmd := exec.Command("icacls", path)
 		out, err := verifyCmd.CombinedOutput()
-		if err != nil || !strings.Contains(string(out), sid) {
+		if err != nil || !strings.Contains(string(out), u.Username) {
 			os.Remove(path)
 			log.Fatalf("Failed to verify file ACLs")
 		}
 	}
 	fmt.Printf("Client configured successfully at %s.\n", path)
-	fmt.Println("Note: Token is protected. Directory is restricted to current user.")
+	fmt.Println("Note: Token is stored in plaintext and protected by a current-user Windows ACL.")
 }
 
 func resetClientCmd(args []string) {

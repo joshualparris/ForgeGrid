@@ -16,7 +16,7 @@ import (
 
 func buildBinary(t *testing.T) string {
 	binPath := filepath.Join(t.TempDir(), "bootstrap-crypto.exe")
-	cmd := exec.Command("go", "build", "-o", binPath, "main.go")
+	cmd := exec.Command("go", "build", "-o", binPath, ".")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("Failed to build binary: %v\nOutput: %s", err, string(out))
 	}
@@ -213,12 +213,29 @@ func TestReplayStore(t *testing.T) {
 			t.Fatalf("Expected error on unknown fields")
 		}
 
-		// trailing JSON
-		if err := os.WriteFile(storePath, []byte(`{}{} `), 0600); err != nil {
+		// two valid JSON objects
+		if err := os.WriteFile(storePath, []byte(`{"id1":{"status":"reserved","time":"2023-01-01T00:00:00Z"}}{"id2":{"status":"reserved","time":"2023-01-01T00:00:00Z"}}`), 0600); err != nil {
 			t.Fatalf("WriteFile failed: %v", err)
 		}
 		if err := rs.Reserve("corrupt-test3"); err == nil {
-			t.Fatalf("Expected error on trailing JSON")
+			t.Fatalf("Expected error on two valid JSON objects (trailing data)")
+		}
+
+		// valid JSON followed by malformed text
+		if err := os.WriteFile(storePath, []byte(`{"id1":{"status":"reserved","time":"2023-01-01T00:00:00Z"}} trailing_text`), 0600); err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
+		if err := rs.Reserve("corrupt-test3b"); err == nil {
+			t.Fatalf("Expected error on valid JSON followed by malformed text")
+		}
+
+		// valid JSON followed by whitespace only
+		if err := os.WriteFile(storePath, []byte(`{"id1":{"status":"reserved","time":"2023-01-01T00:00:00Z"}}   
+		`), 0600); err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
+		if err := rs.Reserve("corrupt-test3c"); err != nil {
+			t.Fatalf("Unexpected error on valid JSON followed by whitespace only: %v", err)
 		}
 
 		// empty ID

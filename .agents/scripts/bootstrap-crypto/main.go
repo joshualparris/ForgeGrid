@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -162,8 +163,8 @@ func (w *WindowsReplayStore) load() (map[string]ReplayState, error) {
 	if err := dec.Decode(&m); err != nil {
 		return nil, fmt.Errorf("corrupt replay store: %v", err)
 	}
-	var dummy interface{}
-	if err := dec.Decode(&dummy); err == nil {
+	var extra interface{}
+	if err := dec.Decode(&extra); err != io.EOF {
 		return nil, fmt.Errorf("corrupt replay store: trailing data")
 	}
 
@@ -342,9 +343,9 @@ func decryptAndApply(privPath, bundlePath, forgegridExe string) error {
 	if err := dec.Decode(&cfg); err != nil {
 		return fmt.Errorf("config file is malformed: %v", err)
 	}
-	var dummy interface{}
-	if err := dec.Decode(&dummy); err == nil {
-		return fmt.Errorf("config file has trailing data")
+	var extra interface{}
+	if err := dec.Decode(&extra); err != io.EOF {
+		return fmt.Errorf("config error: trailing data")
 	}
 	if cfg.Name != bd.AgentName || cfg.URL != bd.RelayURL || cfg.Fingerprint != bd.Fingerprint || cfg.Token != bd.Token {
 		return fmt.Errorf("config file contents do not match validated bundle")
