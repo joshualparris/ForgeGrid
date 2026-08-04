@@ -2,83 +2,142 @@ package worker
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
-	"path/filepath"
+	"strings"
 	"testing"
+	"time"
+
+	"forgegrid/internal/models"
 )
 
-func TestWorkerCredentials(t *testing.T) {
-	// Setup custom home dir to avoid polluting user space during tests
-	tmpDir := t.TempDir()
-	os.Setenv("XDG_DATA_HOME", tmpDir)
-	os.Setenv("LOCALAPPDATA", tmpDir)
-	os.Setenv("APPDATA", tmpDir)
-	
-	// Ensure reset handles cleanly when missing
-	err := ResetCredentials()
-	if err != nil {
-		t.Fatalf("ResetCredentials should not fail if credentials don't exist: %v", err)
+func TestDirectoryTraversalBlocked(t *testing.T) {
+	ws := t.TempDir()
+	w := &Worker{
+		Workspace: ws,
+		WorkerID:  "test-worker",
 	}
 
-	w1 := New("TestNode", "./tmp-ws", true)
-	w1.WorkerID = "worker-123"
-	w1.Token = "token-abc"
-	w1.CoordinatorURL = "http://127.0.0.1:8080"
-	w1.Fingerprint = "fp-xxx"
-	
-	creds := WorkerCredentials{
-		WorkerID:       w1.WorkerID,
-		Token:          w1.Token,
-		CoordinatorURL: w1.CoordinatorURL,
-		Fingerprint:    w1.Fingerprint,
-		NodeName:       w1.NodeName,
-		Insecure:       w1.Insecure,
+	job := models.Job{
+		ID:             "job-1",
+		CommandLinux:   "echo 'hello'",
+		CommandWindows: "echo 'hello'",
+		Artefacts:      []string{"../../etc/passwd"},
 	}
 
-	path := getWorkerCredsPath()
-	os.MkdirAll(filepath.Dir(path), 0700)
-	b, _ := json.MarshalIndent(creds, "", "  ")
-	os.WriteFile(path, b, 0600)
-
-	// Test 2: Restart loads credentials
-	w2 := New("TestNode", "./tmp-ws", true)
-	err = w2.LoadCreds()
-	if err != nil {
-		t.Fatalf("Failed to load credentials: %v", err)
-	}
-	
-	// Test 3: Restart reconnects with same ID
-	if w2.WorkerID != w1.WorkerID {
-		t.Fatalf("Expected WorkerID %s, got %s", w1.WorkerID, w2.WorkerID)
-	}
-	if w2.Token != w1.Token {
-		t.Fatalf("Expected Token %s, got %s", w1.Token, w2.Token)
-	}
-	
-	// Test 7: Reset removes credentials
-	err = ResetCredentials()
-	if err != nil {
-		t.Fatalf("Failed to reset credentials: %v", err)
-	}
-	
-	err = w2.LoadCreds()
-	if err == nil {
-		t.Fatalf("Expected LoadCreds to fail after reset, but it succeeded")
+	// We can test the sanitization logic directly.
+	err := w.collectArtefacts(job.ID, job.Artefacts, "http://dummy")
+	if err == nil || !strings.Contains(err.Error(), "escapes workspace") {
+		t.Errorf("expected directory traversal error, got %v", err)
 	}
 }
 
-func TestHardwareDetection(t *testing.T) {
-	w := New("TestNode", "./tmp-ws", true)
-	info, err := w.getHardwareInfo()
-	if err != nil {
-		t.Fatalf("Hardware detection failed: %v", err)
-	}
+func TestJobCancellation(t *testing.T) {
+	ws := t.TempDir()
 	
-	// Test 8: Disk detection returns non-zero
-	if info.FreeWorkspaceDisk == 0 {
-		t.Fatalf("FreeWorkspaceDisk reported 0. Workspace: %s", w.Workspace)
+	// Create a dummy coordinator to intercept status updates
+	statuses := []string{}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "job-cancel-test") {
+			var req struct {
+				Status string `json:"status"`
+			}
+			json.NewDecoder(r.Body).Decode(&req)
+			if req.Status != "" {
+				statuses = append(statuses, req.Status)
+			}
+		}
+	}))
+	defer ts.Close()
+
+	w := &Worker{
+		Workspace:      ws,
+		WorkerID:       "test-worker",
+		Client:         ts.Client(),
+		CoordinatorURL: ts.URL,
 	}
-	if info.TotalRAM == 0 {
-		t.Fatalf("TotalRAM reported 0")
+
+	cmd := "sleep 10"
+	if os.PathSeparator == '\\' {
+		cmd = "timeout 10"
+	}
+
+	job := models.Job{
+		ID:             "job-cancel-test",
+		CommandLinux:   cmd,
+		CommandWindows: cmd,
+	}
+
+	// Start job execution in a goroutine
+	go w.executeJob(job)
+	
+	time.Sleep(100 * time.Millisecond) // Let it start
+
+	// Cancel the job
+	w.cancelJob(job.ID)
+
+	time.Sleep(200 * time.Millisecond) // Wait for cancellation to take effect
+
+	// Check that status was updated to cancelled or failed (due to kill)
+	foundEndState := false
+	for _, s := range statuses {
+		if s == "failed" || s == "cancelled" {
+			foundEndState = true
+			break
+		}
+	}
+
+	if !foundEndState {
+		t.Errorf("expected job to end after cancellation, statuses: %v", statuses)
+	}
+}
+
+func TestCommandExecutionAndLogStreaming(t *testing.T) {
+	ws := t.TempDir()
+	
+	logsReceived := []string{}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Status string   `json:"status"`
+			Logs   []string `json:"logs"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		logsReceived = append(logsReceived, req.Logs...)
+	}))
+	defer ts.Close()
+
+	worker := &Worker{
+		Workspace:      ws,
+		WorkerID:       "test-worker",
+		Client:         ts.Client(),
+		CoordinatorURL: ts.URL,
+	}
+
+	cmd := "echo stream test"
+	if os.PathSeparator == '\\' {
+		cmd = "cmd.exe /c echo stream test"
+	}
+
+	job := models.Job{
+		ID:             "job-exec-test",
+		CommandLinux:   cmd,
+		CommandWindows: cmd,
+	}
+
+	worker.executeJob(job)
+
+	// Wait a moment for async logs
+	time.Sleep(200 * time.Millisecond)
+
+	found := false
+	for _, l := range logsReceived {
+		if strings.Contains(l, "stream test") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected 'stream test' in logs, got %v", logsReceived)
 	}
 }

@@ -24,13 +24,21 @@ type WorkerState struct {
 type Job struct {
 	ID         string     `json:"id"`
 	WorkerID   string     `json:"worker_id"`
-	Task       string     `json:"task"` // e.g. "test"
+	Task       string     `json:"task"` // e.g. "test" or the task name from manifest
 	Status     string     `json:"status"` // pending, running, completed, failed, cancelled
 	StartTime  *time.Time `json:"start_time,omitempty"`
 	EndTime    *time.Time `json:"end_time,omitempty"`
 	Result     string     `json:"result,omitempty"`
 	Logs       []string   `json:"logs,omitempty"`
 	Challenge  string     `json:"challenge,omitempty"` // For test task
+	
+	// Execution Details
+	CommandLinux   string     `json:"command_linux,omitempty"`
+	CommandWindows string     `json:"command_windows,omitempty"`
+	Artefacts      []string   `json:"artefacts,omitempty"`
+	MinRAMGB       int        `json:"min_ram_gb,omitempty"`
+	TargetOS       string     `json:"target_os,omitempty"`
+	MinCores       int        `json:"min_cores,omitempty"`
 }
 
 type CoordinatorState struct {

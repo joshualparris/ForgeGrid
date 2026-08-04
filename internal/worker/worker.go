@@ -1,16 +1,21 @@
 package worker
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"forgegrid/internal/models"
@@ -31,6 +36,9 @@ type Worker struct {
 	Workspace      string
 	Insecure       bool
 	Fingerprint    string
+	
+	activeJobsMu   sync.Mutex
+	activeJobs     map[string]context.CancelFunc
 }
 
 type WorkerCredentials struct {
@@ -77,9 +85,10 @@ func ResetCredentials() error {
 
 func New(nodeName, workspace string, insecure bool) *Worker {
 	return &Worker{
-		NodeName:  nodeName,
-		Workspace: workspace,
-		Insecure:  insecure,
+		NodeName:   nodeName,
+		Workspace:  workspace,
+		Insecure:   insecure,
+		activeJobs: make(map[string]context.CancelFunc),
 	}
 }
 
@@ -339,8 +348,174 @@ func (w *Worker) updateJobStatus(jobID, status, result string, logs []string) {
 	}
 }
 
+func (w *Worker) cancelJob(jobID string) {
+	w.activeJobsMu.Lock()
+	if cancel, ok := w.activeJobs[jobID]; ok {
+		cancel()
+	}
+	w.activeJobsMu.Unlock()
+}
+
 func (w *Worker) executeJob(job models.Job) {
-	fmt.Println("Starting job:", job.ID)
+	if job.Task == "test" {
+		w.executeTestJob(job)
+		return
+	}
+
+	jobDir := filepath.Join(w.Workspace, "jobs", job.ID)
+	os.MkdirAll(jobDir, 0755)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	w.activeJobsMu.Lock()
+	if w.activeJobs == nil {
+		w.activeJobs = make(map[string]context.CancelFunc)
+	}
+	w.activeJobs[job.ID] = cancel
+	w.activeJobsMu.Unlock()
+
+	defer func() {
+		w.activeJobsMu.Lock()
+		delete(w.activeJobs, job.ID)
+		w.activeJobsMu.Unlock()
+		cancel()
+	}()
+
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmdStr := job.CommandWindows
+		if cmdStr == "" {
+			w.updateJobStatus(job.ID, "failed", "Missing Windows command", []string{"No windows command specified for task"})
+			return
+		}
+		cmd = exec.CommandContext(ctx, "cmd", "/c", cmdStr)
+	} else {
+		cmdStr := job.CommandLinux
+		if cmdStr == "" {
+			w.updateJobStatus(job.ID, "failed", "Missing Linux command", []string{"No linux command specified for task"})
+			return
+		}
+		cmd = exec.CommandContext(ctx, "sh", "-c", cmdStr)
+	}
+	cmd.Dir = jobDir
+
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		w.updateJobStatus(job.ID, "failed", err.Error(), []string{"Failed to open stdout"})
+		return
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		w.updateJobStatus(job.ID, "failed", err.Error(), []string{"Failed to open stderr"})
+		return
+	}
+
+	if err := cmd.Start(); err != nil {
+		w.updateJobStatus(job.ID, "failed", err.Error(), []string{"Failed to start command"})
+		return
+	}
+
+	logCh := make(chan string, 100)
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	readPipe := func(r io.Reader) {
+		defer wg.Done()
+		scanner := bufio.NewScanner(r)
+		for scanner.Scan() {
+			logCh <- scanner.Text()
+		}
+	}
+	go readPipe(stdoutPipe)
+	go readPipe(stderrPipe)
+
+	// Background routine to flush logs
+	doneFlushing := make(chan struct{})
+	go func() {
+		var batch []string
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case line, ok := <-logCh:
+				if !ok {
+					if len(batch) > 0 {
+						w.updateJobStatus(job.ID, "running", "", batch)
+					}
+					close(doneFlushing)
+					return
+				}
+				batch = append(batch, line)
+				if len(batch) >= 50 {
+					w.updateJobStatus(job.ID, "running", "", batch)
+					batch = nil
+				}
+			case <-ticker.C:
+				if len(batch) > 0 {
+					w.updateJobStatus(job.ID, "running", "", batch)
+					batch = nil
+				}
+			}
+		}
+	}()
+
+	err = cmd.Wait()
+	wg.Wait()
+	close(logCh)
+	<-doneFlushing
+
+	if err != nil {
+		w.updateJobStatus(job.ID, "failed", err.Error(), []string{"Command failed or cancelled"})
+		return
+	}
+
+	if len(job.Artefacts) > 0 {
+		if err := w.collectArtefacts(job.ID, job.Artefacts, jobDir); err != nil {
+			w.updateJobStatus(job.ID, "failed", err.Error(), []string{"Artefact collection failed: " + err.Error()})
+			return
+		}
+	}
+
+	w.updateJobStatus(job.ID, "completed", "success", []string{"Job completed successfully"})
+}
+
+func (w *Worker) collectArtefacts(jobID string, patterns []string, jobDir string) error {
+	absJobDir, err := filepath.Abs(jobDir)
+	if err != nil {
+		return err
+	}
+	
+	// Ensure jobDir doesn't end with separator for strict bounds checking
+	absJobDir = filepath.Clean(absJobDir)
+
+	for _, p := range patterns {
+		// Prevent obvious traversal in pattern
+		if strings.Contains(p, "..") {
+			return fmt.Errorf("artefact path %s escapes workspace", p)
+		}
+		
+		matches, err := filepath.Glob(filepath.Join(absJobDir, p))
+		if err != nil {
+			return err
+		}
+		for _, m := range matches {
+			absMatch, err := filepath.Abs(m)
+			if err != nil {
+				return err
+			}
+			absMatch = filepath.Clean(absMatch)
+			if !strings.HasPrefix(absMatch, absJobDir+string(filepath.Separator)) && absMatch != absJobDir {
+				return fmt.Errorf("artefact path %s escapes workspace", m)
+			}
+			
+			// Simulate upload logic
+			// In reality, we'd package and POST here.
+		}
+	}
+	return nil
+}
+
+func (w *Worker) executeTestJob(job models.Job) {
+	fmt.Println("Starting test job:", job.ID)
 	
 	hw, _ := w.getHardwareInfo()
 	
@@ -350,18 +525,14 @@ func (w *Worker) executeJob(job models.Job) {
 		fmt.Sprintf("PID: %d", os.Getpid()),
 	})
 	
-	if job.Task == "test" {
-		logs := []string{
-			fmt.Sprintf("Received challenge: %s", job.Challenge),
-		}
-		
-		h := sha256.Sum256([]byte(job.Challenge))
-		result := hex.EncodeToString(h[:])
-		
-		logs = append(logs, fmt.Sprintf("Calculated SHA-256: %s", result))
-		
-		w.updateJobStatus(job.ID, "completed", result, logs)
-	} else {
-		w.updateJobStatus(job.ID, "failed", "unknown task", []string{"Unsupported task type"})
+	logs := []string{
+		fmt.Sprintf("Received challenge: %s", job.Challenge),
 	}
+	
+	h := sha256.Sum256([]byte(job.Challenge))
+	result := hex.EncodeToString(h[:])
+	
+	logs = append(logs, fmt.Sprintf("Calculated SHA-256: %s", result))
+	
+	w.updateJobStatus(job.ID, "completed", result, logs)
 }

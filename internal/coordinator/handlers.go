@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"forgegrid/internal/manifest"
 	"forgegrid/internal/models"
 )
 
@@ -219,6 +220,50 @@ func (c *Coordinator) handleTestJob(w http.ResponseWriter, r *http.Request) {
 	c.Store.Save()
 	
 	json.NewEncoder(w).Encode(job)
+}
+
+func (c *Coordinator) handleManifestUpload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", "")
+		return
+	}
+	
+	// Limit size
+	r.Body = http.MaxBytesReader(w, r.Body, 1024*1024)
+	
+	m, err := manifest.Parse(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Failed to parse manifest", err.Error())
+		return
+	}
+	
+	c.Store.Mu.Lock()
+	defer c.Store.Mu.Unlock()
+	
+	var createdJobs []*models.Job
+	for name, task := range m.Tasks {
+		jobID := "job-" + cryptoRandomHex(16)
+		job := &models.Job{
+			ID:             jobID,
+			Task:           name,
+			Status:         "pending",
+			CommandLinux:   task.Commands.Linux,
+			CommandWindows: task.Commands.Windows,
+			Artefacts:      task.Artefacts,
+			MinRAMGB:       task.Requirements.MinRAMGB,
+			TargetOS:       task.Requirements.OS,
+			MinCores:       task.Requirements.MinCores,
+		}
+		
+		c.Store.Jobs[jobID] = job
+		createdJobs = append(createdJobs, job)
+	}
+	c.Store.Save()
+	
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"project": m.Project,
+		"jobs":    createdJobs,
+	})
 }
 
 func (c *Coordinator) handleListJobs(w http.ResponseWriter, r *http.Request) {

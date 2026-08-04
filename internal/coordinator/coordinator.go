@@ -75,6 +75,7 @@ func (c *Coordinator) Start(port string) error {
 	mux.HandleFunc("/api/workers", c.handleListWorkers)
 	mux.HandleFunc("/api/jobs/test", c.handleTestJob)
 	mux.HandleFunc("/api/jobs", c.handleListJobs)
+	mux.HandleFunc("/api/jobs/manifest", c.handleManifestUpload)
 	mux.HandleFunc("/api/jobs/", c.handleJobAction)
 
 	// Serve UI
@@ -83,6 +84,7 @@ func (c *Coordinator) Start(port string) error {
 	addr := fmt.Sprintf("0.0.0.0:%s", port)
 	
 	go c.checkWorkerStatus()
+	go c.schedulerLoop()
 	
 	scheme := "https"
 	if c.Insecure {
@@ -132,5 +134,12 @@ func (c *Coordinator) checkWorkerStatus() {
 			c.Store.Save()
 		}
 		c.Store.Mu.Unlock()
+	}
+}
+
+func (c *Coordinator) schedulerLoop() {
+	for {
+		time.Sleep(2 * time.Second)
+		c.ScheduleJobs()
 	}
 }

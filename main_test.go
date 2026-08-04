@@ -2,11 +2,14 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -184,4 +187,103 @@ func TestIntegration(t *testing.T) {
 	
 	os.RemoveAll("./test-data")
 	os.RemoveAll("./test-ws-1")
+}
+
+func TestManifestExecution(t *testing.T) {
+	ui.DisableBrowser = true
+	os.RemoveAll("./test-data-manifest")
+	os.RemoveAll("./test-ws-manifest")
+	
+	s, err := store.NewStore("./test-data-manifest")
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	
+	c := coordinator.New(s, true) // insecure for test
+	
+	go func() {
+		err := c.Start("8554")
+		if err != nil {
+			fmt.Println("Coordinator start err:", err)
+		}
+	}()
+	time.Sleep(1 * time.Second)
+
+	w := worker.New("TestWorker-Manifest", "./test-ws-manifest", true)
+	
+	// Create credentials directly for test
+	w.Token = "test-token"
+	w.WorkerID = "worker-test"
+	w.CoordinatorURL = "http://127.0.0.1:8554"
+	w.SetupClient("")
+	
+	h := sha256.Sum256([]byte(w.Token))
+	c.Store.Mu.Lock()
+	c.Store.Workers[w.WorkerID] = &models.WorkerState{
+		ID:           w.WorkerID,
+		TokenHash:    hex.EncodeToString(h[:]),
+		Status:       "online",
+		LastSeen:     time.Now(),
+		AvailableRAM: 8 * 1024 * 1024 * 1024,
+		OS:           runtime.GOOS,
+	}
+	c.Store.Mu.Unlock()
+	
+	w.Start()
+	time.Sleep(1 * time.Second)
+
+	yamlData := fmt.Sprintf(`
+project: "TestProject"
+tasks:
+  build:
+    requirements:
+      os: "%s"
+    commands:
+      linux: "echo 'hello stream' > output.txt && echo 'streamed line'"
+      windows: "echo hello stream > output.txt && echo streamed line"
+    artefacts:
+      - "output.txt"
+`, runtime.GOOS)
+
+	resp, err := http.Post("http://127.0.0.1:8554/api/jobs/manifest", "application/yaml", strings.NewReader(yamlData))
+	if err != nil {
+		t.Fatalf("Failed to post manifest: %v", err)
+	}
+	var res map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&res)
+	resp.Body.Close()
+
+	if res["project"] != "TestProject" {
+		t.Fatalf("Unexpected project: %v", res["project"])
+	}
+
+	time.Sleep(3 * time.Second) // wait for scheduler and worker to execute job
+
+	// Check jobs status
+	c.Store.Mu.RLock()
+	var status string
+	var logs []string
+	for _, j := range c.Store.Jobs {
+		status = j.Status
+		logs = j.Logs
+	}
+	c.Store.Mu.RUnlock()
+
+	if status != "completed" {
+		t.Fatalf("Expected job to be completed, got %s", status)
+	}
+	
+	foundLog := false
+	for _, l := range logs {
+		if strings.Contains(l, "streamed line") {
+			foundLog = true
+			break
+		}
+	}
+	if !foundLog {
+		t.Errorf("Live log not streamed correctly, logs: %v", logs)
+	}
+
+	os.RemoveAll("./test-data-manifest")
+	os.RemoveAll("./test-ws-manifest")
 }
