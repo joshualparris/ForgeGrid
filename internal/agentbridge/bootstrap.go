@@ -36,8 +36,9 @@ type EncryptedBundle struct {
 }
 
 type ReplayStore interface {
-	HasConsumed(id string) (bool, error)
-	MarkConsumed(id string) error
+	Reserve(id string) error
+	Commit(id string) error
+	Release(id string) error
 }
 
 func getAAD(schemaVersion, bootstrapID string) []byte {
@@ -139,20 +140,29 @@ func DecryptBootstrapBundle(eb *EncryptedBundle, priv *rsa.PrivateKey) (*BundleD
 	return &bd, nil
 }
 
-func ValidateBootstrapBundle(eb *EncryptedBundle, priv *rsa.PrivateKey, expectedAgent string, rs ReplayStore) (*BundleData, error) {
+func ValidateBootstrapBundle(eb *EncryptedBundle, priv *rsa.PrivateKey, expectedAgent string, rs ReplayStore) (bd *BundleData, err error) {
+	if eb == nil {
+		return nil, errors.New("nil bundle")
+	}
+	if rs == nil {
+		return nil, errors.New("nil replay store")
+	}
 	if eb.SchemaVersion != "1" {
 		return nil, errors.New("invalid outer schema_version")
 	}
 
-	consumed, err := rs.HasConsumed(eb.BootstrapID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to check replay store: %v", err)
-	}
-	if consumed {
-		return nil, errors.New("bootstrap bundle has already been consumed")
+	if err := rs.Reserve(eb.BootstrapID); err != nil {
+		return nil, fmt.Errorf("failed to reserve bootstrap ID: %v", err)
 	}
 
-	bd, err := DecryptBootstrapBundle(eb, priv)
+	success := false
+	defer func() {
+		if !success {
+			_ = rs.Release(eb.BootstrapID)
+		}
+	}()
+
+	bd, err = DecryptBootstrapBundle(eb, priv)
 	if err != nil {
 		return nil, fmt.Errorf("decryption failed: %v", err)
 	}
@@ -198,9 +208,6 @@ func ValidateBootstrapBundle(eb *EncryptedBundle, priv *rsa.PrivateKey, expected
 		return nil, errors.New("bootstrap bundle has expired")
 	}
 
-	if err := rs.MarkConsumed(bd.BootstrapID); err != nil {
-		return nil, fmt.Errorf("failed to mark bundle as consumed: %v", err)
-	}
-
+	success = true
 	return bd, nil
 }
