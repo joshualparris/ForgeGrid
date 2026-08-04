@@ -296,22 +296,67 @@ func TestIntegrationConcurrent(t *testing.T) {
 	srv.Close()
 
 	// Create new server from same data
-	s2, _ := NewStore()
+	s2, err := NewStore()
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
 	s2.dataDir = s.dataDir
-	s2.load()
+	if err := s2.load(); err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+
+	server2 := NewServer(s2)
+	mux2 := http.NewServeMux()
+	server2.RegisterRoutes(mux2)
 	
-	srv2 := httptest.NewUnstartedServer(mux) // Reusing mux is ok for test logic
+	srv2 := httptest.NewUnstartedServer(mux2)
 	srv2.TLS = &tls.Config{Certificates: []tls.Certificate{cert}}
 	srv2.StartTLS()
 	defer srv2.Close()
 
 	// Verify agents still authenticate
-	c, _ := NewClient(srv2.URL, "agent-0", "secret", fp, false)
-	inbox, err := c.GetInbox()
-	if err != nil {
-		t.Errorf("Failed to read inbox after restart: %v", err)
+	for i := 0; i < agents; i++ {
+		c, err := NewClient(srv2.URL, fmt.Sprintf("agent-%d", i), "secret", fp, false)
+		if err != nil {
+			t.Fatalf("Failed client creation after restart: %v", err)
+		}
+		
+		if i == 0 {
+			// send at least one fresh message after restart
+			msg, err := c.SendMessage("agent-1", "t2", TypeInstruction, "hello again", 3600, "new-key")
+			if err != nil {
+				t.Fatalf("SendMessage failed after restart: %v", err)
+			}
+			
+			c2, _ := NewClient(srv2.URL, "agent-1", "secret", fp, false)
+			inbox, err := c2.GetInbox()
+			if err != nil {
+				t.Fatalf("GetInbox failed after restart: %v", err)
+			}
+			if len(inbox) != 1 || inbox[0].ID != msg.ID {
+				t.Fatalf("Did not find fresh message in inbox")
+			}
+			
+			if _, err := c2.Acknowledge(msg.ID); err != nil {
+				t.Fatalf("Acknowledge failed after restart: %v", err)
+			}
+			
+			if _, err := c2.Complete(msg.ID, []byte(`{"status":"ok"}`)); err != nil {
+				t.Fatalf("Complete failed after restart: %v", err)
+			}
+		}
 	}
-	if len(inbox) != 0 {
-		t.Errorf("Inbox should be empty (all completed)")
+
+	// Verify persistence again
+	s3, err := NewStore()
+	if err != nil {
+		t.Fatalf("NewStore failed for s3: %v", err)
+	}
+	s3.dataDir = s.dataDir
+	if err := s3.load(); err != nil {
+		t.Fatalf("s3.load failed: %v", err)
+	}
+	if len(s3.messages) != 701 {
+		t.Fatalf("Expected 701 messages in s3, got %d", len(s3.messages))
 	}
 }

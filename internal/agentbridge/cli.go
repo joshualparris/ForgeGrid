@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/term"
+
 	"forgegrid/internal/network"
 )
 
@@ -158,7 +160,9 @@ func registerCmd(args []string) {
 	}
 
 	b := make([]byte, 32)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		log.Fatalf("Failed to generate token: %v", err)
+	}
 	secret := hex.EncodeToString(b)
 
 	hash := sha256.Sum256([]byte(secret))
@@ -211,12 +215,24 @@ func configureClientCmd(args []string) {
 			log.Fatalf("Failed to read token file: %v", err)
 		}
 		token = strings.TrimSpace(string(b))
-		os.Remove(*tokenFile) // Ensure immediate deletion
+
+		// Securely overwrite and delete
+		zeroes := make([]byte, len(b))
+		if err := os.WriteFile(*tokenFile, zeroes, 0600); err != nil {
+			log.Fatalf("Failed to overwrite token file: %v", err)
+		}
+		if err := os.Remove(*tokenFile); err != nil {
+			log.Fatalf("Failed to delete token file: %v", err)
+		}
 	} else {
 		// Fallback for when token-file is not provided
 		fmt.Print("Enter token: ")
-		fmt.Scanln(&token)
-		token = strings.TrimSpace(token)
+		pwd, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Println()
+		if err != nil {
+			log.Fatalf("Failed to read token: %v", err)
+		}
+		token = strings.TrimSpace(string(pwd))
 	}
 
 	if token == "" {
@@ -249,13 +265,14 @@ func resetClientCmd(args []string) {
 func getClient(fs *flag.FlagSet) *Client {
 	url := fs.String("url", "https://127.0.0.1:9090", "Relay URL")
 	name := fs.String("name", "", "Agent name")
-	token := fs.String("token", "", "Agent token")
 	fp := fs.String("fingerprint", "", "TLS fingerprint")
 	insecure := fs.Bool("insecure", false, "Disable TLS verification")
 	fs.Parse(os.Args[3:])
 
+	var token string
+
 	// Try loading from config if values not provided via flags
-	if *name == "" || *token == "" {
+	if *name == "" || token == "" {
 		b, err := os.ReadFile(getConfigPath())
 		if err == nil {
 			var cfg ClientConfig
@@ -266,8 +283,8 @@ func getClient(fs *flag.FlagSet) *Client {
 				if *name == "" {
 					*name = cfg.Name
 				}
-				if *token == "" {
-					*token = cfg.Token
+				if token == "" {
+					token = cfg.Token
 				}
 				if *fp == "" {
 					*fp = cfg.Fingerprint
@@ -280,18 +297,18 @@ func getClient(fs *flag.FlagSet) *Client {
 	if *name == "" {
 		*name = os.Getenv("AGENT_NAME")
 	}
-	if *token == "" {
-		*token = os.Getenv("AGENT_TOKEN")
+	if token == "" {
+		token = os.Getenv("AGENT_TOKEN")
 	}
 	if *fp == "" {
 		*fp = os.Getenv("AGENT_FINGERPRINT")
 	}
 
-	if *name == "" || *token == "" {
-		log.Fatal("Agent name and token are required (via flags, env, or configure-client)")
+	if *name == "" || token == "" {
+		log.Fatal("Agent name and token are required (via env, or configure-client)")
 	}
 
-	client, err := NewClient(*url, *name, *token, *fp, *insecure)
+	client, err := NewClient(*url, *name, token, *fp, *insecure)
 	if err != nil {
 		log.Fatalf("Client error: %v", err)
 	}

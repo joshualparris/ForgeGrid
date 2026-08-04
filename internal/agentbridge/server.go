@@ -8,19 +8,44 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
 type Server struct {
 	store *Store
+	mu    sync.Mutex
+	rates map[string]int
+	reset map[string]time.Time
 }
 
 func NewServer(s *Store) *Server {
-	return &Server{store: s}
+	return &Server{
+		store: s,
+		rates: make(map[string]int),
+		reset: make(map[string]time.Time),
+	}
 }
 
 func (s *Server) authenticate(r *http.Request) (string, bool) {
-	// (Simple rate limiting placeholder: could use x/time/rate based on IP/agent)
+	ip := r.RemoteAddr
+	if idx := strings.LastIndex(ip, ":"); idx != -1 {
+		ip = ip[:idx]
+	}
+
+	s.mu.Lock()
+	now := time.Now()
+	if t, ok := s.reset[ip]; ok && now.After(t) {
+		s.rates[ip] = 0
+		delete(s.reset, ip)
+	}
+	if s.rates[ip] > 10 {
+		s.reset[ip] = now.Add(time.Minute)
+		s.mu.Unlock()
+		return "", false
+	}
+	s.mu.Unlock()
+
 	authHeader := r.Header.Get("Authorization")
 	if !strings.HasPrefix(authHeader, "Bearer ") {
 		return "", false
@@ -41,8 +66,16 @@ func (s *Server) authenticate(r *http.Request) (string, bool) {
 	hashStr := hex.EncodeToString(hash[:])
 
 	if subtle.ConstantTimeCompare([]byte(agent.TokenHash), []byte(hashStr)) != 1 {
+		s.mu.Lock()
+		s.rates[ip]++
+		s.mu.Unlock()
 		return "", false
 	}
+
+	s.mu.Lock()
+	s.rates[ip] = 0 // Reset on success
+	s.mu.Unlock()
+
 	return agentName, true
 }
 
