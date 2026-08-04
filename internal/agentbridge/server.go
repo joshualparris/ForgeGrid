@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -19,6 +20,7 @@ func NewServer(s *Store) *Server {
 }
 
 func (s *Server) authenticate(r *http.Request) (string, bool) {
+	// (Simple rate limiting placeholder: could use x/time/rate based on IP/agent)
 	authHeader := r.Header.Get("Authorization")
 	if !strings.HasPrefix(authHeader, "Bearer ") {
 		return "", false
@@ -78,18 +80,29 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Bad request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	// Reject multiple JSON objects
-	if dec.More() {
+
+	// Reject multiple JSON objects (Fix 6)
+	var dummy json.RawMessage
+	if err := dec.Decode(&dummy); err != io.EOF {
 		http.Error(w, "Bad request: multiple objects", http.StatusBadRequest)
 		return
 	}
 
-	if req.Recipient == "" || req.TaskID == "" || req.Body == "" {
-		http.Error(w, "Bad request: missing required fields", http.StatusBadRequest)
+	// Length Validation (Fix 9)
+	if len(req.Recipient) == 0 || len(req.Recipient) > 100 {
+		http.Error(w, "Bad request: recipient length invalid", http.StatusBadRequest)
 		return
 	}
-	if len(req.Body) > 256*1024 {
-		http.Error(w, "Bad request: body too large", http.StatusBadRequest)
+	if len(req.TaskID) == 0 || len(req.TaskID) > 100 {
+		http.Error(w, "Bad request: task ID length invalid", http.StatusBadRequest)
+		return
+	}
+	if len(req.IdempotencyKey) > 100 {
+		http.Error(w, "Bad request: idempotency key too long", http.StatusBadRequest)
+		return
+	}
+	if len(req.Body) == 0 || len(req.Body) > 256*1024 {
+		http.Error(w, "Bad request: body too large or empty", http.StatusBadRequest)
 		return
 	}
 
@@ -112,8 +125,14 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		req.TTL = 86400 * 7 // cap at 1 week
 	}
 
+	msgID, err := GenerateID()
+	if err != nil {
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
 	msg := AgentMessage{
-		ID:             GenerateID(),
+		ID:             msgID,
 		Sender:         sender,
 		Recipient:      req.Recipient,
 		TaskID:         req.TaskID,
@@ -125,7 +144,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		IdempotencyKey: req.IdempotencyKey,
 	}
 
-	msg, err := s.store.AddMessage(msg)
+	msg, err = s.store.AddMessage(msg)
 	if err != nil {
 		http.Error(w, "Internal error", http.StatusInternalServerError)
 		return
@@ -160,6 +179,11 @@ func (s *Server) handleMessageAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1/agent-messages/")
 	parts := strings.SplitN(path, "/", 2)
 	if len(parts) != 2 {
@@ -169,63 +193,35 @@ func (s *Server) handleMessageAction(w http.ResponseWriter, r *http.Request) {
 
 	id, action := parts[0], parts[1]
 
-	msg, ok := s.store.GetMessage(id)
-	if !ok {
-		http.Error(w, "Not found", http.StatusNotFound)
-		return
+	var req struct {
+		Result json.RawMessage `json:"result"`
 	}
 
-	// Only recipient can act on message (except maybe sender querying status)
-	if msg.Recipient != agent {
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		return
-	}
-
-	now := time.Now()
-
-	switch action {
-	case "acknowledge":
-		if msg.Status == StatusPending {
-			msg.Status = StatusAcknowledged
-			msg.AcknowledgedAt = &now
-			s.store.UpdateMessage(msg)
-		}
-	case "complete":
-		var req struct {
-			Result json.RawMessage `json:"result"`
-		}
-		dec := json.NewDecoder(r.Body)
+	if action == "complete" || action == "fail" {
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 512*1024))
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&req); err != nil {
 			http.Error(w, "Bad request: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-
-		if msg.Status != StatusCompleted && msg.Status != StatusFailed {
-			msg.Status = StatusCompleted
-			msg.CompletedAt = &now
-			msg.Result = req.Result
-			s.store.UpdateMessage(msg)
-		}
-	case "fail":
-		var req struct {
-			Result json.RawMessage `json:"result"`
-		}
-		dec := json.NewDecoder(r.Body)
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&req); err != nil {
-			http.Error(w, "Bad request: "+err.Error(), http.StatusBadRequest)
+		var dummy json.RawMessage
+		if err := dec.Decode(&dummy); err != io.EOF {
+			http.Error(w, "Bad request: multiple objects", http.StatusBadRequest)
 			return
 		}
+	}
 
-		if msg.Status != StatusCompleted && msg.Status != StatusFailed {
-			msg.Status = StatusFailed
-			msg.CompletedAt = &now
-			msg.Result = req.Result
-			s.store.UpdateMessage(msg)
+	msg, err := s.store.TransitionMessage(id, agent, action, req.Result)
+	if err != nil {
+		if err.Error() == "not found" {
+			http.Error(w, "Not found", http.StatusNotFound)
+		} else if err.Error() == "forbidden" {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+		} else if err.Error() == "invalid action" {
+			http.Error(w, "Not found", http.StatusNotFound) // map invalid action to 404
+		} else {
+			http.Error(w, "Internal error", http.StatusInternalServerError)
 		}
-	default:
-		http.Error(w, "Not found", http.StatusNotFound)
 		return
 	}
 
@@ -240,6 +236,5 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Basic status
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }

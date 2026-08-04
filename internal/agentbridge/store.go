@@ -133,11 +133,49 @@ func (s *Store) GetMessage(id string) (AgentMessage, bool) {
 	return msg, ok
 }
 
-func (s *Store) UpdateMessage(msg AgentMessage) error {
+func (s *Store) TransitionMessage(id, recipient, action string, result json.RawMessage) (AgentMessage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.messages[msg.ID] = msg
-	return s.save()
+
+	msg, ok := s.messages[id]
+	if !ok {
+		return AgentMessage{}, fmt.Errorf("not found")
+	}
+
+	if msg.Recipient != recipient {
+		return AgentMessage{}, fmt.Errorf("forbidden")
+	}
+
+	now := time.Now()
+
+	switch action {
+	case "acknowledge":
+		if msg.Status == StatusPending {
+			msg.Status = StatusAcknowledged
+			msg.AcknowledgedAt = &now
+		}
+	case "complete":
+		if msg.Status != StatusCompleted && msg.Status != StatusFailed {
+			msg.Status = StatusCompleted
+			msg.CompletedAt = &now
+			msg.Result = result
+		}
+	case "fail":
+		if msg.Status != StatusCompleted && msg.Status != StatusFailed {
+			msg.Status = StatusFailed
+			msg.CompletedAt = &now
+			msg.Result = result
+		}
+	default:
+		return AgentMessage{}, fmt.Errorf("invalid action")
+	}
+
+	s.messages[id] = msg
+	if err := s.save(); err != nil {
+		return AgentMessage{}, err
+	}
+
+	return msg, nil
 }
 
 func (s *Store) GetInbox(recipient string) []AgentMessage {
@@ -155,8 +193,10 @@ func (s *Store) GetInbox(recipient string) []AgentMessage {
 	return inbox
 }
 
-func GenerateID() string {
+func GenerateID() (string, error) {
 	b := make([]byte, 16)
-	rand.Read(b)
-	return hex.EncodeToString(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"forgegrid/internal/network"
@@ -180,6 +181,13 @@ type ClientConfig struct {
 }
 
 func getConfigPath() string {
+	if os.PathSeparator == '\\' {
+		localAppData := os.Getenv("LOCALAPPDATA")
+		if localAppData == "" {
+			localAppData = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local")
+		}
+		return filepath.Join(localAppData, "ForgeGrid", "agentclient.json")
+	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".config", "forgegrid", "agentclient.json")
 }
@@ -187,18 +195,37 @@ func getConfigPath() string {
 func configureClientCmd(args []string) {
 	fs := flag.NewFlagSet("configure-client", flag.ExitOnError)
 	name := fs.String("name", "", "Agent name")
-	token := fs.String("token", "", "Agent token")
+	tokenFile := fs.String("token-file", "", "File containing the agent token (will be deleted after reading)")
 	url := fs.String("url", "https://127.0.0.1:9090", "Relay URL")
 	fp := fs.String("fingerprint", "", "TLS Fingerprint")
 	fs.Parse(args)
 
-	if *name == "" || *token == "" || *fp == "" {
-		log.Fatal("--name, --token, and --fingerprint are required")
+	if *name == "" || *fp == "" {
+		log.Fatal("--name and --fingerprint are required")
+	}
+
+	var token string
+	if *tokenFile != "" {
+		b, err := os.ReadFile(*tokenFile)
+		if err != nil {
+			log.Fatalf("Failed to read token file: %v", err)
+		}
+		token = strings.TrimSpace(string(b))
+		os.Remove(*tokenFile) // Ensure immediate deletion
+	} else {
+		// Fallback for when token-file is not provided
+		fmt.Print("Enter token: ")
+		fmt.Scanln(&token)
+		token = strings.TrimSpace(token)
+	}
+
+	if token == "" {
+		log.Fatal("Token is required")
 	}
 
 	cfg := ClientConfig{
 		Name:        *name,
-		Token:       *token,
+		Token:       token,
 		URL:         *url,
 		Fingerprint: *fp,
 	}
@@ -210,7 +237,8 @@ func configureClientCmd(args []string) {
 	if err := os.WriteFile(path, b, 0600); err != nil {
 		log.Fatalf("Failed to save config: %v", err)
 	}
-	fmt.Println("Client configured successfully.")
+	fmt.Printf("Client configured successfully at %s.\n", path)
+	fmt.Println("Note: Token is currently stored in plaintext on disk. Directory is restricted to current user (0700/0600).")
 }
 
 func resetClientCmd(args []string) {
