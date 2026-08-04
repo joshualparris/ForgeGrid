@@ -1,47 +1,20 @@
 package main
 
 import (
-	"bytes"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
+
+	"forgegrid/internal/agentbridge"
 )
-
-type Bundle struct {
-	SchemaVersion string `json:"schema_version"`
-	AgentName     string `json:"agent_name"`
-	Token         string `json:"token"`
-	RelayURL      string `json:"relay_url"`
-	Fingerprint   string `json:"fingerprint"`
-	Issued        string `json:"issued"`
-	Expiry        string `json:"expiry"`
-	BootstrapID   string `json:"bootstrap_id"`
-}
-
-type HybridBundle struct {
-	EncryptedKey string `json:"encrypted_key"` // base64
-	Nonce        string `json:"nonce"`         // base64
-	Ciphertext   string `json:"ciphertext"`    // base64
-}
-
-type ClientConfig struct {
-	Name        string `json:"name"`
-	Token       string `json:"token"`
-	URL         string `json:"url"`
-	Fingerprint string `json:"fingerprint"`
-}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -66,7 +39,10 @@ func main() {
 			fmt.Println("Usage: decrypt-and-apply <priv_in> <bundle_in> <forgegrid_exe>")
 			os.Exit(1)
 		}
-		decryptAndApply(os.Args[2], os.Args[3], os.Args[4])
+		if err := decryptAndApply(os.Args[2], os.Args[3], os.Args[4]); err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
 	default:
 		fmt.Println("Unknown command")
 		os.Exit(1)
@@ -136,232 +112,241 @@ func encryptBundle(pubPath, plainInPath, hybridOutPath string) {
 		os.Exit(1)
 	}
 
-	aesKey := make([]byte, 32)
-	if _, err := rand.Read(aesKey); err != nil {
-		fmt.Printf("Failed generating AES key: %v\n", err)
+	var bd agentbridge.BundleData
+	if err := json.Unmarshal(plaintext, &bd); err != nil {
+		fmt.Printf("Error parsing plaintext JSON: %v\n", err)
 		os.Exit(1)
 	}
 
-	nonce := make([]byte, 12)
-	if _, err := rand.Read(nonce); err != nil {
-		fmt.Printf("Failed generating nonce: %v\n", err)
-		os.Exit(1)
-	}
-
-	blockAES, err := aes.NewCipher(aesKey)
+	eb, err := agentbridge.GenerateBootstrapBundle(pubKey, bd)
 	if err != nil {
-		fmt.Printf("AES cipher error: %v\n", err)
-		os.Exit(1)
-	}
-	aesgcm, err := cipher.NewGCM(blockAES)
-	if err != nil {
-		fmt.Printf("GCM cipher error: %v\n", err)
-		os.Exit(1)
-	}
-	ciphertext := aesgcm.Seal(nil, nonce, plaintext, nil)
-
-	encryptedKey, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, pubKey, aesKey, nil)
-	if err != nil {
-		fmt.Printf("RSA encryption error: %v\n", err)
+		fmt.Printf("GenerateBootstrapBundle failed: %v\n", err)
 		os.Exit(1)
 	}
 
-	hybrid := HybridBundle{
-		EncryptedKey: base64.StdEncoding.EncodeToString(encryptedKey),
-		Nonce:        base64.StdEncoding.EncodeToString(nonce),
-		Ciphertext:   base64.StdEncoding.EncodeToString(ciphertext),
-	}
-
-	outBytes, err := json.MarshalIndent(hybrid, "", "  ")
+	outBytes, err := json.MarshalIndent(eb, "", "  ")
 	if err != nil {
-		fmt.Printf("Error marshaling hybrid bundle: %v\n", err)
+		fmt.Printf("Error marshaling encrypted bundle: %v\n", err)
 		os.Exit(1)
 	}
 
 	if err := os.WriteFile(hybridOutPath, outBytes, 0600); err != nil {
-		fmt.Printf("Error writing hybrid bundle: %v\n", err)
+		fmt.Printf("Error writing encrypted bundle: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Println("Encrypted bundle created successfully.")
 }
 
-func decryptAndApply(privPath, bundlePath, forgegridExe string) {
+type WindowsReplayStore struct {
+	Path     string
+	LockFile string
+}
+
+type ReplayState struct {
+	Status string    `json:"status"` // "reserved" or "consumed"
+	Time   time.Time `json:"time"`
+}
+
+func (w *WindowsReplayStore) lock() {
+	for {
+		f, err := os.OpenFile(w.LockFile, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		if err == nil {
+			f.Close()
+			return
+		}
+		info, err := os.Stat(w.LockFile)
+		if err == nil && time.Since(info.ModTime()) > 5*time.Second {
+			os.Remove(w.LockFile)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func (w *WindowsReplayStore) unlock() {
+	os.Remove(w.LockFile)
+}
+
+func (w *WindowsReplayStore) load() (map[string]ReplayState, error) {
+	b, err := os.ReadFile(w.Path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return make(map[string]ReplayState), nil
+		}
+		return nil, err
+	}
+	var m map[string]ReplayState
+	if err := json.Unmarshal(b, &m); err != nil {
+		return make(map[string]ReplayState), nil
+	}
+	return m, nil
+}
+
+func (w *WindowsReplayStore) save(m map[string]ReplayState) error {
+	b, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmpPath := w.Path + ".tmp"
+	if err := os.WriteFile(tmpPath, b, 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, w.Path)
+}
+
+func (w *WindowsReplayStore) update(fn func(map[string]ReplayState) error) error {
+	w.lock()
+	defer w.unlock()
+	m, err := w.load()
+	if err != nil {
+		return err
+	}
+	if err := fn(m); err != nil {
+		return err
+	}
+	return w.save(m)
+}
+
+func (w *WindowsReplayStore) Reserve(id string) error {
+	return w.update(func(m map[string]ReplayState) error {
+		state, exists := m[id]
+		if exists {
+			if state.Status == "consumed" {
+				return fmt.Errorf("already consumed")
+			}
+			if state.Status == "reserved" {
+				if time.Since(state.Time) < 15*time.Minute {
+					return fmt.Errorf("currently reserved")
+				}
+				// Stale reservation! We can reclaim it.
+			}
+		}
+		m[id] = ReplayState{Status: "reserved", Time: time.Now()}
+		return nil
+	})
+}
+
+func (w *WindowsReplayStore) Commit(id string) error {
+	return w.update(func(m map[string]ReplayState) error {
+		state, exists := m[id]
+		if !exists || state.Status != "reserved" {
+			return fmt.Errorf("not reserved")
+		}
+		m[id] = ReplayState{Status: "consumed", Time: time.Now()}
+		return nil
+	})
+}
+
+func (w *WindowsReplayStore) Release(id string) error {
+	return w.update(func(m map[string]ReplayState) error {
+		state, exists := m[id]
+		if exists && state.Status == "reserved" {
+			delete(m, id)
+		}
+		return nil
+	})
+}
+
+func decryptAndApply(privPath, bundlePath, forgegridExe string) error {
 	// 1. Decrypt
 	privPEM, err := os.ReadFile(privPath)
 	if err != nil {
-		fmt.Printf("Error reading private key: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("error reading private key: %w", err)
 	}
 	block, _ := pem.Decode(privPEM)
 	if block == nil {
-		fmt.Println("Failed to parse PEM block")
-		os.Exit(1)
+		return fmt.Errorf("failed to parse PEM block")
 	}
 	privKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
 	if err != nil {
-		fmt.Printf("Error parsing private key: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("error parsing private key: %w", err)
 	}
 
 	bundleBytes, err := os.ReadFile(bundlePath)
 	if err != nil {
-		fmt.Printf("Error reading encrypted bundle: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("error reading encrypted bundle: %w", err)
 	}
 
-	var hybrid HybridBundle
-	if err := json.Unmarshal(bundleBytes, &hybrid); err != nil {
-		fmt.Printf("Error parsing hybrid bundle JSON: %v\n", err)
-		os.Exit(1)
+	var eb agentbridge.EncryptedBundle
+	if err := json.Unmarshal(bundleBytes, &eb); err != nil {
+		return fmt.Errorf("error parsing encrypted bundle JSON: %w", err)
 	}
 
-	encryptedKey, err := base64.StdEncoding.DecodeString(hybrid.EncryptedKey)
-	if err != nil {
-		fmt.Println("Invalid encrypted_key base64")
-		os.Exit(1)
-	}
-	nonce, err := base64.StdEncoding.DecodeString(hybrid.Nonce)
-	if err != nil {
-		fmt.Println("Invalid nonce base64")
-		os.Exit(1)
-	}
-	ciphertext, err := base64.StdEncoding.DecodeString(hybrid.Ciphertext)
-	if err != nil {
-		fmt.Println("Invalid ciphertext base64")
-		os.Exit(1)
-	}
-
-	aesKey, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, privKey, encryptedKey, nil)
-	if err != nil {
-		fmt.Printf("Error decrypting AES key: %v\n", err)
-		os.Exit(1)
-	}
-
-	blockAES, err := aes.NewCipher(aesKey)
-	if err != nil {
-		fmt.Printf("AES cipher error: %v\n", err)
-		os.Exit(1)
-	}
-	aesgcm, err := cipher.NewGCM(blockAES)
-	if err != nil {
-		fmt.Printf("GCM cipher error: %v\n", err)
-		os.Exit(1)
-	}
-	plaintext, err := aesgcm.Open(nil, nonce, ciphertext, nil)
-	if err != nil {
-		fmt.Printf("Error decrypting ciphertext: %v\n", err)
-		os.Exit(1)
-	}
-
-	var b Bundle
-	dec := json.NewDecoder(bytes.NewReader(plaintext))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&b); err != nil {
-		fmt.Printf("Error parsing bundle JSON: %v\n", err)
-		os.Exit(1)
-	}
-
-	// 2. Validate
-	if b.SchemaVersion != "1" {
-		fmt.Printf("Invalid schema version: %s\n", b.SchemaVersion)
-		os.Exit(1)
-	}
-	if b.AgentName != "windows-test" {
-		fmt.Printf("Invalid agent name: %s\n", b.AgentName)
-		os.Exit(1)
-	}
-	if b.Token == "" || b.RelayURL == "" || b.Fingerprint == "" || b.BootstrapID == "" {
-		fmt.Println("Bundle is missing required fields")
-		os.Exit(1)
-	}
-	if len(b.Fingerprint) != 64 {
-		fmt.Printf("Invalid fingerprint length: %d\n", len(b.Fingerprint))
-		os.Exit(1)
-	}
-
-	issued, err := time.Parse(time.RFC3339, b.Issued)
-	if err != nil {
-		fmt.Printf("Invalid issued format: %v\n", err)
-		os.Exit(1)
-	}
-	expiry, err := time.Parse(time.RFC3339, b.Expiry)
-	if err != nil {
-		fmt.Printf("Invalid expiry format: %v\n", err)
-		os.Exit(1)
-	}
-	
-	now := time.Now()
-	if now.After(expiry) {
-		fmt.Println("Bundle has expired")
-		os.Exit(1)
-	}
-	if expiry.Sub(issued) > 10*time.Minute {
-		fmt.Println("Bundle lifetime exceeds 10 minutes")
-		os.Exit(1)
-	}
-
-	// 3. Check and apply Bootstrap ID
 	localAppData := os.Getenv("LOCALAPPDATA")
 	if localAppData == "" {
 		localAppData = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local")
 	}
 	bootstrapDir := filepath.Join(localAppData, "ForgeGrid", "bootstrap")
 	if err := os.MkdirAll(bootstrapDir, 0700); err != nil {
-		fmt.Printf("Failed to create bootstrap dir: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to create bootstrap dir: %w", err)
 	}
 
-	// Safe filename constraint
-	if strings.ContainsAny(b.BootstrapID, `/\.:`) {
-		fmt.Println("Invalid characters in BootstrapID")
-		os.Exit(1)
-	}
-	idPath := filepath.Join(bootstrapDir, b.BootstrapID)
-	if _, err := os.Stat(idPath); err == nil {
-		fmt.Println("BootstrapID already consumed")
-		os.Exit(1)
+	rs := &WindowsReplayStore{
+		Path:     filepath.Join(bootstrapDir, "replay-state.json"),
+		LockFile: filepath.Join(bootstrapDir, "replay-state.lock"),
 	}
 
-	if err := os.WriteFile(idPath, []byte(now.Format(time.RFC3339)), 0600); err != nil {
-		fmt.Printf("Failed to write bootstrap ID: %v\n", err)
-		os.Exit(1)
+	bd, err := agentbridge.ValidateBootstrapBundle(&eb, privKey, "windows-test", rs)
+	if err != nil {
+		return fmt.Errorf("validation failed: %w", err)
 	}
+
+	success := false
+	defer func() {
+		if !success {
+			rs.Release(eb.BootstrapID)
+		}
+	}()
 
 	// 4. Pass token to ForgeGrid configure-client
-	tokenTmpPath := filepath.Join(bootstrapDir, "tmp_token_"+b.BootstrapID)
-	if err := os.WriteFile(tokenTmpPath, []byte(b.Token), 0600); err != nil {
-		fmt.Printf("Failed to write temporary token: %v\n", err)
-		os.Exit(1)
+	tokenTmpPath := filepath.Join(bootstrapDir, "tmp_token_"+eb.BootstrapID)
+	if err := os.WriteFile(tokenTmpPath, []byte(bd.Token), 0600); err != nil {
+		return fmt.Errorf("failed to write temporary token: %w", err)
 	}
+	defer os.Remove(tokenTmpPath)
 
 	cmd := exec.Command(forgegridExe, "agent-bridge", "configure-client",
-		"--name", b.AgentName,
-		"--url", b.RelayURL,
-		"--fingerprint", b.Fingerprint,
+		"--name", bd.AgentName,
+		"--url", bd.RelayURL,
+		"--fingerprint", bd.Fingerprint,
 		"--token-file", tokenTmpPath)
 	
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		os.Remove(tokenTmpPath) // Cleanup on error
-		fmt.Printf("configure-client failed: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("configure-client failed: %w", err)
 	}
 
 	// 5. Verify token file was deleted by configure-client
 	if _, err := os.Stat(tokenTmpPath); !os.IsNotExist(err) {
-		fmt.Printf("Warning: configure-client did not delete token file %s, deleting now.\n", tokenTmpPath)
-		os.Remove(tokenTmpPath)
+		return fmt.Errorf("token file was not deleted by configure-client")
 	}
 
-	// 6. Cleanup bundle and securely zero it out
-	if err := secureDelete(bundlePath); err != nil {
-		fmt.Printf("Warning: Failed to securely delete bundle: %v\n", err)
+	// 6. Verify config exists
+	configPath := filepath.Join(localAppData, "ForgeGrid", "agentclient.json")
+	if _, err := os.Stat(configPath); err != nil {
+		return fmt.Errorf("config file not created")
 	}
+
+	// 7. Commit reservation
+	if err := rs.Commit(eb.BootstrapID); err != nil {
+		return fmt.Errorf("failed to commit reservation: %w", err)
+	}
+	success = true
+
+	// 8. Cleanup bundle and best-effort overwrite it
+	if err := bestEffortDelete(bundlePath); err != nil {
+		fmt.Printf("Warning: Failed to best-effort delete bundle: %v\n", err)
+	}
+	// Also zero out privPath since it's the unencrypted temp file
+	if err := bestEffortDelete(privPath); err != nil {
+		fmt.Printf("Warning: Failed to best-effort delete private key: %v\n", err)
+	}
+
 	fmt.Println("Successfully decrypted bundle and configured client.")
+	return nil
 }
 
-func secureDelete(path string) error {
+func bestEffortDelete(path string) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return err

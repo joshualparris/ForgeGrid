@@ -23,6 +23,11 @@ Add-Type -AssemblyName System.Security
 $protectedBytes = [System.IO.File]::ReadAllBytes($privateKeyPath)
 $privateKeyBytes = [System.Security.Cryptography.ProtectedData]::Unprotect($protectedBytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
 
+# Documentation:
+# - The DPAPI-protected key is decrypted in memory
+# - A plaintext private-key temporary file is currently created
+# - That file is access-restricted to the current user (via GetTempFileName) and best-effort overwritten/deleted
+# - This filesystem overwrite is a best-effort approach and not a guaranteed secure erasure
 $privTmp = [System.IO.Path]::GetTempFileName()
 [System.IO.File]::WriteAllBytes($privTmp, $privateKeyBytes)
 [System.Array]::Clear($privateKeyBytes, 0, $privateKeyBytes.Length)
