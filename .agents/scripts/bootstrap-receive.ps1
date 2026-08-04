@@ -29,32 +29,29 @@ $privTmp = [System.IO.Path]::GetTempFileName()
 
 $cryptoDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $goUtil = Join-Path $cryptoDir "bootstrap-crypto\bootstrap-crypto.exe"
+$forgegridExe = Join-Path $cryptoDir "..\..\dist\ForgeGrid-USB\Windows\ForgeGrid.exe"
 
-Write-Host "Decrypting bundle..."
-$output = & $goUtil decrypt $privTmp $EncryptedBundlePath 2>&1
+Write-Host "Decrypting bundle and applying config..."
+$output = & $goUtil decrypt-and-apply $privTmp $EncryptedBundlePath $forgegridExe 2>&1
+
+$exitCode = $LASTEXITCODE
 
 # Safe temp cleanup
+$zeroes = New-Object byte[] (Get-Item $privTmp).Length
+[System.IO.File]::WriteAllBytes($privTmp, $zeroes)
 Remove-Item $privTmp -Force
 
-if ($LASTEXITCODE -ne 0) {
+if ($exitCode -ne 0) {
     Write-Error "Decryption or validation failed: $output"
     exit 1
 }
 
 # Only delete persistent material on success
 Remove-Item $privateKeyPath -Force
-Remove-Item $EncryptedBundlePath -Force
+# The go tool already deletes the bundle if successful, but we can try removing just in case
+if (Test-Path $EncryptedBundlePath) {
+    Remove-Item $EncryptedBundlePath -Force
+}
 
-$bundle = $output | ConvertFrom-Json
-
-Write-Host "Bundle decrypted and validated successfully."
-Write-Host "Agent Name: $($bundle.agent_name)"
-Write-Host "Relay URL : $($bundle.relay_url)"
-Write-Host "TLS Fingerprint: $($bundle.fingerprint)"
-Write-Host "Expiry    : $($bundle.expiry)"
-Write-Host "Bootstrap ID: $($bundle.bootstrap_id)"
-
-# Pass the token to ForgeGrid through the new secure stdin or protected-file setup flow once Fedora implements it.
-Write-Host "`nTODO: Feed token to ForgeGrid secure configuration flow here."
-
+Write-Host $output
 Write-Host "Secure bootstrap complete."

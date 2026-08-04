@@ -36,11 +36,7 @@ if (!(Test-Path $dir)) {
 }
 
 Write-Host "Securing directory ACLs..."
-$acl = Get-Acl $dir
-$acl.SetAccessRuleProtection($true, $false)
-$rule = New-Object System.Security.AccessControl.FileSystemAccessRule([System.Security.Principal.WindowsIdentity]::GetCurrent().Name, "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")
-$acl.AddAccessRule($rule)
-Set-Acl $dir $acl
+icacls $dir /inheritance:r /grant "$($env:USERNAME):(OI)(CI)F"
 
 $blobPath = "$dir\private.blob"
 [System.IO.File]::WriteAllBytes($blobPath, $protectedBytes)

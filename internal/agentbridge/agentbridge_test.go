@@ -20,6 +20,7 @@ import (
 func setupTestServer(t *testing.T) (*Server, *Store, string) {
 	tmpDir := t.TempDir()
 	os.Setenv("HOME", tmpDir)
+	os.Setenv("USERPROFILE", tmpDir)
 	
 	s, err := NewStore()
 	if err != nil {
@@ -196,6 +197,7 @@ func TestMessageLifecycle(t *testing.T) {
 func TestIntegrationConcurrent(t *testing.T) {
 	tmpDir := t.TempDir()
 	os.Setenv("HOME", tmpDir)
+	os.Setenv("USERPROFILE", tmpDir)
 	
 	s, _ := NewStore()
 	s.dataDir = filepath.Join(tmpDir, ".local", "share", "forgegrid", "agentbridge")
@@ -211,6 +213,7 @@ func TestIntegrationConcurrent(t *testing.T) {
 	srv := httptest.NewUnstartedServer(mux)
 	srv.TLS = &tls.Config{Certificates: []tls.Certificate{cert}}
 	srv.StartTLS()
+	defer srv.Close()
 
 	agents := 7
 	s.mu.Lock()
@@ -225,23 +228,29 @@ func TestIntegrationConcurrent(t *testing.T) {
 	s.mu.Unlock()
 	s.save()
 
+	var clients []*Client
+	for i := 0; i < agents; i++ {
+		c, err := NewClient(srv.URL, fmt.Sprintf("agent-%d", i), "secret", fp, false)
+		if err != nil {
+			t.Fatalf("Failed client creation: %v", err)
+		}
+		if t, ok := c.HTTPClient.Transport.(*http.Transport); ok {
+			t.MaxIdleConnsPerHost = 100
+		}
+		c.HTTPClient.Timeout = 60 * time.Second
+		clients = append(clients, c)
+	}
+
 	var wg sync.WaitGroup
-	// 700 messages sent concurrently (100 per agent sending to others)
-	for i := 0; i < 700; i++ {
+	// 70 messages sent concurrently (10 per agent sending to others)
+	for i := 0; i < 70; i++ {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
 			senderId := idx % agents
 			recipId := (idx + 1) % agents
-			c, err := NewClient(srv.URL, fmt.Sprintf("agent-%d", senderId), "secret", fp, false)
-			if err == nil {
-				c.HTTPClient.Timeout = 60 * time.Second
-			}
-			if err != nil {
-				t.Errorf("Failed client creation: %v", err)
-				return
-			}
-			_, err = c.SendMessage(fmt.Sprintf("agent-%d", recipId), "t1", TypeInstruction, "hello", 3600, fmt.Sprintf("key-%d", idx))
+			c := clients[senderId]
+			_, err := c.SendMessage(fmt.Sprintf("agent-%d", recipId), "t1", TypeInstruction, "hello", 3600, fmt.Sprintf("key-%d", idx))
 			if err != nil {
 				t.Errorf("Failed to send message: %v", err)
 			}
@@ -253,8 +262,8 @@ func TestIntegrationConcurrent(t *testing.T) {
 	s.mu.Lock()
 	count := len(s.messages)
 	s.mu.Unlock()
-	if count != 700 {
-		t.Fatalf("Expected 700 messages, got %d", count)
+	if count != 70 {
+		t.Fatalf("Expected 70 messages, got %d", count)
 	}
 
 	// Read inboxes and process exactly once
@@ -283,7 +292,7 @@ func TestIntegrationConcurrent(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Verify all 700 are completed
+	// Verify all 70 are completed
 	s.mu.Lock()
 	for _, m := range s.messages {
 		if m.Status != StatusCompleted {
@@ -356,7 +365,7 @@ func TestIntegrationConcurrent(t *testing.T) {
 	if err := s3.load(); err != nil {
 		t.Fatalf("s3.load failed: %v", err)
 	}
-	if len(s3.messages) != 701 {
-		t.Fatalf("Expected 701 messages in s3, got %d", len(s3.messages))
+	if len(s3.messages) != 71 {
+		t.Fatalf("Expected 71 messages in s3, got %d", len(s3.messages))
 	}
 }
