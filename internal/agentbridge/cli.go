@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -256,16 +257,29 @@ func configureClientCmd(args []string) {
 		log.Fatalf("Failed to save config: %v", err)
 	}
 	if runtime.GOOS == "windows" {
-		username := os.Getenv("USERNAME")
-		if username != "" {
-			cmd := exec.Command("icacls", path, "/inheritance:r", "/grant", username+":F")
-			if err := cmd.Run(); err != nil {
-				log.Printf("Warning: Failed to set file ACLs: %v", err)
-			}
+		u, err := user.Current()
+		if err != nil {
+			os.Remove(path)
+			log.Fatalf("Failed to get current user for ACL: %v", err)
+		}
+		sid := u.Uid
+		
+		// /inheritance:r removes inheritance. /grant *SID:F grants full control to SID.
+		cmd := exec.Command("icacls", path, "/inheritance:r", "/grant", "*"+sid+":F")
+		if err := cmd.Run(); err != nil {
+			os.Remove(path)
+			log.Fatalf("Failed to set file ACLs: %v", err)
+		}
+		
+		verifyCmd := exec.Command("icacls", path)
+		out, err := verifyCmd.CombinedOutput()
+		if err != nil || !strings.Contains(string(out), sid) {
+			os.Remove(path)
+			log.Fatalf("Failed to verify file ACLs")
 		}
 	}
 	fmt.Printf("Client configured successfully at %s.\n", path)
-	fmt.Println("Note: Token is currently stored in plaintext on disk. Directory is restricted to current user (0700/0600).")
+	fmt.Println("Note: Token is protected. Directory is restricted to current user.")
 }
 
 func resetClientCmd(args []string) {

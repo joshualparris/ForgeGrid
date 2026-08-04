@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -147,25 +148,6 @@ type ReplayState struct {
 	Time   time.Time `json:"time"`
 }
 
-func (w *WindowsReplayStore) lock() {
-	for {
-		f, err := os.OpenFile(w.LockFile, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-		if err == nil {
-			f.Close()
-			return
-		}
-		info, err := os.Stat(w.LockFile)
-		if err == nil && time.Since(info.ModTime()) > 5*time.Second {
-			os.Remove(w.LockFile)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-}
-
-func (w *WindowsReplayStore) unlock() {
-	os.Remove(w.LockFile)
-}
-
 func (w *WindowsReplayStore) load() (map[string]ReplayState, error) {
 	b, err := os.ReadFile(w.Path)
 	if err != nil {
@@ -175,8 +157,26 @@ func (w *WindowsReplayStore) load() (map[string]ReplayState, error) {
 		return nil, err
 	}
 	var m map[string]ReplayState
-	if err := json.Unmarshal(b, &m); err != nil {
-		return make(map[string]ReplayState), nil
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&m); err != nil {
+		return nil, fmt.Errorf("corrupt replay store: %v", err)
+	}
+	var dummy interface{}
+	if err := dec.Decode(&dummy); err == nil {
+		return nil, fmt.Errorf("corrupt replay store: trailing data")
+	}
+
+	for id, state := range m {
+		if id == "" {
+			return nil, fmt.Errorf("corrupt replay store: empty ID")
+		}
+		if state.Status != "reserved" && state.Status != "consumed" {
+			return nil, fmt.Errorf("corrupt replay store: invalid status %s", state.Status)
+		}
+		if state.Time.IsZero() {
+			return nil, fmt.Errorf("corrupt replay store: zero timestamp")
+		}
 	}
 	return m, nil
 }
@@ -194,8 +194,17 @@ func (w *WindowsReplayStore) save(m map[string]ReplayState) error {
 }
 
 func (w *WindowsReplayStore) update(fn func(map[string]ReplayState) error) error {
-	w.lock()
-	defer w.unlock()
+	f, err := os.OpenFile(w.LockFile, os.O_RDWR|os.O_CREATE, 0600)
+	if err != nil {
+		return fmt.Errorf("failed to open lock file: %v", err)
+	}
+	defer f.Close()
+
+	if err := lockFile(f); err != nil {
+		return err
+	}
+	defer unlockFile(f)
+
 	m, err := w.load()
 	if err != nil {
 		return err
@@ -309,7 +318,7 @@ func decryptAndApply(privPath, bundlePath, forgegridExe string) error {
 		"--url", bd.RelayURL,
 		"--fingerprint", bd.Fingerprint,
 		"--token-file", tokenTmpPath)
-	
+
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -321,10 +330,24 @@ func decryptAndApply(privPath, bundlePath, forgegridExe string) error {
 		return fmt.Errorf("token file was not deleted by configure-client")
 	}
 
-	// 6. Verify config exists
+	// 6. Verify config exists and matches
 	configPath := filepath.Join(localAppData, "ForgeGrid", "agentclient.json")
-	if _, err := os.Stat(configPath); err != nil {
+	cfgBytes, err := os.ReadFile(configPath)
+	if err != nil {
 		return fmt.Errorf("config file not created")
+	}
+	var cfg agentbridge.ClientConfig
+	dec := json.NewDecoder(bytes.NewReader(cfgBytes))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&cfg); err != nil {
+		return fmt.Errorf("config file is malformed: %v", err)
+	}
+	var dummy interface{}
+	if err := dec.Decode(&dummy); err == nil {
+		return fmt.Errorf("config file has trailing data")
+	}
+	if cfg.Name != bd.AgentName || cfg.URL != bd.RelayURL || cfg.Fingerprint != bd.Fingerprint || cfg.Token != bd.Token {
+		return fmt.Errorf("config file contents do not match validated bundle")
 	}
 
 	// 7. Commit reservation

@@ -25,27 +25,69 @@ func buildBinary(t *testing.T) string {
 
 func buildMockForgeGrid(t *testing.T, dir string) string {
 	mockForgeGridSrc := filepath.Join(dir, "mock_forgegrid.go")
-	os.WriteFile(mockForgeGridSrc, []byte(`package main
+	if err := os.WriteFile(mockForgeGridSrc, []byte(`package main
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 )
+type ClientConfig struct {
+	Name        string `+"`json:\"name\"`"+`
+	Token       string `+"`json:\"token\"`"+`
+	URL         string `+"`json:\"url\"`"+`
+	Fingerprint string `+"`json:\"fingerprint\"`"+`
+}
 func main() {
 	if os.Getenv("MOCK_FAIL") == "1" {
 		os.Exit(1)
 	}
+	var name, tokenFile, url, fp string
 	for i, arg := range os.Args {
 		if arg == "--token-file" && i+1 < len(os.Args) {
-			os.Remove(os.Args[i+1])
+			tokenFile = os.Args[i+1]
+		}
+		if arg == "--name" && i+1 < len(os.Args) {
+			name = os.Args[i+1]
+		}
+		if arg == "--url" && i+1 < len(os.Args) {
+			url = os.Args[i+1]
+		}
+		if arg == "--fingerprint" && i+1 < len(os.Args) {
+			fp = os.Args[i+1]
 		}
 	}
+	
+	token := ""
+	if tokenFile != "" {
+		b, err := os.ReadFile(tokenFile)
+		if err == nil {
+			token = string(b)
+		}
+		os.Remove(tokenFile)
+	}
+	
 	// Create mock config to satisfy decrypt-and-apply
 	localAppData := os.Getenv("LOCALAPPDATA")
 	configPath := filepath.Join(localAppData, "ForgeGrid", "agentclient.json")
 	os.MkdirAll(filepath.Dir(configPath), 0700)
-	os.WriteFile(configPath, []byte("{}"), 0600)
+	
+	cfg := ClientConfig{
+		Name:        name,
+		Token:       token,
+		URL:         url,
+		Fingerprint: fp,
+	}
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		os.Exit(2)
+	}
+	if err := os.WriteFile(configPath, b, 0600); err != nil {
+		os.Exit(2)
+	}
 }
-`), 0600)
+`), 0600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
 	mockForgeGridExe := filepath.Join(dir, "mock_forgegrid.exe")
 	if out, err := exec.Command("go", "build", "-o", mockForgeGridExe, mockForgeGridSrc).CombinedOutput(); err != nil {
 		t.Fatalf("Failed to build mock forgegrid: %v\n%s", err, string(out))
@@ -104,7 +146,10 @@ func TestReplayStore(t *testing.T) {
 			t.Fatalf("Reserve failed: %v", err)
 		}
 		// Manually backdate the time
-		m, _ := rs.load()
+		m, err := rs.load()
+		if err != nil {
+			t.Fatalf("load failed: %v", err)
+		}
 		state := m["stale-test"]
 		state.Time = time.Now().Add(-16 * time.Minute)
 		m["stale-test"] = state
@@ -150,6 +195,43 @@ func TestReplayStore(t *testing.T) {
 			t.Fatalf("Failed to reserve after release: %v", err)
 		}
 	})
+	// 6. Corrupt store tests
+	t.Run("CorruptStore", func(t *testing.T) {
+		// malformed JSON
+		if err := os.WriteFile(storePath, []byte(`{"bad":`), 0600); err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
+		if err := rs.Reserve("corrupt-test"); err == nil {
+			t.Fatalf("Expected error on malformed JSON")
+		}
+
+		// unknown fields
+		if err := os.WriteFile(storePath, []byte(`{"id":{"status":"reserved","time":"2023-01-01T00:00:00Z","unknown":1}}`), 0600); err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
+		if err := rs.Reserve("corrupt-test2"); err == nil {
+			t.Fatalf("Expected error on unknown fields")
+		}
+
+		// trailing JSON
+		if err := os.WriteFile(storePath, []byte(`{}{} `), 0600); err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
+		if err := rs.Reserve("corrupt-test3"); err == nil {
+			t.Fatalf("Expected error on trailing JSON")
+		}
+
+		// empty ID
+		if err := os.WriteFile(storePath, []byte(`{"":{"status":"reserved","time":"2023-01-01T00:00:00Z"}}`), 0600); err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
+		if err := rs.Reserve("corrupt-test4"); err == nil {
+			t.Fatalf("Expected error on empty ID")
+		}
+
+		// clear file
+		os.Remove(storePath)
+	})
 }
 
 func TestInteroperabilityAndFailure(t *testing.T) {
@@ -178,8 +260,13 @@ func TestInteroperabilityAndFailure(t *testing.T) {
 			Expiry:        time.Now().Add(5 * time.Minute).Format(time.RFC3339),
 			BootstrapID:   "boot-" + time.Now().Format("150405999999"),
 		}
-		bBytes, _ := json.Marshal(b)
-		os.WriteFile(plainIn, bBytes, 0600)
+		bBytes, err := json.Marshal(b)
+		if err != nil {
+			t.Fatalf("Marshal failed: %v", err)
+		}
+		if err := os.WriteFile(plainIn, bBytes, 0600); err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
 
 		hybridOut := filepath.Join(tmpDir, "hybrid.json")
 		// Using the encrypt command which calls GenerateBootstrapBundle internally
@@ -195,9 +282,14 @@ func TestInteroperabilityAndFailure(t *testing.T) {
 		localAppData := filepath.Join(tmpDir, "LocalAppData_Interop")
 
 		// Read it before decrypt-and-apply deletes it
-		ebBytes, _ := os.ReadFile(bundlePath)
+		ebBytes, err := os.ReadFile(bundlePath)
+		if err != nil {
+			t.Fatalf("ReadFile failed: %v", err)
+		}
 		var eb agentbridge.EncryptedBundle
-		json.Unmarshal(ebBytes, &eb)
+		if err := json.Unmarshal(ebBytes, &eb); err != nil {
+			t.Fatalf("Unmarshal failed: %v", err)
+		}
 
 		cmd := exec.Command(binPath, "decrypt-and-apply", privPath, bundlePath, mockForgeGridExe)
 		cmd.Env = append(os.Environ(), "LOCALAPPDATA="+localAppData)
@@ -205,7 +297,7 @@ func TestInteroperabilityAndFailure(t *testing.T) {
 		if err != nil {
 			t.Fatalf("decrypt-and-apply failed: %v\nOutput: %s", err, string(out))
 		}
-		
+
 		// No token appears in output or logs
 		if bytes.Contains(out, []byte("secret-token")) {
 			t.Fatalf("Token leaked in output!")
@@ -216,7 +308,7 @@ func TestInteroperabilityAndFailure(t *testing.T) {
 			Path:     filepath.Join(localAppData, "ForgeGrid", "bootstrap", "replay-state.json"),
 			LockFile: filepath.Join(localAppData, "ForgeGrid", "bootstrap", "replay-state.lock"),
 		}
-		
+
 		err = rs.Reserve(eb.BootstrapID)
 		if err == nil || !strings.Contains(err.Error(), "already consumed") {
 			t.Fatalf("Expected already consumed, got %v", err)
@@ -227,14 +319,21 @@ func TestInteroperabilityAndFailure(t *testing.T) {
 		// Generate fresh keys since the previous test deleted them on success
 		privPath := filepath.Join(tmpDir, "priv_fail.pem")
 		pubPath := filepath.Join(tmpDir, "pub_fail.pem")
-		exec.Command(binPath, "generate", privPath, pubPath).Run()
+		if err := exec.Command(binPath, "generate", privPath, pubPath).Run(); err != nil {
+			t.Fatalf("generate failed: %v", err)
+		}
 
 		bundlePath := createBundle(pubPath)
 		localAppData := filepath.Join(tmpDir, "LocalAppData_Fail")
 
-		ebBytes, _ := os.ReadFile(bundlePath)
+		ebBytes, err := os.ReadFile(bundlePath)
+		if err != nil {
+			t.Fatalf("ReadFile failed: %v", err)
+		}
 		var eb agentbridge.EncryptedBundle
-		json.Unmarshal(ebBytes, &eb)
+		if err := json.Unmarshal(ebBytes, &eb); err != nil {
+			t.Fatalf("Unmarshal failed: %v", err)
+		}
 
 		// 1. The first apply attempt fails (simulate config failure)
 		cmd := exec.Command(binPath, "decrypt-and-apply", privPath, bundlePath, mockForgeGridExe)
@@ -252,15 +351,23 @@ func TestInteroperabilityAndFailure(t *testing.T) {
 			Path:     filepath.Join(localAppData, "ForgeGrid", "bootstrap", "replay-state.json"),
 			LockFile: filepath.Join(localAppData, "ForgeGrid", "bootstrap", "replay-state.lock"),
 		}
-		m, _ := rs.load()
+		m, err := rs.load()
+		if err != nil {
+			t.Fatalf("load failed: %v", err)
+		}
 		if _, ok := m[eb.BootstrapID]; ok {
 			t.Fatalf("Expected reservation to be released, but found in store")
 		}
 
 		// 3. The same bundle can be retried and succeeds (MOCK_FAIL=0)
 		privCopy := privPath + ".copy"
-		b, _ := os.ReadFile(privPath)
-		os.WriteFile(privCopy, b, 0600)
+		b, err := os.ReadFile(privPath)
+		if err != nil {
+			t.Fatalf("ReadFile failed: %v", err)
+		}
+		if err := os.WriteFile(privCopy, b, 0600); err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
 
 		cmd2 := exec.Command(binPath, "decrypt-and-apply", privPath, bundlePath, mockForgeGridExe)
 		cmd2.Env = append(os.Environ(), "LOCALAPPDATA="+localAppData)
@@ -271,8 +378,12 @@ func TestInteroperabilityAndFailure(t *testing.T) {
 
 		// 4. A third attempt is rejected as consumed
 		// Re-create the bundle file and priv key since decrypt-and-apply deletes them on success
-		os.WriteFile(bundlePath, ebBytes, 0600)
-		os.WriteFile(privPath, b, 0600)
+		if err := os.WriteFile(bundlePath, ebBytes, 0600); err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
+		if err := os.WriteFile(privPath, b, 0600); err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
 		cmd3 := exec.Command(binPath, "decrypt-and-apply", privPath, bundlePath, mockForgeGridExe)
 		cmd3.Env = append(os.Environ(), "LOCALAPPDATA="+localAppData)
 		out3, err := cmd3.CombinedOutput()

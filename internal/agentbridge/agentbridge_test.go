@@ -19,8 +19,9 @@ import (
 
 func setupTestServer(t *testing.T) (*Server, *Store, string) {
 	tmpDir := t.TempDir()
-	os.Setenv("HOME", tmpDir)
-	os.Setenv("USERPROFILE", tmpDir)
+	t.Setenv("LOCALAPPDATA", filepath.Join(tmpDir, "localappdata"))
+	t.Setenv("USERPROFILE", filepath.Join(tmpDir, "userprofile"))
+	t.Setenv("HOME", tmpDir)
 	
 	s, err := NewStore()
 	if err != nil {
@@ -43,6 +44,9 @@ func doReq(t *testing.T, handler http.HandlerFunc, method, path, auth string, bo
 }
 
 func TestAuthAndRejection(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", filepath.Join(t.TempDir(), "localappdata"))
+	t.Setenv("USERPROFILE", filepath.Join(t.TempDir(), "userprofile"))
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
 	server, store, _ := setupTestServer(t)
 	store.agents["fedora"] = AgentRegistration{Name: "fedora", TokenHash: "00b6241dddb1bc0bc657026c85cb001a0eeaee5715a4d4c9f031b8afc4ba7e1f"}
 
@@ -153,7 +157,7 @@ func TestMessageLifecycle(t *testing.T) {
 	var inbox []AgentMessage
 	json.Unmarshal(w.Body.Bytes(), &inbox)
 	if len(inbox) != 1 {
-		t.Fatalf("Windows should see 1 message, got %d", len(inbox))
+		t.Fatalf("Windows should see 1 message, got %d. Code: %d, Body: %s", len(inbox), w.Code, w.Body.String())
 	}
 
 	req = httptest.NewRequest("POST", "/api/v1/agent-messages/"+msg.ID+"/acknowledge", nil)
@@ -196,8 +200,9 @@ func TestMessageLifecycle(t *testing.T) {
 
 func TestIntegrationConcurrent(t *testing.T) {
 	tmpDir := t.TempDir()
-	os.Setenv("HOME", tmpDir)
-	os.Setenv("USERPROFILE", tmpDir)
+	t.Setenv("LOCALAPPDATA", filepath.Join(tmpDir, "localappdata"))
+	t.Setenv("USERPROFILE", filepath.Join(tmpDir, "userprofile"))
+	t.Setenv("HOME", tmpDir)
 	
 	s, _ := NewStore()
 	s.dataDir = filepath.Join(tmpDir, ".local", "share", "forgegrid", "agentbridge")
@@ -213,7 +218,6 @@ func TestIntegrationConcurrent(t *testing.T) {
 	srv := httptest.NewUnstartedServer(mux)
 	srv.TLS = &tls.Config{Certificates: []tls.Certificate{cert}}
 	srv.StartTLS()
-	defer srv.Close()
 
 	agents := 7
 	s.mu.Lock()
@@ -228,29 +232,27 @@ func TestIntegrationConcurrent(t *testing.T) {
 	s.mu.Unlock()
 	s.save()
 
-	var clients []*Client
-	for i := 0; i < agents; i++ {
-		c, err := NewClient(srv.URL, fmt.Sprintf("agent-%d", i), "secret", fp, false)
-		if err != nil {
-			t.Fatalf("Failed client creation: %v", err)
-		}
-		if t, ok := c.HTTPClient.Transport.(*http.Transport); ok {
-			t.MaxIdleConnsPerHost = 100
-		}
-		c.HTTPClient.Timeout = 60 * time.Second
-		clients = append(clients, c)
-	}
-
 	var wg sync.WaitGroup
-	// 70 messages sent concurrently (10 per agent sending to others)
-	for i := 0; i < 70; i++ {
+	sem := make(chan struct{}, 50) // Limit concurrency to avoid ephemeral port / backlog exhaustion on Windows
+	// 700 messages sent concurrently (100 per agent sending to others)
+	for i := 0; i < 700; i++ {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			
 			senderId := idx % agents
 			recipId := (idx + 1) % agents
-			c := clients[senderId]
-			_, err := c.SendMessage(fmt.Sprintf("agent-%d", recipId), "t1", TypeInstruction, "hello", 3600, fmt.Sprintf("key-%d", idx))
+			c, err := NewClient(srv.URL, fmt.Sprintf("agent-%d", senderId), "secret", fp, false)
+			if err == nil {
+				c.HTTPClient.Timeout = 60 * time.Second
+			}
+			if err != nil {
+				t.Errorf("Failed client creation: %v", err)
+				return
+			}
+			_, err = c.SendMessage(fmt.Sprintf("agent-%d", recipId), "t1", TypeInstruction, "hello", 3600, fmt.Sprintf("key-%d", idx))
 			if err != nil {
 				t.Errorf("Failed to send message: %v", err)
 			}
@@ -262,8 +264,8 @@ func TestIntegrationConcurrent(t *testing.T) {
 	s.mu.Lock()
 	count := len(s.messages)
 	s.mu.Unlock()
-	if count != 70 {
-		t.Fatalf("Expected 70 messages, got %d", count)
+	if count != 700 {
+		t.Fatalf("Expected 700 messages, got %d", count)
 	}
 
 	// Read inboxes and process exactly once
@@ -292,7 +294,7 @@ func TestIntegrationConcurrent(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Verify all 70 are completed
+	// Verify all 700 are completed
 	s.mu.Lock()
 	for _, m := range s.messages {
 		if m.Status != StatusCompleted {
@@ -365,7 +367,7 @@ func TestIntegrationConcurrent(t *testing.T) {
 	if err := s3.load(); err != nil {
 		t.Fatalf("s3.load failed: %v", err)
 	}
-	if len(s3.messages) != 71 {
-		t.Fatalf("Expected 71 messages in s3, got %d", len(s3.messages))
+	if len(s3.messages) != 701 {
+		t.Fatalf("Expected 701 messages in s3, got %d", len(s3.messages))
 	}
 }
