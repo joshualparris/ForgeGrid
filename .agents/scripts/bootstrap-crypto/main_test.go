@@ -24,74 +24,6 @@ func buildBinary(t *testing.T) string {
 	return binPath
 }
 
-func buildMockForgeGrid(t *testing.T, dir string) string {
-	mockForgeGridSrc := filepath.Join(dir, "mock_forgegrid.go")
-	if err := os.WriteFile(mockForgeGridSrc, []byte(`package main
-import (
-	"encoding/json"
-	"io"
-	"os"
-	"path/filepath"
-)
-type ClientConfig struct {
-	Name        string `+"`json:\"name\"`"+`
-	Token       string `+"`json:\"token\"`"+`
-	URL         string `+"`json:\"url\"`"+`
-	Fingerprint string `+"`json:\"fingerprint\"`"+`
-}
-func main() {
-	if os.Getenv("MOCK_FAIL") == "1" {
-		os.Exit(1)
-	}
-	var name, url, fp string
-	var token string
-	for i, arg := range os.Args {
-		if arg == "--token-stdin" {
-			b, err := io.ReadAll(os.Stdin)
-			if err == nil {
-				token = string(b)
-			}
-		}
-		if arg == "--name" && i+1 < len(os.Args) {
-			name = os.Args[i+1]
-		}
-		if arg == "--url" && i+1 < len(os.Args) {
-			url = os.Args[i+1]
-		}
-		if arg == "--fingerprint" && i+1 < len(os.Args) {
-			fp = os.Args[i+1]
-		}
-	}
-	
-	// Create mock config to satisfy decrypt-and-apply
-	localAppData := os.Getenv("LOCALAPPDATA")
-	configPath := filepath.Join(localAppData, "ForgeGrid", "agentclient.json")
-	os.MkdirAll(filepath.Dir(configPath), 0700)
-	
-	cfg := ClientConfig{
-		Name:        name,
-		Token:       token,
-		URL:         url,
-		Fingerprint: fp,
-	}
-	b, err := json.Marshal(cfg)
-	if err != nil {
-		os.Exit(2)
-	}
-	if err := os.WriteFile(configPath, b, 0600); err != nil {
-		os.Exit(2)
-	}
-}
-`), 0600); err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
-	mockForgeGridExe := filepath.Join(dir, "mock_forgegrid.exe")
-	if out, err := exec.Command("go", "build", "-o", mockForgeGridExe, mockForgeGridSrc).CombinedOutput(); err != nil {
-		t.Fatalf("Failed to build mock forgegrid: %v\n%s", err, string(out))
-	}
-	return mockForgeGridExe
-}
-
 func TestReplayStore(t *testing.T) {
 	tmpDir := t.TempDir()
 	storePath := filepath.Join(tmpDir, "replay-state.json")
@@ -270,7 +202,11 @@ func TestReplayStore(t *testing.T) {
 func TestInteroperabilityAndFailure(t *testing.T) {
 	binPath := buildBinary(t)
 	tmpDir := t.TempDir()
-	mockForgeGridExe := buildMockForgeGrid(t, tmpDir)
+
+	realForgeGridExe := filepath.Join(tmpDir, "forgegrid.exe")
+	if out, err := exec.Command("go", "build", "-o", realForgeGridExe, "forgegrid").CombinedOutput(); err != nil {
+		t.Fatalf("Failed to build real forgegrid: %v\n%s", err, string(out))
+	}
 
 	privPath := filepath.Join(tmpDir, "priv.pem")
 	pubPath := filepath.Join(tmpDir, "pub.pem")
@@ -324,7 +260,7 @@ func TestInteroperabilityAndFailure(t *testing.T) {
 			t.Fatalf("Unmarshal failed: %v", err)
 		}
 
-		cmd := exec.Command(binPath, "decrypt-and-apply", privPath, bundlePath, mockForgeGridExe)
+		cmd := exec.Command(binPath, "decrypt-and-apply", privPath, bundlePath, realForgeGridExe)
 		cmd.Env = append(os.Environ(), "LOCALAPPDATA="+localAppData)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -369,7 +305,7 @@ func TestInteroperabilityAndFailure(t *testing.T) {
 		}
 
 		// 1. The first apply attempt fails (simulate config failure)
-		cmd := exec.Command(binPath, "decrypt-and-apply", privPath, bundlePath, mockForgeGridExe)
+		cmd := exec.Command(binPath, "decrypt-and-apply", privPath, bundlePath, realForgeGridExe)
 		cmd.Env = append(os.Environ(), "LOCALAPPDATA="+localAppData, "MOCK_FAIL=1")
 		out, err := cmd.CombinedOutput()
 		if err == nil {
@@ -402,7 +338,7 @@ func TestInteroperabilityAndFailure(t *testing.T) {
 			t.Fatalf("WriteFile failed: %v", err)
 		}
 
-		cmd2 := exec.Command(binPath, "decrypt-and-apply", privPath, bundlePath, mockForgeGridExe)
+		cmd2 := exec.Command(binPath, "decrypt-and-apply", privPath, bundlePath, realForgeGridExe)
 		cmd2.Env = append(os.Environ(), "LOCALAPPDATA="+localAppData)
 		out2, err := cmd2.CombinedOutput()
 		if err != nil {
@@ -417,7 +353,7 @@ func TestInteroperabilityAndFailure(t *testing.T) {
 		if err := os.WriteFile(privPath, b, 0600); err != nil {
 			t.Fatalf("WriteFile failed: %v", err)
 		}
-		cmd3 := exec.Command(binPath, "decrypt-and-apply", privPath, bundlePath, mockForgeGridExe)
+		cmd3 := exec.Command(binPath, "decrypt-and-apply", privPath, bundlePath, realForgeGridExe)
 		cmd3.Env = append(os.Environ(), "LOCALAPPDATA="+localAppData)
 		out3, err := cmd3.CombinedOutput()
 		if err == nil {

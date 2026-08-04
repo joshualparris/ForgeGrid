@@ -35,7 +35,10 @@ func main() {
 			fmt.Println("Usage: decrypt-protected-and-apply <priv_blob> <bundle> <forgegrid_exe>")
 			os.Exit(1)
 		}
-		decryptProtectedAndApply(os.Args[2], os.Args[3], os.Args[4])
+		if err := decryptProtectedAndApply(os.Args[2], os.Args[3], os.Args[4]); err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
 	case "generate":
 		if len(os.Args) != 4 {
 			fmt.Println("Usage: generate <priv_out> <pub_out>")
@@ -82,7 +85,7 @@ func generateProtectedKeys(privBlobPath, pubPath string) {
 		os.Exit(1)
 	}
 
-	if err := os.WriteFile(privBlobPath, protectedPEM, 0600); err != nil {
+	if err := writeSecureBlob(privBlobPath, protectedPEM); err != nil {
 		fmt.Printf("Error writing protected private key: %v\n", err)
 		os.Exit(1)
 	}
@@ -248,11 +251,7 @@ func (w *WindowsReplayStore) save(m map[string]ReplayState) error {
 	if err != nil {
 		return err
 	}
-	tmpPath := w.Path + ".tmp"
-	if err := os.WriteFile(tmpPath, b, 0600); err != nil {
-		return err
-	}
-	return os.Rename(tmpPath, w.Path)
+	return writeSecureBlob(w.Path, b)
 }
 
 func (w *WindowsReplayStore) update(fn func(map[string]ReplayState) error) (err error) {

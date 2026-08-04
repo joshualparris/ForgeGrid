@@ -15,10 +15,41 @@ import (
 	"forgegrid/internal/agentbridge"
 )
 
+func TestProtectedBootstrapErrors(t *testing.T) {
+	binPath := buildBinary(t)
+	tmpDir := t.TempDir()
+	
+	// Create invalid private blob
+	privBlobPath := filepath.Join(tmpDir, "private.blob")
+	if err := os.WriteFile(privBlobPath, []byte("invalid-blob"), 0600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	
+	bundlePath := filepath.Join(tmpDir, "bundle.json")
+	if err := os.WriteFile(bundlePath, []byte("{}"), 0600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	cmd := exec.Command(binPath, "decrypt-protected-and-apply", privBlobPath, bundlePath, "dummy-forgegrid.exe")
+	err := cmd.Run()
+	if err == nil {
+		t.Fatalf("Expected decrypt-protected-and-apply to fail on invalid input, but it succeeded")
+	}
+	if exitError, ok := err.(*exec.ExitError); !ok {
+		t.Fatalf("Expected ExitError, got %v", err)
+	} else if exitError.ExitCode() == 0 {
+		t.Fatalf("Expected non-zero exit code, got 0")
+	}
+}
+
 func TestWindowsSecurity(t *testing.T) {
 	binPath := buildBinary(t)
 	tmpDir := t.TempDir()
-	mockForgeGridExe := buildMockForgeGrid(t, tmpDir)
+	
+	realForgeGridExe := filepath.Join(tmpDir, "forgegrid.exe")
+	if out, err := exec.Command("go", "build", "-o", realForgeGridExe, "forgegrid").CombinedOutput(); err != nil {
+		t.Fatalf("Failed to build real forgegrid: %v\n%s", err, string(out))
+	}
 
 	privBlobPath := filepath.Join(tmpDir, "private.blob")
 	pubPath := filepath.Join(tmpDir, "pub.pem")
@@ -68,8 +99,8 @@ func TestWindowsSecurity(t *testing.T) {
 	os.Setenv("LOCALAPPDATA", localAppData)
 	defer os.Unsetenv("LOCALAPPDATA")
 
-	// 3. Decrypt and apply (testing token flow)
-	cmdDec := exec.Command(binPath, "decrypt-protected-and-apply", privBlobPath, hybridOut, mockForgeGridExe)
+	// 3. Decrypt and apply protected bundle
+	cmdDec := exec.Command(binPath, "decrypt-protected-and-apply", privBlobPath, hybridOut, realForgeGridExe)
 	cmdDec.Env = append(os.Environ(), "LOCALAPPDATA="+localAppData)
 	out, err := cmdDec.CombinedOutput()
 	if err != nil {
@@ -119,11 +150,21 @@ func TestWindowsSecurity(t *testing.T) {
 	// The unlock error was tested in main_test.go
 	// LockFileEx unexpected error test
 	t.Run("UnexpectedLockError", func(t *testing.T) {
-		// Just unit test lockFile directly by creating a fake file.
-		f, _ := os.CreateTemp("", "fake")
-		defer f.Close()
-		defer os.Remove(f.Name())
-		// If we test mock, it's hard here since lockFile is windows system call.
-		// We trust the code structure we added.
+		f, err := os.CreateTemp("", "fake")
+		if err != nil {
+			t.Fatalf("CreateTemp failed: %v", err)
+		}
+		path := f.Name()
+		// Close the file so the handle is invalid
+		f.Close()
+		os.Remove(path)
+
+		err = lockFile(f)
+		if err == nil {
+			t.Fatalf("Expected lockFile to fail on invalid handle, but it succeeded")
+		}
+		if !strings.Contains(err.Error(), "unexpected lock error") {
+			t.Fatalf("Expected 'unexpected lock error', got: %v", err)
+		}
 	})
 }
