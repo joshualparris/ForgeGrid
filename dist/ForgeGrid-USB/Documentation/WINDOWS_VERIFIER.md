@@ -14,7 +14,7 @@ This script **must be physically executed on a Windows machine**. While Linux (F
 
 ## Exit Codes and Cleanup
 The script enforces strict process exit codes:
-- **Success (Exit Code 0)**: Returned *only* if the entire initialization, unique identity verification, and specific PID termination sequence completes flawlessly.
+- **Success (Exit Code 0)**: Returned *only* if the entire initialization, unique identity verification, and specific PID termination sequence completes flawlessly. The SUCCESS message is printed only after the `finally` cleanup block has successfully completed.
 - **Failure (Non-Zero Exit Code)**: Returned immediately if any stage fails.
 
 Whether successful or failing, the script guarantees it stops *only* the process it created and cleans up temporary directories. Forced process termination (`Stop-Process -Force`) is used for test isolation; it is not a graceful shutdown. If cleanup fails to safely terminate the tracked PID or remove temporary files, the script also returns a non-zero exit code.
