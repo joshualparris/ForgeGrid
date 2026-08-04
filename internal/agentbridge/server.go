@@ -20,10 +20,32 @@ type Server struct {
 }
 
 func NewServer(s *Store) *Server {
-	return &Server{
+	srv := &Server{
 		store: s,
 		rates: make(map[string]int),
 		reset: make(map[string]time.Time),
+	}
+	go srv.cleanupLoop()
+	return srv
+}
+
+func (s *Server) cleanupLoop() {
+	ticker := time.NewTicker(2 * time.Minute)
+	for range ticker.C {
+		s.mu.Lock()
+		now := time.Now()
+		if len(s.rates) > 10000 {
+			s.rates = make(map[string]int)
+			s.reset = make(map[string]time.Time)
+		} else {
+			for ip, t := range s.reset {
+				if now.After(t) {
+					delete(s.rates, ip)
+					delete(s.reset, ip)
+				}
+			}
+		}
+		s.mu.Unlock()
 	}
 }
 
@@ -36,7 +58,7 @@ func (s *Server) authenticate(r *http.Request) (string, bool) {
 	s.mu.Lock()
 	now := time.Now()
 	if t, ok := s.reset[ip]; ok && now.After(t) {
-		s.rates[ip] = 0
+		delete(s.rates, ip)
 		delete(s.reset, ip)
 	}
 	if s.rates[ip] > 10 {
@@ -46,34 +68,43 @@ func (s *Server) authenticate(r *http.Request) (string, bool) {
 	}
 	s.mu.Unlock()
 
+	fail := func() (string, bool) {
+		s.mu.Lock()
+		s.rates[ip]++
+		if len(s.rates) > 20000 {
+			s.rates = make(map[string]int)
+			s.reset = make(map[string]time.Time)
+		}
+		s.mu.Unlock()
+		return "", false
+	}
+
 	authHeader := r.Header.Get("Authorization")
 	if !strings.HasPrefix(authHeader, "Bearer ") {
-		return "", false
+		return fail()
 	}
 	token := strings.TrimPrefix(authHeader, "Bearer ")
 	parts := strings.SplitN(token, ":", 2)
 	if len(parts) != 2 {
-		return "", false
+		return fail()
 	}
 	agentName, secret := parts[0], parts[1]
 
 	agent, ok := s.store.GetAgent(agentName)
 	if !ok {
-		return "", false
+		return fail()
 	}
 
 	hash := sha256.Sum256([]byte(secret))
 	hashStr := hex.EncodeToString(hash[:])
 
 	if subtle.ConstantTimeCompare([]byte(agent.TokenHash), []byte(hashStr)) != 1 {
-		s.mu.Lock()
-		s.rates[ip]++
-		s.mu.Unlock()
-		return "", false
+		return fail()
 	}
 
 	s.mu.Lock()
-	s.rates[ip] = 0 // Reset on success
+	delete(s.rates, ip)
+	delete(s.reset, ip)
 	s.mu.Unlock()
 
 	return agentName, true
