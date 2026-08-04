@@ -1,7 +1,7 @@
 # ForgeGrid Release Notes
 
 ## Status Update
-ForgeGrid has undergone a massive security and stability refactor. 
+ForgeGrid has undergone a massive security and stability refactor.
 
 ## Working
 - Secure, token-authenticated, self-signed TLS encrypted coordinator-worker pairing and communication.

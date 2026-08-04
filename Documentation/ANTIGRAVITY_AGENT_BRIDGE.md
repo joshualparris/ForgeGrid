@@ -1,6 +1,6 @@
 # Antigravity AgentBridge
 
-AgentBridge provides a secure, HTTPS-pinned local network relay for orchestrating Antigravity agents across physical machines. 
+AgentBridge provides a secure, HTTPS-pinned local network relay for orchestrating Antigravity agents across physical machines.
 
 ## Registration
 First, the coordinator creates an agent identity:

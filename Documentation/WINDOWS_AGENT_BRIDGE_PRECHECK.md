@@ -18,9 +18,9 @@
 - **Token Storage Format:** Plaintext with filesystem protection (Current-User ACL).
 
 ## 4. Bootstrap Design
-- **Cryptographic Construction:** Option B — RSA 3072 with RSA-OAEP-SHA256.
-- **Implementation:** A Go utility (`.agents/scripts/bootstrap-crypto`) performs the RSA operations. The utility is wrapped by PowerShell scripts that manage Windows DPAPI (CurrentUser scope) protection for the private key, ACLs, and safe file cleanup. 
-- **Encryption:** The token and registration material will be encrypted by the Fedora coordinator using the RSA public key before transmission.
+- **Cryptographic Construction:** Option B — RSA 3072 with RSA-OAEP-SHA256, plus Ed25519 digital signatures.
+- **Implementation:** A Go utility (`.agents/scripts/bootstrap-crypto`) performs the crypto operations. The utility is wrapped by PowerShell scripts that manage Windows DPAPI (CurrentUser scope) protection for the private key, ACLs, and safe file cleanup.
+- **Encryption & Authentication:** The token and registration material will be encrypted by the Fedora coordinator using the RSA public key and signed using an Ed25519 private key before transmission.
 - **Fingerprint (SHA-256):** `2515679f04ca9711e7dd88cabff84f3c341b1e0d8a88fb82f4607d2bdd7b3419`
 
 ## 5. Polling and Scheduling Helper Status

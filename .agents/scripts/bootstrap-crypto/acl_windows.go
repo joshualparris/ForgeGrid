@@ -100,6 +100,21 @@ func secureBootstrapDirectory(dir string) error {
 	return applySecureACL(dir, true)
 }
 
+func replaceFileAtomically(tempPath, destinationPath string) error {
+	tempPtr, err := windows.UTF16PtrFromString(tempPath)
+	if err != nil {
+		return err
+	}
+	destPtr, err := windows.UTF16PtrFromString(destinationPath)
+	if err != nil {
+		return err
+	}
+	if err := windows.MoveFileEx(tempPtr, destPtr, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH); err != nil {
+		return err
+	}
+	return nil
+}
+
 func writeSecureBlob(path string, b []byte) error {
 	dir := filepath.Dir(path)
 	if err := secureBootstrapDirectory(dir); err != nil {
@@ -128,11 +143,14 @@ func writeSecureBlob(path string, b []byte) error {
 		os.Remove(tempPath)
 		return fmt.Errorf("failed to sync secrets: %w", err)
 	}
-	f.Close()
-
-	if err := os.Rename(tempPath, path); err != nil {
+	if err := f.Close(); err != nil {
 		os.Remove(tempPath)
-		return fmt.Errorf("failed to rename temp file: %w", err)
+		return fmt.Errorf("failed to close temp file: %w", err)
+	}
+
+	if err := replaceFileAtomically(tempPath, path); err != nil {
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to replace temp file: %w", err)
 	}
 
 	tok, _ := windows.OpenCurrentProcessToken()

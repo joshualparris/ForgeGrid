@@ -3,10 +3,13 @@ package agentbridge
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -65,7 +68,7 @@ func (m *mockReplayStore) Release(id string) error {
 	return nil
 }
 
-func generateTestBundle(t *testing.T, pub *rsa.PublicKey, modifier func(*BundleData, *EncryptedBundle, []byte)) EncryptedBundle {
+func generateTestBundle(t *testing.T, pub *rsa.PublicKey, signPriv ed25519.PrivateKey, modifier func(*BundleData, *EncryptedBundle, []byte)) EncryptedBundle {
 	now := time.Now()
 	bData := BundleData{
 		SchemaVersion: "1",
@@ -127,6 +130,23 @@ func generateTestBundle(t *testing.T, pub *rsa.PublicKey, modifier func(*BundleD
 	eb.Nonce = base64.StdEncoding.EncodeToString(nonce)
 	eb.Ciphertext = base64.StdEncoding.EncodeToString(ct)
 
+	// Apply signature
+	if signPriv != nil {
+		pubBytes, _ := x509.MarshalPKIXPublicKey(pub)
+		pubHash := sha256.Sum256(pubBytes)
+		recipientFingerprint := hex.EncodeToString(pubHash[:])
+
+		payload := ConstructSignedPayload(&eb, bData.AgentName, recipientFingerprint)
+		sig := ed25519.Sign(signPriv, payload)
+
+		signPub := signPriv.Public().(ed25519.PublicKey)
+		signPubHash := sha256.Sum256(signPub)
+
+		eb.SignatureAlgorithm = "ed25519"
+		eb.SignerFingerprint = hex.EncodeToString(signPubHash[:])
+		eb.Signature = base64.StdEncoding.EncodeToString(sig)
+	}
+
 	if modifier != nil {
 		modifier(nil, &eb, aesKey)
 	}
@@ -146,10 +166,20 @@ func TestBootstrapEncryption(t *testing.T) {
 		t.Fatalf("GenerateKey failed: %v", err)
 	}
 
+	signPub, signPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("Ed25519 GenerateKey failed: %v", err)
+	}
+
+	_, wrongSignPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("Ed25519 GenerateKey failed: %v", err)
+	}
+
 	t.Run("Success", func(t *testing.T) {
-		eb := generateTestBundle(t, pub, nil)
+		eb := generateTestBundle(t, pub, signPriv, nil)
 		rs := newMockReplayStore()
-		bd, err := ValidateBootstrapBundle(&eb, priv, "windows-test", rs)
+		bd, err := ValidateBootstrapBundle(&eb, priv, signPub, "windows-test", rs)
 		if err != nil {
 			t.Fatalf("Failed to validate: %v", err)
 		}
@@ -159,50 +189,54 @@ func TestBootstrapEncryption(t *testing.T) {
 	})
 
 	t.Run("ModifiedCiphertext", func(t *testing.T) {
-		eb := generateTestBundle(t, pub, nil)
-		ct, err := base64.StdEncoding.DecodeString(eb.Ciphertext)
-		if err != nil {
-			t.Fatalf("DecodeString failed: %v", err)
-		}
-		ct[0] ^= 0xff
-		eb.Ciphertext = base64.StdEncoding.EncodeToString(ct)
+		eb := generateTestBundle(t, pub, signPriv, func(_ *BundleData, eb *EncryptedBundle, _ []byte) {
+			if eb != nil {
+				ct, _ := base64.StdEncoding.DecodeString(eb.Ciphertext)
+				if len(ct) > 0 {
+					ct[0] ^= 0xff
+				}
+				eb.Ciphertext = base64.StdEncoding.EncodeToString(ct)
+			}
+		})
 		rs := newMockReplayStore()
-		if _, err := ValidateBootstrapBundle(&eb, priv, "windows-test", rs); err == nil {
+		if _, err := ValidateBootstrapBundle(&eb, priv, signPub, "windows-test", rs); err == nil {
 			t.Errorf("Expected error on modified ciphertext")
 		}
 	})
 
 	t.Run("ModifiedEncryptedKey", func(t *testing.T) {
-		eb := generateTestBundle(t, pub, nil)
-		k, err := base64.StdEncoding.DecodeString(eb.EncryptedAESKey)
-		if err != nil {
-			t.Fatalf("DecodeString failed: %v", err)
-		}
-		k[0] ^= 0xff
-		eb.EncryptedAESKey = base64.StdEncoding.EncodeToString(k)
+		eb := generateTestBundle(t, pub, signPriv, func(_ *BundleData, eb *EncryptedBundle, _ []byte) {
+			if eb != nil {
+				k, _ := base64.StdEncoding.DecodeString(eb.EncryptedAESKey)
+				if len(k) > 0 {
+					k[0] ^= 0xff
+				}
+				eb.EncryptedAESKey = base64.StdEncoding.EncodeToString(k)
+			}
+		})
 		rs := newMockReplayStore()
-		if _, err := ValidateBootstrapBundle(&eb, priv, "windows-test", rs); err == nil {
+		if _, err := ValidateBootstrapBundle(&eb, priv, signPub, "windows-test", rs); err == nil {
 			t.Errorf("Expected error on modified encrypted key")
 		}
 	})
 
 	t.Run("WrongPrivateKey", func(t *testing.T) {
-		eb := generateTestBundle(t, pub, nil)
+		eb := generateTestBundle(t, pub, signPriv, nil)
 		rs := newMockReplayStore()
-		if _, err := ValidateBootstrapBundle(&eb, wrongPriv, "windows-test", rs); err == nil {
+		if _, err := ValidateBootstrapBundle(&eb, wrongPriv, signPub, "windows-test", rs); err == nil {
 			t.Errorf("Expected error on wrong private key")
 		}
 	})
 
 	t.Run("ExpiredBundle", func(t *testing.T) {
-		eb := generateTestBundle(t, pub, func(bd *BundleData, eb *EncryptedBundle, _ []byte) {
+		eb := generateTestBundle(t, pub, signPriv, func(bd *BundleData, eb *EncryptedBundle, _ []byte) {
 			if bd != nil {
 				bd.Issued = time.Now().Add(-2 * time.Minute).Format(time.RFC3339)
 				bd.Expiry = time.Now().Add(-1 * time.Minute).Format(time.RFC3339)
 			}
 		})
 		rs := newMockReplayStore()
-		if _, err := ValidateBootstrapBundle(&eb, priv, "windows-test", rs); err == nil {
+		if _, err := ValidateBootstrapBundle(&eb, priv, signPub, "windows-test", rs); err == nil {
 			t.Errorf("Expected error on expired bundle")
 		} else if !strings.Contains(err.Error(), "expired") {
 			t.Errorf("Expected expired error, got: %v", err)
@@ -210,14 +244,14 @@ func TestBootstrapEncryption(t *testing.T) {
 	})
 
 	t.Run("FutureIssuedBundle", func(t *testing.T) {
-		eb := generateTestBundle(t, pub, func(bd *BundleData, eb *EncryptedBundle, _ []byte) {
+		eb := generateTestBundle(t, pub, signPriv, func(bd *BundleData, eb *EncryptedBundle, _ []byte) {
 			if bd != nil {
 				bd.Issued = time.Now().Add(10 * time.Minute).Format(time.RFC3339)
 				bd.Expiry = time.Now().Add(25 * time.Minute).Format(time.RFC3339)
 			}
 		})
 		rs := newMockReplayStore()
-		if _, err := ValidateBootstrapBundle(&eb, priv, "windows-test", rs); err == nil {
+		if _, err := ValidateBootstrapBundle(&eb, priv, signPub, "windows-test", rs); err == nil {
 			t.Errorf("Expected error on future issued bundle")
 		} else if !strings.Contains(err.Error(), "future") {
 			t.Errorf("Expected future error, got: %v", err)
@@ -225,30 +259,30 @@ func TestBootstrapEncryption(t *testing.T) {
 	})
 
 	t.Run("WrongAgentName", func(t *testing.T) {
-		eb := generateTestBundle(t, pub, func(bd *BundleData, eb *EncryptedBundle, _ []byte) {
+		eb := generateTestBundle(t, pub, signPriv, func(bd *BundleData, eb *EncryptedBundle, _ []byte) {
 			if bd != nil {
 				bd.AgentName = "malicious-agent"
 			}
 		})
 		rs := newMockReplayStore()
-		if _, err := ValidateBootstrapBundle(&eb, priv, "windows-test", rs); err == nil {
+		if _, err := ValidateBootstrapBundle(&eb, priv, signPub, "windows-test", rs); err == nil {
 			t.Errorf("Expected error on wrong agent name")
-		} else if !strings.Contains(err.Error(), "unexpected agent_name") {
-			t.Errorf("Expected unexpected agent_name error, got: %v", err)
+		} else if !strings.Contains(err.Error(), "invalid signature") { // Changing bd changes the signed ciphertext
+			t.Errorf("Expected signature error, got: %v", err)
 		}
 	})
 
 	t.Run("DuplicateBootstrapID", func(t *testing.T) {
-		eb := generateTestBundle(t, pub, nil)
+		eb := generateTestBundle(t, pub, signPriv, nil)
 		rs := newMockReplayStore()
 		// First validation should succeed
-		if _, err := ValidateBootstrapBundle(&eb, priv, "windows-test", rs); err != nil {
+		if _, err := ValidateBootstrapBundle(&eb, priv, signPub, "windows-test", rs); err != nil {
 			t.Fatalf("First validation failed: %v", err)
 		}
 		// Manually commit it to simulate configuration success
 		rs.Commit(eb.BootstrapID)
 		// Second should fail with replay error
-		if _, err := ValidateBootstrapBundle(&eb, priv, "windows-test", rs); err == nil {
+		if _, err := ValidateBootstrapBundle(&eb, priv, signPub, "windows-test", rs); err == nil {
 			t.Errorf("Expected error on duplicate bootstrap ID")
 		} else if !strings.Contains(err.Error(), "consumed") {
 			t.Errorf("Expected consumed error, got: %v", err)
@@ -256,13 +290,13 @@ func TestBootstrapEncryption(t *testing.T) {
 	})
 
 	t.Run("MalformedFingerprint", func(t *testing.T) {
-		eb := generateTestBundle(t, pub, func(bd *BundleData, eb *EncryptedBundle, _ []byte) {
+		eb := generateTestBundle(t, pub, signPriv, func(bd *BundleData, eb *EncryptedBundle, _ []byte) {
 			if bd != nil {
 				bd.Fingerprint = "short"
 			}
 		})
 		rs := newMockReplayStore()
-		if _, err := ValidateBootstrapBundle(&eb, priv, "windows-test", rs); err == nil {
+		if _, err := ValidateBootstrapBundle(&eb, priv, signPub, "windows-test", rs); err == nil {
 			t.Errorf("Expected error on malformed fingerprint")
 		} else if !strings.Contains(err.Error(), "fingerprint") {
 			t.Errorf("Expected fingerprint error, got: %v", err)
@@ -270,38 +304,38 @@ func TestBootstrapEncryption(t *testing.T) {
 	})
 
 	t.Run("MismatchedBootstrapIDs", func(t *testing.T) {
-		eb := generateTestBundle(t, pub, func(bd *BundleData, eb *EncryptedBundle, _ []byte) {
-			if eb != nil {
+		eb := generateTestBundle(t, pub, signPriv, func(bd *BundleData, eb *EncryptedBundle, _ []byte) {
+			if bd == nil && eb != nil { // Run only on second invocation AFTER signature
 				eb.BootstrapID = "different-id"
 			}
 		})
 		rs := newMockReplayStore()
-		if _, err := ValidateBootstrapBundle(&eb, priv, "windows-test", rs); err == nil {
+		if _, err := ValidateBootstrapBundle(&eb, priv, signPub, "windows-test", rs); err == nil {
 			t.Errorf("Expected error on mismatched bootstrap IDs")
-		} else if !strings.Contains(err.Error(), "mismatched") && !strings.Contains(err.Error(), "decryption failed") {
-			t.Errorf("Expected mismatched or decryption error, got: %v", err)
+		} else if !strings.Contains(err.Error(), "invalid signature") { // Mismatched payload causes sig to fail first
+			t.Errorf("Expected signature error, got: %v", err)
 		}
 	})
 
 	t.Run("WrongSchemaVersion", func(t *testing.T) {
-		eb := generateTestBundle(t, pub, func(bd *BundleData, eb *EncryptedBundle, _ []byte) {
+		eb := generateTestBundle(t, pub, signPriv, func(bd *BundleData, eb *EncryptedBundle, _ []byte) {
 			if eb != nil {
 				eb.SchemaVersion = "2"
 			}
 		})
 		rs := newMockReplayStore()
-		if _, err := ValidateBootstrapBundle(&eb, priv, "windows-test", rs); err == nil {
+		if _, err := ValidateBootstrapBundle(&eb, priv, signPub, "windows-test", rs); err == nil {
 			t.Errorf("Expected error on wrong schema version")
 		} else if !strings.Contains(err.Error(), "schema_version") {
 			t.Errorf("Expected schema_version error, got: %v", err)
 		}
 
-		ebInner := generateTestBundle(t, pub, func(bd *BundleData, eb *EncryptedBundle, _ []byte) {
+		ebInner := generateTestBundle(t, pub, signPriv, func(bd *BundleData, eb *EncryptedBundle, _ []byte) {
 			if bd != nil {
 				bd.SchemaVersion = "2"
 			}
 		})
-		if _, err := ValidateBootstrapBundle(&ebInner, priv, "windows-test", rs); err == nil {
+		if _, err := ValidateBootstrapBundle(&ebInner, priv, signPub, "windows-test", rs); err == nil {
 			t.Errorf("Expected error on wrong inner schema version")
 		} else if !strings.Contains(err.Error(), "schema_version") && !strings.Contains(err.Error(), "decryption failed") {
 			t.Errorf("Expected schema_version or decryption error, got: %v", err)
@@ -346,8 +380,17 @@ func TestBootstrapEncryption(t *testing.T) {
 			Ciphertext:      base64.StdEncoding.EncodeToString(ct),
 		}
 
+		// Apply signature
+		pubBytes, _ := x509.MarshalPKIXPublicKey(pub)
+		pubHash := sha256.Sum256(pubBytes)
+		payload := ConstructSignedPayload(&eb, "windows-test", hex.EncodeToString(pubHash[:]))
+		eb.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(signPriv, payload))
+		eb.SignatureAlgorithm = "ed25519"
+		signPubHash := sha256.Sum256(signPub)
+		eb.SignerFingerprint = hex.EncodeToString(signPubHash[:])
+
 		rs := newMockReplayStore()
-		if _, err := ValidateBootstrapBundle(&eb, priv, "windows-test", rs); err == nil {
+		if _, err := ValidateBootstrapBundle(&eb, priv, signPub, "windows-test", rs); err == nil {
 			t.Errorf("Expected error on trailing JSON data")
 		} else if !strings.Contains(err.Error(), "trailing") {
 			t.Errorf("Expected trailing data error, got: %v", err)
@@ -392,11 +435,88 @@ func TestBootstrapEncryption(t *testing.T) {
 			Ciphertext:      base64.StdEncoding.EncodeToString(ct),
 		}
 
+		// Apply signature
+		pubBytes, _ := x509.MarshalPKIXPublicKey(pub)
+		pubHash := sha256.Sum256(pubBytes)
+		payload := ConstructSignedPayload(&eb, "windows-test", hex.EncodeToString(pubHash[:]))
+		eb.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(signPriv, payload))
+		eb.SignatureAlgorithm = "ed25519"
+		signPubHash := sha256.Sum256(signPub)
+		eb.SignerFingerprint = hex.EncodeToString(signPubHash[:])
+
 		rs := newMockReplayStore()
-		if _, err := ValidateBootstrapBundle(&eb, priv, "windows-test", rs); err == nil {
+		if _, err := ValidateBootstrapBundle(&eb, priv, signPub, "windows-test", rs); err == nil {
 			t.Errorf("Expected error on unknown JSON fields")
 		} else if !strings.Contains(err.Error(), "unknown field") {
 			t.Errorf("Expected unknown field error, got %v", err)
+		}
+	})
+
+	t.Run("MissingSignature", func(t *testing.T) {
+		eb := generateTestBundle(t, pub, signPriv, func(_ *BundleData, eb *EncryptedBundle, _ []byte) {
+			if eb != nil {
+				eb.Signature = ""
+				eb.SignatureAlgorithm = ""
+			}
+		})
+		rs := newMockReplayStore()
+		if _, err := ValidateBootstrapBundle(&eb, priv, signPub, "windows-test", rs); err == nil {
+			t.Errorf("Expected error on missing signature")
+		} else if !strings.Contains(err.Error(), "signature_algorithm") {
+			t.Errorf("Expected signature error, got: %v", err)
+		}
+	})
+
+	t.Run("CorruptedSignature", func(t *testing.T) {
+		eb := generateTestBundle(t, pub, signPriv, func(_ *BundleData, eb *EncryptedBundle, _ []byte) {
+			if eb != nil {
+				sig, _ := base64.StdEncoding.DecodeString(eb.Signature)
+				if len(sig) > 0 {
+					sig[0] ^= 0xff
+				}
+				eb.Signature = base64.StdEncoding.EncodeToString(sig)
+			}
+		})
+		rs := newMockReplayStore()
+		if _, err := ValidateBootstrapBundle(&eb, priv, signPub, "windows-test", rs); err == nil {
+			t.Errorf("Expected error on corrupted signature")
+		} else if !strings.Contains(err.Error(), "invalid signature") {
+			t.Errorf("Expected signature error, got: %v", err)
+		}
+	})
+
+	t.Run("WrongFedoraSigner", func(t *testing.T) {
+		eb := generateTestBundle(t, pub, wrongSignPriv, nil) // Signed by wrong private key
+		rs := newMockReplayStore()
+		if _, err := ValidateBootstrapBundle(&eb, priv, signPub, "windows-test", rs); err == nil {
+			t.Errorf("Expected error on wrong signer")
+		} else if !strings.Contains(err.Error(), "signer fingerprint mismatch") {
+			t.Errorf("Expected fingerprint mismatch error, got: %v", err)
+		}
+	})
+
+	t.Run("UnknownSigningAlgorithm", func(t *testing.T) {
+		eb := generateTestBundle(t, pub, signPriv, func(_ *BundleData, eb *EncryptedBundle, _ []byte) {
+			if eb != nil {
+				eb.SignatureAlgorithm = "rsa"
+			}
+		})
+		rs := newMockReplayStore()
+		if _, err := ValidateBootstrapBundle(&eb, priv, signPub, "windows-test", rs); err == nil {
+			t.Errorf("Expected error on unknown signing algorithm")
+		} else if !strings.Contains(err.Error(), "unknown or missing signature_algorithm") {
+			t.Errorf("Expected algorithm error, got: %v", err)
+		}
+	})
+
+	t.Run("ValidSignatureDifferentWindowsRecipient", func(t *testing.T) {
+		eb := generateTestBundle(t, pub, signPriv, nil)
+		rs := newMockReplayStore()
+		// Try to validate with `wrongPriv` (a different recipient)
+		if _, err := ValidateBootstrapBundle(&eb, wrongPriv, signPub, "windows-test", rs); err == nil {
+			t.Errorf("Expected error when using wrong recipient private key")
+		} else if !strings.Contains(err.Error(), "invalid signature") {
+			t.Errorf("Expected invalid signature error due to recipient fingerprint mismatch, got: %v", err)
 		}
 	})
 }
@@ -408,8 +528,13 @@ func TestBootstrapEncryptionConcurrent(t *testing.T) {
 	}
 	pub := &priv.PublicKey
 
+	signPub, signPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("Ed25519 GenerateKey failed: %v", err)
+	}
+
 	t.Run("Two simultaneous reservations cannot both succeed", func(t *testing.T) {
-		eb := generateTestBundle(t, pub, nil)
+		eb := generateTestBundle(t, pub, signPriv, nil)
 		rs := newMockReplayStore()
 
 		var wg sync.WaitGroup
@@ -420,7 +545,7 @@ func TestBootstrapEncryptionConcurrent(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				_, err := ValidateBootstrapBundle(&eb, priv, "windows-test", rs)
+				_, err := ValidateBootstrapBundle(&eb, priv, signPub, "windows-test", rs)
 				if err == nil {
 					mu.Lock()
 					successCount++
@@ -436,14 +561,14 @@ func TestBootstrapEncryptionConcurrent(t *testing.T) {
 	})
 
 	t.Run("Validation failure releases reservation", func(t *testing.T) {
-		eb := generateTestBundle(t, pub, func(bd *BundleData, eb *EncryptedBundle, _ []byte) {
+		eb := generateTestBundle(t, pub, signPriv, func(bd *BundleData, eb *EncryptedBundle, _ []byte) {
 			if bd != nil {
 				bd.AgentName = "malicious-agent" // Causes validation failure after reservation
 			}
 		})
 		rs := newMockReplayStore()
 
-		_, err := ValidateBootstrapBundle(&eb, priv, "windows-test", rs)
+		_, err := ValidateBootstrapBundle(&eb, priv, signPub, "windows-test", rs)
 		if err == nil {
 			t.Fatalf("Expected validation failure")
 		}
@@ -455,11 +580,11 @@ func TestBootstrapEncryptionConcurrent(t *testing.T) {
 	})
 
 	t.Run("Configuration failure can release and retry", func(t *testing.T) {
-		eb := generateTestBundle(t, pub, nil)
+		eb := generateTestBundle(t, pub, signPriv, nil)
 		rs := newMockReplayStore()
 
 		// 1. Initial Validation
-		_, err := ValidateBootstrapBundle(&eb, priv, "windows-test", rs)
+		_, err := ValidateBootstrapBundle(&eb, priv, signPub, "windows-test", rs)
 		if err != nil {
 			t.Fatalf("First validation failed: %v", err)
 		}
@@ -470,18 +595,18 @@ func TestBootstrapEncryptionConcurrent(t *testing.T) {
 		}
 
 		// 3. Retry Validation -> should succeed again
-		_, err = ValidateBootstrapBundle(&eb, priv, "windows-test", rs)
+		_, err = ValidateBootstrapBundle(&eb, priv, signPub, "windows-test", rs)
 		if err != nil {
 			t.Fatalf("Retry validation failed: %v", err)
 		}
 	})
 
 	t.Run("Successful completion permanently prevents reuse", func(t *testing.T) {
-		eb := generateTestBundle(t, pub, nil)
+		eb := generateTestBundle(t, pub, signPriv, nil)
 		rs := newMockReplayStore()
 
 		// 1. Initial Validation
-		_, err := ValidateBootstrapBundle(&eb, priv, "windows-test", rs)
+		_, err := ValidateBootstrapBundle(&eb, priv, signPub, "windows-test", rs)
 		if err != nil {
 			t.Fatalf("First validation failed: %v", err)
 		}
@@ -492,7 +617,7 @@ func TestBootstrapEncryptionConcurrent(t *testing.T) {
 		}
 
 		// 3. Reuse attempt -> should fail
-		_, err = ValidateBootstrapBundle(&eb, priv, "windows-test", rs)
+		_, err = ValidateBootstrapBundle(&eb, priv, signPub, "windows-test", rs)
 		if err == nil {
 			t.Fatalf("Expected failure on reuse after commit")
 		} else if !strings.Contains(err.Error(), "consumed") {

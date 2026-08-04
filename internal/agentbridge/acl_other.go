@@ -7,6 +7,10 @@ import (
 	"path/filepath"
 )
 
+func replaceFileAtomically(tempPath, destinationPath string) error {
+	return os.Rename(tempPath, destinationPath)
+}
+
 func writeSecureConfig(path string, b []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
@@ -22,9 +26,16 @@ func writeSecureConfig(path string, b []byte) error {
 		os.Remove(tempPath)
 		return err
 	}
-	f.Sync()
-	f.Close()
-	if err := os.Rename(tempPath, path); err != nil {
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tempPath)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tempPath)
+		return err
+	}
+	if err := replaceFileAtomically(tempPath, path); err != nil {
 		os.Remove(tempPath)
 		return err
 	}

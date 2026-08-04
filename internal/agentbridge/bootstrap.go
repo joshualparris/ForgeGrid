@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -28,11 +31,14 @@ type BundleData struct {
 }
 
 type EncryptedBundle struct {
-	SchemaVersion   string `json:"schema_version"`
-	BootstrapID     string `json:"bootstrap_id"`
-	EncryptedAESKey string `json:"encrypted_aes_key"`
-	Nonce           string `json:"nonce"`
-	Ciphertext      string `json:"ciphertext"`
+	SchemaVersion      string `json:"schema_version"`
+	BootstrapID        string `json:"bootstrap_id"`
+	EncryptedAESKey    string `json:"encrypted_aes_key"`
+	Nonce              string `json:"nonce"`
+	Ciphertext         string `json:"ciphertext"`
+	SignatureAlgorithm string `json:"signature_algorithm"`
+	SignerFingerprint  string `json:"signer_fingerprint"`
+	Signature          string `json:"signature"`
 }
 
 type ReplayStore interface {
@@ -45,7 +51,24 @@ func getAAD(schemaVersion, bootstrapID string) []byte {
 	return []byte(schemaVersion + "|" + bootstrapID)
 }
 
-func GenerateBootstrapBundle(pub *rsa.PublicKey, bd BundleData) (*EncryptedBundle, error) {
+func ConstructSignedPayload(eb *EncryptedBundle, agentName, recipientFingerprint string) []byte {
+	var buf bytes.Buffer
+	writeField := func(s string) {
+		length := uint32(len(s))
+		binary.Write(&buf, binary.BigEndian, length)
+		buf.WriteString(s)
+	}
+	writeField(eb.SchemaVersion)
+	writeField(eb.BootstrapID)
+	writeField(agentName)
+	writeField(recipientFingerprint)
+	writeField(eb.EncryptedAESKey)
+	writeField(eb.Nonce)
+	writeField(eb.Ciphertext)
+	return buf.Bytes()
+}
+
+func GenerateSignedBootstrapBundle(pub *rsa.PublicKey, signPriv ed25519.PrivateKey, bd BundleData) (*EncryptedBundle, error) {
 	pt, err := json.Marshal(bd)
 	if err != nil {
 		return nil, err
@@ -78,13 +101,29 @@ func GenerateBootstrapBundle(pub *rsa.PublicKey, bd BundleData) (*EncryptedBundl
 		return nil, err
 	}
 
-	return &EncryptedBundle{
+	eb := &EncryptedBundle{
 		SchemaVersion:   bd.SchemaVersion,
 		BootstrapID:     bd.BootstrapID,
 		EncryptedAESKey: base64.StdEncoding.EncodeToString(encKey),
 		Nonce:           base64.StdEncoding.EncodeToString(nonce),
 		Ciphertext:      base64.StdEncoding.EncodeToString(ct),
-	}, nil
+	}
+
+	pubBytes, _ := x509.MarshalPKIXPublicKey(pub)
+	pubHash := sha256.Sum256(pubBytes)
+	recipientFingerprint := hex.EncodeToString(pubHash[:])
+
+	payload := ConstructSignedPayload(eb, bd.AgentName, recipientFingerprint)
+	sig := ed25519.Sign(signPriv, payload)
+
+	signPub := signPriv.Public().(ed25519.PublicKey)
+	signPubHash := sha256.Sum256(signPub)
+
+	eb.SignatureAlgorithm = "ed25519"
+	eb.SignerFingerprint = hex.EncodeToString(signPubHash[:])
+	eb.Signature = base64.StdEncoding.EncodeToString(sig)
+
+	return eb, nil
 }
 
 func DecryptBootstrapBundle(eb *EncryptedBundle, priv *rsa.PrivateKey) (*BundleData, error) {
@@ -140,7 +179,7 @@ func DecryptBootstrapBundle(eb *EncryptedBundle, priv *rsa.PrivateKey) (*BundleD
 	return &bd, nil
 }
 
-func ValidateBootstrapBundle(eb *EncryptedBundle, priv *rsa.PrivateKey, expectedAgent string, rs ReplayStore) (bd *BundleData, err error) {
+func ValidateBootstrapBundle(eb *EncryptedBundle, priv *rsa.PrivateKey, expectedSignPub ed25519.PublicKey, expectedAgent string, rs ReplayStore) (bd *BundleData, err error) {
 	if eb == nil {
 		return nil, errors.New("nil bundle")
 	}
@@ -149,6 +188,33 @@ func ValidateBootstrapBundle(eb *EncryptedBundle, priv *rsa.PrivateKey, expected
 	}
 	if eb.SchemaVersion != "1" {
 		return nil, errors.New("invalid outer schema_version")
+	}
+
+	if eb.SignatureAlgorithm != "ed25519" {
+		return nil, errors.New("unknown or missing signature_algorithm")
+	}
+
+	expectedSignPubHash := sha256.Sum256(expectedSignPub)
+	expectedSignerFingerprint := hex.EncodeToString(expectedSignPubHash[:])
+	if eb.SignerFingerprint != expectedSignerFingerprint {
+		return nil, errors.New("signer fingerprint mismatch")
+	}
+
+	sigBytes, err := base64.StdEncoding.DecodeString(eb.Signature)
+	if err != nil {
+		return nil, errors.New("invalid signature encoding")
+	}
+
+	pubBytes, err := x509.MarshalPKIXPublicKey(&priv.PublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal recipient public key: %v", err)
+	}
+	pubHash := sha256.Sum256(pubBytes)
+	recipientFingerprint := hex.EncodeToString(pubHash[:])
+
+	payload := ConstructSignedPayload(eb, expectedAgent, recipientFingerprint)
+	if !ed25519.Verify(expectedSignPub, payload, sigBytes) {
+		return nil, errors.New("invalid signature")
 	}
 
 	if err := rs.Reserve(eb.BootstrapID); err != nil {

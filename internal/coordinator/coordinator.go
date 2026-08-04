@@ -17,8 +17,6 @@ type Coordinator struct {
 	IP          string
 	Insecure    bool
 	Fingerprint string
-	CertPath    string
-	KeyPath     string
 	Listener    net.Listener
 }
 

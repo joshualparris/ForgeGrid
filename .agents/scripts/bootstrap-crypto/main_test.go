@@ -2,7 +2,12 @@ package main
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"os"
 	"os/exec"
@@ -159,7 +164,7 @@ func TestReplayStore(t *testing.T) {
 		}
 
 		// valid JSON followed by whitespace only
-		if err := os.WriteFile(storePath, []byte(`{"id1":{"status":"reserved","time":"2023-01-01T00:00:00Z"}}   
+		if err := os.WriteFile(storePath, []byte(`{"id1":{"status":"reserved","time":"2023-01-01T00:00:00Z"}}
 		`), 0600); err != nil {
 			t.Fatalf("WriteFile failed: %v", err)
 		}
@@ -217,6 +222,18 @@ func TestInteroperabilityAndFailure(t *testing.T) {
 		t.Fatalf("generate failed: %v", err)
 	}
 
+	// Create signer keys
+	signPub, signPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("Ed25519 GenerateKey failed: %v", err)
+	}
+	signerPubPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: signPub})
+	signerPubPath := filepath.Join(tmpDir, "signer_pub.pem")
+	os.WriteFile(signerPubPath, signerPubPEM, 0644)
+	signerPrivPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: signPriv})
+	signerPrivPath := filepath.Join(tmpDir, "signer_priv.pem")
+	os.WriteFile(signerPrivPath, signerPrivPEM, 0600)
+
 	createBundle := func(pubPathArg string) string {
 		plainIn := filepath.Join(tmpDir, "plain.json")
 		b := agentbridge.BundleData{
@@ -239,7 +256,7 @@ func TestInteroperabilityAndFailure(t *testing.T) {
 
 		hybridOut := filepath.Join(tmpDir, "hybrid.json")
 		// Using the encrypt command which calls GenerateBootstrapBundle internally
-		cmd := exec.Command(binPath, "encrypt", pubPathArg, plainIn, hybridOut)
+		cmd := exec.Command(binPath, "encrypt", pubPathArg, plainIn, signerPrivPath, hybridOut)
 		if err := cmd.Run(); err != nil {
 			t.Fatalf("encrypt failed: %v", err)
 		}
@@ -260,8 +277,11 @@ func TestInteroperabilityAndFailure(t *testing.T) {
 			t.Fatalf("Unmarshal failed: %v", err)
 		}
 
-		cmd := exec.Command(binPath, "decrypt-and-apply", privPath, bundlePath, realForgeGridExe)
-		cmd.Env = append(os.Environ(), "LOCALAPPDATA="+localAppData)
+		signPubHash := sha256.Sum256(signPub)
+		expectedFingerprint := hex.EncodeToString(signPubHash[:])
+
+		cmd := exec.Command(binPath, "decrypt-and-apply", privPath, bundlePath, signerPubPath, expectedFingerprint, realForgeGridExe)
+		cmd.Env = append(os.Environ(), "LOCALAPPDATA="+localAppData, "XDG_CONFIG_HOME="+localAppData)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("decrypt-and-apply failed: %v\nOutput: %s", err, string(out))
@@ -304,12 +324,20 @@ func TestInteroperabilityAndFailure(t *testing.T) {
 			t.Fatalf("Unmarshal failed: %v", err)
 		}
 
+		signPubHash := sha256.Sum256(signPub)
+		expectedFingerprint := hex.EncodeToString(signPubHash[:])
+
 		// 1. The first apply attempt fails (simulate config failure)
-		cmd := exec.Command(binPath, "decrypt-and-apply", privPath, bundlePath, realForgeGridExe)
-		cmd.Env = append(os.Environ(), "LOCALAPPDATA="+localAppData, "MOCK_FAIL=1")
+		badForgeGridSrc := filepath.Join(tmpDir, "bad.go")
+		os.WriteFile(badForgeGridSrc, []byte("package main\nimport \"os\"\nfunc main() { os.Exit(1) }\n"), 0644)
+		badForgeGridExe := filepath.Join(tmpDir, "bad.exe")
+		exec.Command("go", "build", "-o", badForgeGridExe, badForgeGridSrc).Run()
+
+		cmd := exec.Command(binPath, "decrypt-and-apply", privPath, bundlePath, signerPubPath, expectedFingerprint, badForgeGridExe)
+		cmd.Env = append(os.Environ(), "LOCALAPPDATA="+localAppData, "XDG_CONFIG_HOME="+localAppData)
 		out, err := cmd.CombinedOutput()
 		if err == nil {
-			t.Fatalf("Expected failure due to MOCK_FAIL=1")
+			t.Fatalf("Expected failure due to bad forgegrid")
 		}
 		if bytes.Contains(out, []byte("secret-token")) {
 			t.Fatalf("Token leaked in output!")
@@ -338,8 +366,8 @@ func TestInteroperabilityAndFailure(t *testing.T) {
 			t.Fatalf("WriteFile failed: %v", err)
 		}
 
-		cmd2 := exec.Command(binPath, "decrypt-and-apply", privPath, bundlePath, realForgeGridExe)
-		cmd2.Env = append(os.Environ(), "LOCALAPPDATA="+localAppData)
+		cmd2 := exec.Command(binPath, "decrypt-and-apply", privPath, bundlePath, signerPubPath, expectedFingerprint, realForgeGridExe)
+		cmd2.Env = append(os.Environ(), "LOCALAPPDATA="+localAppData, "XDG_CONFIG_HOME="+localAppData)
 		out2, err := cmd2.CombinedOutput()
 		if err != nil {
 			t.Fatalf("Retry failed: %v\nOutput: %s", err, string(out2))
@@ -353,8 +381,8 @@ func TestInteroperabilityAndFailure(t *testing.T) {
 		if err := os.WriteFile(privPath, b, 0600); err != nil {
 			t.Fatalf("WriteFile failed: %v", err)
 		}
-		cmd3 := exec.Command(binPath, "decrypt-and-apply", privPath, bundlePath, realForgeGridExe)
-		cmd3.Env = append(os.Environ(), "LOCALAPPDATA="+localAppData)
+		cmd3 := exec.Command(binPath, "decrypt-and-apply", privPath, bundlePath, signerPubPath, expectedFingerprint, realForgeGridExe)
+		cmd3.Env = append(os.Environ(), "LOCALAPPDATA="+localAppData, "XDG_CONFIG_HOME="+localAppData)
 		out3, err := cmd3.CombinedOutput()
 		if err == nil {
 			t.Fatalf("Expected third attempt to fail as already consumed")

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -13,14 +14,32 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"forgegrid/internal/agentbridge"
 )
 
+func getConfigPath() string {
+	if runtime.GOOS == "windows" {
+		localAppData := os.Getenv("LOCALAPPDATA")
+		if localAppData == "" {
+			localAppData = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local")
+		}
+		return filepath.Join(localAppData, "ForgeGrid", "agentclient.json")
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config", "forgegrid", "agentclient.json")
+}
+
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: bootstrap-crypto <generate|encrypt|decrypt-and-apply|generate-protected|decrypt-protected-and-apply> [args...]")
+		fmt.Println("Usage:")
+		fmt.Println("  bootstrap-crypto generate <private-key-out> <public-key-out>")
+		fmt.Println("  bootstrap-crypto generate-protected <private-blob-out> <public-key-out>")
+		fmt.Println("  bootstrap-crypto encrypt <public-key-in> <json-in> <signer-private-key> <hybrid-out>")
+		fmt.Println("  bootstrap-crypto decrypt-and-apply <private-key-in> <hybrid-in> <signer-public-key> <expected-signer-fingerprint> <forgegrid-exe-path>")
+		fmt.Println("  bootstrap-crypto decrypt-protected-and-apply <private-blob-in> <hybrid-in> <signer-public-key> <expected-signer-fingerprint> <forgegrid-exe-path>")
 		os.Exit(1)
 	}
 	switch os.Args[1] {
@@ -31,11 +50,11 @@ func main() {
 		}
 		generateProtectedKeys(os.Args[2], os.Args[3])
 	case "decrypt-protected-and-apply":
-		if len(os.Args) != 5 {
-			fmt.Println("Usage: decrypt-protected-and-apply <priv_blob> <bundle> <forgegrid_exe>")
+		if len(os.Args) != 7 {
+			fmt.Println("Usage: decrypt-protected-and-apply <priv_blob> <bundle> <signer_pub_in> <expected_fingerprint> <forgegrid_exe>")
 			os.Exit(1)
 		}
-		if err := decryptProtectedAndApply(os.Args[2], os.Args[3], os.Args[4]); err != nil {
+		if err := decryptProtectedAndApply(os.Args[2], os.Args[3], os.Args[4], os.Args[5], os.Args[6]); err != nil {
 			fmt.Printf("Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -46,17 +65,17 @@ func main() {
 		}
 		generateKeys(os.Args[2], os.Args[3])
 	case "encrypt":
-		if len(os.Args) != 5 {
-			fmt.Println("Usage: encrypt <pub_in> <plain_json_in> <hybrid_out>")
+		if len(os.Args) != 6 {
+			fmt.Println("Usage: encrypt <pub_in> <plain_json_in> <signer_priv_in> <hybrid_out>")
 			os.Exit(1)
 		}
-		encryptBundle(os.Args[2], os.Args[3], os.Args[4])
+		encryptBundle(os.Args[2], os.Args[3], os.Args[4], os.Args[5])
 	case "decrypt-and-apply":
-		if len(os.Args) != 5 {
-			fmt.Println("Usage: decrypt-and-apply <priv_in> <bundle_in> <forgegrid_exe>")
+		if len(os.Args) != 7 {
+			fmt.Println("Usage: decrypt-and-apply <priv_in> <bundle_in> <signer_pub_in> <expected_fingerprint> <forgegrid_exe>")
 			os.Exit(1)
 		}
-		if err := decryptAndApply(os.Args[2], os.Args[3], os.Args[4]); err != nil {
+		if err := decryptAndApply(os.Args[2], os.Args[3], os.Args[4], os.Args[5], os.Args[6]); err != nil {
 			fmt.Printf("Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -150,7 +169,7 @@ func generateKeys(privPath, pubPath string) {
 	fmt.Printf("%x\n", hash)
 }
 
-func encryptBundle(pubPath, plainInPath, hybridOutPath string) {
+func encryptBundle(pubPath, plainInPath, signerPrivPath, hybridOutPath string) {
 	pubPEM, err := os.ReadFile(pubPath)
 	if err != nil {
 		fmt.Printf("Error reading public key: %v\n", err)
@@ -172,6 +191,22 @@ func encryptBundle(pubPath, plainInPath, hybridOutPath string) {
 		os.Exit(1)
 	}
 
+	signerPrivPEM, err := os.ReadFile(signerPrivPath)
+	if err != nil {
+		fmt.Printf("Error reading signer private key: %v\n", err)
+		os.Exit(1)
+	}
+	signerBlock, _ := pem.Decode(signerPrivPEM)
+	if signerBlock == nil {
+		fmt.Println("Failed to parse signer private PEM block")
+		os.Exit(1)
+	}
+	if len(signerBlock.Bytes) != ed25519.PrivateKeySize {
+		fmt.Println("Invalid Ed25519 private key size")
+		os.Exit(1)
+	}
+	signPriv := ed25519.PrivateKey(signerBlock.Bytes)
+
 	plaintext, err := os.ReadFile(plainInPath)
 	if err != nil {
 		fmt.Printf("Error reading plaintext: %v\n", err)
@@ -184,9 +219,9 @@ func encryptBundle(pubPath, plainInPath, hybridOutPath string) {
 		os.Exit(1)
 	}
 
-	eb, err := agentbridge.GenerateBootstrapBundle(pubKey, bd)
+	eb, err := agentbridge.GenerateSignedBootstrapBundle(pubKey, signPriv, bd)
 	if err != nil {
-		fmt.Printf("GenerateBootstrapBundle failed: %v\n", err)
+		fmt.Printf("GenerateSignedBootstrapBundle failed: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -325,7 +360,7 @@ func (w *WindowsReplayStore) Release(id string) error {
 	})
 }
 
-func decryptProtectedAndApply(privBlobPath, bundlePath, forgegridExe string) error {
+func decryptProtectedAndApply(privBlobPath, bundlePath, signerPubPath, expectedSignerFingerprint, forgegridExe string) error {
 	// 1. Unprotect and Decrypt
 	protectedBytes, err := os.ReadFile(privBlobPath)
 	if err != nil {
@@ -351,6 +386,19 @@ func decryptProtectedAndApply(privBlobPath, bundlePath, forgegridExe string) err
 		privPEM[i] = 0
 	}
 
+	signerPubPEM, err := os.ReadFile(signerPubPath)
+	if err != nil {
+		return fmt.Errorf("error reading signer public key: %w", err)
+	}
+	signerPubBlock, _ := pem.Decode(signerPubPEM)
+	if signerPubBlock == nil {
+		return fmt.Errorf("failed to parse signer public PEM block")
+	}
+	if len(signerPubBlock.Bytes) != ed25519.PublicKeySize {
+		return fmt.Errorf("invalid Ed25519 public key size")
+	}
+	signPub := ed25519.PublicKey(signerPubBlock.Bytes)
+
 	bundleBytes, err := os.ReadFile(bundlePath)
 	if err != nil {
 		return fmt.Errorf("error reading encrypted bundle: %w", err)
@@ -359,6 +407,10 @@ func decryptProtectedAndApply(privBlobPath, bundlePath, forgegridExe string) err
 	var eb agentbridge.EncryptedBundle
 	if err := json.Unmarshal(bundleBytes, &eb); err != nil {
 		return fmt.Errorf("error parsing encrypted bundle JSON: %w", err)
+	}
+
+	if eb.SignerFingerprint != expectedSignerFingerprint {
+		return fmt.Errorf("signer fingerprint mismatch")
 	}
 
 	localAppData := os.Getenv("LOCALAPPDATA")
@@ -375,7 +427,8 @@ func decryptProtectedAndApply(privBlobPath, bundlePath, forgegridExe string) err
 		LockFile: filepath.Join(bootstrapDir, "replay-state.lock"),
 	}
 
-	bd, err := agentbridge.ValidateBootstrapBundle(&eb, privKey, "windows-test", rs)
+	hostname, _ := os.Hostname()
+	bd, err := agentbridge.ValidateBootstrapBundle(&eb, privKey, signPub, hostname, rs)
 	if err != nil {
 		return fmt.Errorf("validation failed: %w", err)
 	}
@@ -417,7 +470,7 @@ func decryptProtectedAndApply(privBlobPath, bundlePath, forgegridExe string) err
 	}
 
 	// 6. Verify config exists and matches
-	configPath := filepath.Join(localAppData, "ForgeGrid", "agentclient.json")
+	configPath := getConfigPath()
 	cfgBytes, err := os.ReadFile(configPath)
 	if err != nil {
 		return fmt.Errorf("config file not created")
@@ -454,7 +507,7 @@ func decryptProtectedAndApply(privBlobPath, bundlePath, forgegridExe string) err
 	return nil
 }
 
-func decryptAndApply(privPath, bundlePath, forgegridExe string) error {
+func decryptAndApply(privPath, bundlePath, signerPubPath, expectedSignerFingerprint, forgegridExe string) error {
 	// 1. Decrypt
 	privPEM, err := os.ReadFile(privPath)
 	if err != nil {
@@ -468,6 +521,19 @@ func decryptAndApply(privPath, bundlePath, forgegridExe string) error {
 	if err != nil {
 		return fmt.Errorf("error parsing private key: %w", err)
 	}
+
+	signerPubPEM, err := os.ReadFile(signerPubPath)
+	if err != nil {
+		return fmt.Errorf("error reading signer public key: %w", err)
+	}
+	signerPubBlock, _ := pem.Decode(signerPubPEM)
+	if signerPubBlock == nil {
+		return fmt.Errorf("failed to parse signer public PEM block")
+	}
+	if len(signerPubBlock.Bytes) != ed25519.PublicKeySize {
+		return fmt.Errorf("invalid Ed25519 public key size")
+	}
+	signPub := ed25519.PublicKey(signerPubBlock.Bytes)
 
 	bundleBytes, err := os.ReadFile(bundlePath)
 	if err != nil {
@@ -493,7 +559,7 @@ func decryptAndApply(privPath, bundlePath, forgegridExe string) error {
 		LockFile: filepath.Join(bootstrapDir, "replay-state.lock"),
 	}
 
-	bd, err := agentbridge.ValidateBootstrapBundle(&eb, privKey, "windows-test", rs)
+	bd, err := agentbridge.ValidateBootstrapBundle(&eb, privKey, signPub, "windows-test", rs)
 	if err != nil {
 		return fmt.Errorf("validation failed: %w", err)
 	}
@@ -535,7 +601,7 @@ func decryptAndApply(privPath, bundlePath, forgegridExe string) error {
 	}
 
 	// 6. Verify config exists and matches
-	configPath := filepath.Join(localAppData, "ForgeGrid", "agentclient.json")
+	configPath := getConfigPath()
 	cfgBytes, err := os.ReadFile(configPath)
 	if err != nil {
 		return fmt.Errorf("config file not created")

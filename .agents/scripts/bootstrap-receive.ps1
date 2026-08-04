@@ -1,6 +1,12 @@
 param(
     [Parameter(Mandatory=$true)]
-    [string]$EncryptedBundlePath
+    [string]$EncryptedBundlePath,
+
+    [Parameter(Mandatory=$true)]
+    [string]$SignerPublicKeyPath,
+
+    [Parameter(Mandatory=$true)]
+    [string]$ExpectedSignerFingerprint
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,12 +24,17 @@ if (!(Test-Path $EncryptedBundlePath)) {
     exit 1
 }
 
+if (!(Test-Path $SignerPublicKeyPath)) {
+    Write-Error "Signer public key not found at $SignerPublicKeyPath"
+    exit 1
+}
+
 $cryptoDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $goUtil = Join-Path $cryptoDir "bootstrap-crypto\bootstrap-crypto.exe"
 $forgegridExe = Join-Path $cryptoDir "..\..\dist\ForgeGrid-USB\Windows\ForgeGrid.exe"
 
 Write-Host "Decrypting bundle and applying config using protected DPAPI blob..."
-$output = & $goUtil decrypt-protected-and-apply $privateKeyPath $EncryptedBundlePath $forgegridExe 2>&1
+$output = & $goUtil decrypt-protected-and-apply $privateKeyPath $EncryptedBundlePath $SignerPublicKeyPath $ExpectedSignerFingerprint $forgegridExe 2>&1
 
 $exitCode = $LASTEXITCODE
 
