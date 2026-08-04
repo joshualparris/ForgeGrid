@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"time"
+
+	"forgegrid/internal/network"
 )
 
 type Client struct {
@@ -17,9 +20,19 @@ type Client struct {
 	HTTPClient *http.Client
 }
 
-func NewClient(baseURL, agentName, token string, insecure bool) *Client {
+func NewClient(baseURL, agentName, token, fingerprint string, insecure bool) (*Client, error) {
+	var tlsConfig *tls.Config
+	if insecure {
+		log.Println("WARNING: AgentBridge client is running in INSECURE mode. TLS verification is completely disabled!")
+		tlsConfig = &tls.Config{InsecureSkipVerify: true}
+	} else if fingerprint != "" {
+		tlsConfig = network.PinTLSConfig(fingerprint)
+	} else {
+		return nil, fmt.Errorf("secure mode requires a TLS fingerprint")
+	}
+
 	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: insecure},
+		TLSClientConfig: tlsConfig,
 	}
 	return &Client{
 		BaseURL:   baseURL,
@@ -29,7 +42,7 @@ func NewClient(baseURL, agentName, token string, insecure bool) *Client {
 			Transport: transport,
 			Timeout:   10 * time.Second,
 		},
-	}
+	}, nil
 }
 
 func (c *Client) doReq(method, path string, body interface{}, out interface{}) error {
@@ -66,13 +79,14 @@ func (c *Client) doReq(method, path string, body interface{}, out interface{}) e
 	return nil
 }
 
-func (c *Client) SendMessage(recipient, taskID string, msgType MessageType, body string, ttl int) (*AgentMessage, error) {
+func (c *Client) SendMessage(recipient, taskID string, msgType MessageType, body string, ttl int, idempotencyKey string) (*AgentMessage, error) {
 	req := map[string]interface{}{
-		"recipient":   recipient,
-		"task_id":     taskID,
-		"type":        msgType,
-		"body":        body,
-		"ttl_seconds": ttl,
+		"recipient":       recipient,
+		"task_id":         taskID,
+		"type":            msgType,
+		"body":            body,
+		"ttl_seconds":     ttl,
+		"idempotency_key": idempotencyKey,
 	}
 	var out AgentMessage
 	if err := c.doReq(http.MethodPost, "/api/v1/agent-messages", req, &out); err != nil {

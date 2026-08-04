@@ -21,14 +21,14 @@ import (
 func TestIntegration(t *testing.T) {
 	ui.DisableBrowser = true
 	os.RemoveAll("./test-data")
-	
+
 	s, err := store.NewStore("./test-data")
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
-	
+
 	c := coordinator.New(s, false) // secure mode
-	
+
 	go func() {
 		err := c.Start("8443")
 		if err != nil {
@@ -71,7 +71,7 @@ func TestIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Pairing failed: %v", err)
 	}
-	
+
 	// Test 1: Initial pairing saves credentials
 	err = w1.LoadCreds()
 	if err != nil {
@@ -94,21 +94,21 @@ func TestIntegration(t *testing.T) {
 	if w1Restarted.WorkerID != w1.WorkerID {
 		t.Fatalf("Restarted worker loaded different ID: %s", w1Restarted.WorkerID)
 	}
-	
+
 	// Test 5: Incorrect saved token is rejected
 	wBadToken := worker.New("TestWorker-1", "./test-ws-1", false)
 	wBadToken.LoadCreds()
 	wBadToken.Token = "invalid-token"
 	wBadToken.Client = w1Restarted.Client // copy TLS client
 	// We can't easily capture the stdout of sendHeartbeat, but we can verify it doesn't stay online.
-	
+
 	// Test 6: Changed TLS fingerprint is rejected
 	wBadTLS := worker.New("TestWorker-1", "./test-ws-1", false)
 	wBadTLS.LoadCreds()
 	wBadTLS.Fingerprint = "bad-fingerprint"
-	wBadTLS.Client = nil // Force new client creation if needed
+	wBadTLS.Client = nil                     // Force new client creation if needed
 	wBadTLS.SetupClient(wBadTLS.Fingerprint) // Re-setup with bad fingerprint
-	
+
 	// We do a manual HTTP request using the bad TLS client to prove rejection
 	req, _ := http.NewRequest("GET", wBadTLS.CoordinatorURL+"/api/coordinator/status", nil)
 	_, err = wBadTLS.Client.Do(req)
@@ -119,7 +119,7 @@ func TestIntegration(t *testing.T) {
 	// 5. Authenticated worker heartbeat
 	w1Restarted.Start()
 	time.Sleep(2 * time.Second)
-	
+
 	// 6. Worker appearing online
 	resp, err = client.Get("https://127.0.0.1:8443/api/workers")
 	if err != nil {
@@ -128,22 +128,22 @@ func TestIntegration(t *testing.T) {
 	bodyBuf := new(bytes.Buffer)
 	bodyBuf.ReadFrom(resp.Body)
 	resp.Body.Close()
-	
+
 	bodyStr := bodyBuf.String()
 	if strings.Contains(bodyStr, "token_hash") || strings.Contains(bodyStr, "token") || strings.Contains(bodyStr, "credential") {
 		t.Fatalf("Worker API response leaks sensitive token info: %s", bodyStr)
 	}
-	
+
 	var workers []models.WorkerDTO
 	json.NewDecoder(bytes.NewReader(bodyBuf.Bytes())).Decode(&workers)
-	
+
 	if len(workers) != 1 || workers[0].Status != "online" {
 		t.Fatalf("Expected 1 online worker, got %d", len(workers))
 	}
 	if workers[0].TotalRAM == 0 || workers[0].OS == "" {
 		t.Fatalf("Expected hardware detection data, got zero values: %+v", workers[0])
 	}
-	
+
 	// 7. Test-job assignment
 	jobReq := map[string]string{"worker_id": w1Restarted.WorkerID}
 	b, _ := json.Marshal(jobReq)
@@ -154,34 +154,34 @@ func TestIntegration(t *testing.T) {
 	var jobRes models.Job
 	json.NewDecoder(resp.Body).Decode(&jobRes)
 	resp.Body.Close()
-	
+
 	if jobRes.Status != "pending" {
 		t.Fatalf("Expected job to be pending, got %s", jobRes.Status)
 	}
-	
+
 	// 8. Test-job completion & Challenge Verification
 	time.Sleep(3 * time.Second)
-	
+
 	resp, err = client.Get("https://127.0.0.1:8443/api/jobs/" + jobRes.ID)
 	if err != nil {
 		t.Fatalf("Failed to get job status: %v", err)
 	}
 	json.NewDecoder(resp.Body).Decode(&jobRes)
 	resp.Body.Close()
-	
+
 	if jobRes.Status != "completed" {
 		t.Fatalf("Expected job to be completed, got %s. Result: %s", jobRes.Status, jobRes.Result)
 	}
 	if jobRes.Result != "success" {
 		t.Fatalf("Expected challenge verification success, got %s", jobRes.Result)
 	}
-	
+
 	// 9. Restart persistence check
 	s2, _ := store.NewStore("./test-data")
 	if len(s2.Workers) != 1 {
 		t.Fatalf("Expected persistence to load 1 worker, got %d", len(s2.Workers))
 	}
-	
+
 	os.RemoveAll("./test-data")
 	os.RemoveAll("./test-ws-1")
 }

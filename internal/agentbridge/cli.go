@@ -10,6 +10,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
+	"time"
 
 	"forgegrid/internal/network"
 )
@@ -17,7 +19,7 @@ import (
 func RunCLI(args []string) {
 	if len(args) < 1 {
 		fmt.Println("Usage: forgegrid agent-bridge <command> [args...]")
-		fmt.Println("Commands: serve, register, send, inbox, ack, complete")
+		fmt.Println("Commands: serve, rotate-tls, register, configure-client, reset-client, send, inbox, ack, complete, fail")
 		os.Exit(1)
 	}
 
@@ -25,8 +27,14 @@ func RunCLI(args []string) {
 	switch cmd {
 	case "serve":
 		serveCmd(args[1:])
+	case "rotate-tls":
+		rotateTLSCmd(args[1:])
 	case "register":
 		registerCmd(args[1:])
+	case "configure-client":
+		configureClientCmd(args[1:])
+	case "reset-client":
+		resetClientCmd(args[1:])
 	case "send":
 		sendCmd(args[1:])
 	case "inbox":
@@ -35,10 +43,42 @@ func RunCLI(args []string) {
 		ackCmd(args[1:])
 	case "complete":
 		completeCmd(args[1:])
+	case "fail":
+		failCmd(args[1:])
 	default:
 		fmt.Printf("Unknown command: %s\n", cmd)
 		os.Exit(1)
 	}
+}
+
+func getTLSKeys(dataDir string) (certPath, keyPath, fingerprint string, err error) {
+	certPath = filepath.Join(dataDir, "cert.pem")
+	keyPath = filepath.Join(dataDir, "key.pem")
+
+	certBytes, errCert := os.ReadFile(certPath)
+	_, errKey := os.ReadFile(keyPath)
+
+	if errCert == nil && errKey == nil {
+		// Existing keys
+		fp, err := network.FingerprintFromPEM(certBytes)
+		if err != nil {
+			return "", "", "", fmt.Errorf("corrupt cert.pem: %v", err)
+		}
+		return certPath, keyPath, fp, nil
+	}
+
+	// Generate new keys
+	certPEM, keyPEM, fp, err := network.GenerateSelfSignedCert()
+	if err != nil {
+		return "", "", "", err
+	}
+	if err := os.WriteFile(certPath, certPEM, 0600); err != nil {
+		return "", "", "", err
+	}
+	if err := os.WriteFile(keyPath, keyPEM, 0600); err != nil {
+		return "", "", "", err
+	}
+	return certPath, keyPath, fp, nil
 }
 
 func serveCmd(args []string) {
@@ -53,28 +93,53 @@ func serveCmd(args []string) {
 	}
 
 	server := NewServer(store)
+
+	// Server settings for hardening
+	srv := &http.Server{
+		Addr:           ":" + *port,
+		Handler:        http.MaxBytesHandler(http.DefaultServeMux, 1024*1024),
+		ReadTimeout:    10 * time.Second,
+		WriteTimeout:   10 * time.Second,
+		MaxHeaderBytes: 1 << 20,
+	}
+
 	mux := http.NewServeMux()
 	server.RegisterRoutes(mux)
+	srv.Handler = mux
 
-	addr := ":" + *port
-	log.Printf("Starting AgentBridge relay on %s", addr)
+	log.Printf("Starting AgentBridge relay on %s", srv.Addr)
 
 	if *insecure {
-		log.Fatal(http.ListenAndServe(addr, mux))
+		log.Fatal(srv.ListenAndServe())
 	} else {
-		certPEM, keyPEM, fp, err := network.GenerateSelfSignedCert()
+		certPath, keyPath, fp, err := getTLSKeys(store.dataDir)
 		if err != nil {
 			log.Fatalf("TLS error: %v", err)
 		}
-		
-		certPath := store.dataDir + "/cert.pem"
-		keyPath := store.dataDir + "/key.pem"
-		os.WriteFile(certPath, certPEM, 0600)
-		os.WriteFile(keyPath, keyPEM, 0600)
-		
 		log.Printf("TLS Fingerprint: %s", fp)
-		log.Fatal(http.ListenAndServeTLS(addr, certPath, keyPath, mux))
+		log.Fatal(srv.ListenAndServeTLS(certPath, keyPath))
 	}
+}
+
+func rotateTLSCmd(args []string) {
+	fmt.Println("WARNING: Rotating TLS certificates will break all existing client connections.")
+	fmt.Println("All clients must be reconfigured with the new fingerprint.")
+
+	store, err := NewStore()
+	if err != nil {
+		log.Fatalf("Store error: %v", err)
+	}
+
+	certPath := filepath.Join(store.dataDir, "cert.pem")
+	keyPath := filepath.Join(store.dataDir, "key.pem")
+	os.Remove(certPath)
+	os.Remove(keyPath)
+
+	_, _, fp, err := getTLSKeys(store.dataDir)
+	if err != nil {
+		log.Fatalf("Failed to generate new TLS keys: %v", err)
+	}
+	fmt.Printf("Successfully rotated TLS certificates. New fingerprint: %s\n", fp)
 }
 
 func registerCmd(args []string) {
@@ -94,7 +159,7 @@ func registerCmd(args []string) {
 	b := make([]byte, 32)
 	rand.Read(b)
 	secret := hex.EncodeToString(b)
-	
+
 	hash := sha256.Sum256([]byte(secret))
 	hashStr := hex.EncodeToString(hash[:])
 
@@ -107,22 +172,102 @@ func registerCmd(args []string) {
 	fmt.Println("SAVE THIS TOKEN SECURELY. IT WILL NOT BE SHOWN AGAIN.")
 }
 
+type ClientConfig struct {
+	Name        string `json:"name"`
+	Token       string `json:"token"`
+	URL         string `json:"url"`
+	Fingerprint string `json:"fingerprint"`
+}
+
+func getConfigPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config", "forgegrid", "agentclient.json")
+}
+
+func configureClientCmd(args []string) {
+	fs := flag.NewFlagSet("configure-client", flag.ExitOnError)
+	name := fs.String("name", "", "Agent name")
+	token := fs.String("token", "", "Agent token")
+	url := fs.String("url", "https://127.0.0.1:9090", "Relay URL")
+	fp := fs.String("fingerprint", "", "TLS Fingerprint")
+	fs.Parse(args)
+
+	if *name == "" || *token == "" || *fp == "" {
+		log.Fatal("--name, --token, and --fingerprint are required")
+	}
+
+	cfg := ClientConfig{
+		Name:        *name,
+		Token:       *token,
+		URL:         *url,
+		Fingerprint: *fp,
+	}
+
+	path := getConfigPath()
+	os.MkdirAll(filepath.Dir(path), 0700)
+
+	b, _ := json.Marshal(cfg)
+	if err := os.WriteFile(path, b, 0600); err != nil {
+		log.Fatalf("Failed to save config: %v", err)
+	}
+	fmt.Println("Client configured successfully.")
+}
+
+func resetClientCmd(args []string) {
+	os.Remove(getConfigPath())
+	fmt.Println("Client configuration reset.")
+}
+
 func getClient(fs *flag.FlagSet) *Client {
 	url := fs.String("url", "https://127.0.0.1:9090", "Relay URL")
 	name := fs.String("name", "", "Agent name")
 	token := fs.String("token", "", "Agent token")
+	fp := fs.String("fingerprint", "", "TLS fingerprint")
 	insecure := fs.Bool("insecure", false, "Disable TLS verification")
-	fs.Parse(os.Args[3:]) // adjust based on flags position
+	fs.Parse(os.Args[3:])
 
+	// Try loading from config if values not provided via flags
 	if *name == "" || *token == "" {
-		// Try environment variables
-		*name = os.Getenv("AGENT_NAME")
-		*token = os.Getenv("AGENT_TOKEN")
-		if *name == "" || *token == "" {
-			log.Fatal("Agent name and token are required")
+		b, err := os.ReadFile(getConfigPath())
+		if err == nil {
+			var cfg ClientConfig
+			if json.Unmarshal(b, &cfg) == nil {
+				if *url == "https://127.0.0.1:9090" {
+					*url = cfg.URL
+				}
+				if *name == "" {
+					*name = cfg.Name
+				}
+				if *token == "" {
+					*token = cfg.Token
+				}
+				if *fp == "" {
+					*fp = cfg.Fingerprint
+				}
+			}
 		}
 	}
-	return NewClient(*url, *name, *token, *insecure)
+
+	// Try env vars
+	if *name == "" {
+		*name = os.Getenv("AGENT_NAME")
+	}
+	if *token == "" {
+		*token = os.Getenv("AGENT_TOKEN")
+	}
+	if *fp == "" {
+		*fp = os.Getenv("AGENT_FINGERPRINT")
+	}
+
+	if *name == "" || *token == "" {
+		log.Fatal("Agent name and token are required (via flags, env, or configure-client)")
+	}
+
+	client, err := NewClient(*url, *name, *token, *fp, *insecure)
+	if err != nil {
+		log.Fatalf("Client error: %v", err)
+	}
+	return client
 }
 
 func sendCmd(args []string) {
@@ -131,13 +276,14 @@ func sendCmd(args []string) {
 	task := fs.String("task", "", "Task ID")
 	msgType := fs.String("type", string(TypeInstruction), "Message type")
 	body := fs.String("message", "", "Message body")
+	idem := fs.String("idempotency-key", "", "Idempotency key")
 	client := getClient(fs)
 
 	if *to == "" || *body == "" {
 		log.Fatal("--to and --message required")
 	}
 
-	msg, err := client.SendMessage(*to, *task, MessageType(*msgType), *body, 3600)
+	msg, err := client.SendMessage(*to, *task, MessageType(*msgType), *body, 3600, *idem)
 	if err != nil {
 		log.Fatalf("Send error: %v", err)
 	}
@@ -152,7 +298,7 @@ func inboxCmd(args []string) {
 	if err != nil {
 		log.Fatalf("Inbox error: %v", err)
 	}
-	
+
 	b, _ := json.MarshalIndent(msgs, "", "  ")
 	fmt.Println(string(b))
 }
@@ -199,4 +345,32 @@ func completeCmd(args []string) {
 		log.Fatalf("Complete error: %v", err)
 	}
 	fmt.Printf("Message %s completed.\n", msg.ID)
+}
+
+func failCmd(args []string) {
+	fs := flag.NewFlagSet("fail", flag.ExitOnError)
+	id := fs.String("message-id", "", "Message ID")
+	resFile := fs.String("result-file", "", "Result JSON file")
+	client := getClient(fs)
+
+	if *id == "" {
+		log.Fatal("--message-id required")
+	}
+
+	var res json.RawMessage
+	if *resFile != "" {
+		b, err := os.ReadFile(*resFile)
+		if err != nil {
+			log.Fatalf("Read error: %v", err)
+		}
+		res = json.RawMessage(b)
+	} else {
+		res = json.RawMessage(`{"status":"failed"}`)
+	}
+
+	msg, err := client.Fail(*id, res)
+	if err != nil {
+		log.Fatalf("Fail error: %v", err)
+	}
+	fmt.Printf("Message %s failed.\n", msg.ID)
 }

@@ -166,7 +166,7 @@ func (w *Worker) getHardwareInfo() (models.WorkerDTO, error) {
 func (w *Worker) Pair(ip, code, fingerprint string) error {
 	w.Fingerprint = fingerprint
 	w.SetupClient(fingerprint)
-	
+
 	scheme := "https"
 	if w.Insecure {
 		scheme = "http"
@@ -175,9 +175,9 @@ func (w *Worker) Pair(ip, code, fingerprint string) error {
 		ip = ip + ":8080"
 	}
 	w.CoordinatorURL = fmt.Sprintf("%s://%s", scheme, ip)
-	
+
 	hw, _ := w.getHardwareInfo()
-	
+
 	reqBody := map[string]interface{}{
 		"code":                code,
 		"node_name":           hw.NodeName,
@@ -192,19 +192,19 @@ func (w *Worker) Pair(ip, code, fingerprint string) error {
 		"free_workspace_disk": hw.FreeWorkspaceDisk,
 	}
 	body, _ := json.Marshal(reqBody)
-	
+
 	resp, err := w.Client.Post(w.CoordinatorURL+"/api/workers/pair", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != http.StatusOK {
 		var errRes models.ErrorResponse
 		json.NewDecoder(resp.Body).Decode(&errRes)
 		return fmt.Errorf("pairing failed: %s - %s", errRes.Code, errRes.Message)
 	}
-	
+
 	var res struct {
 		WorkerID string `json:"worker_id"`
 		Token    string `json:"token"`
@@ -212,10 +212,10 @@ func (w *Worker) Pair(ip, code, fingerprint string) error {
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
 		return err
 	}
-	
+
 	w.WorkerID = res.WorkerID
 	w.Token = res.Token
-	
+
 	// Save credentials securely
 	creds := WorkerCredentials{
 		WorkerID:       w.WorkerID,
@@ -225,7 +225,7 @@ func (w *Worker) Pair(ip, code, fingerprint string) error {
 		NodeName:       w.NodeName,
 		Insecure:       w.Insecure,
 	}
-	
+
 	path := getWorkerCredsPath()
 	os.MkdirAll(filepath.Dir(path), 0700)
 	b, _ := json.MarshalIndent(creds, "", "  ")
@@ -266,25 +266,25 @@ func (w *Worker) sendHeartbeat() {
 			free = d.Free
 		}
 	}
-	
+
 	reqBody := map[string]interface{}{
 		"worker_id":           w.WorkerID,
 		"available_ram":       avail,
 		"free_workspace_disk": free,
 	}
 	body, _ := json.Marshal(reqBody)
-	
+
 	req, _ := http.NewRequest("POST", w.CoordinatorURL+"/api/workers/heartbeat", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+w.Token)
-	
+
 	resp, err := w.Client.Do(req)
 	if err != nil {
 		fmt.Println("Heartbeat failed:", err)
 		return
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode == http.StatusUnauthorized {
 		fmt.Println("Authentication rejected by coordinator. Your credentials may have been revoked or the coordinator was reset.")
 		fmt.Println("Please run ForgeGrid with --reset-worker to clear saved credentials and pair again.")
@@ -302,22 +302,22 @@ func (w *Worker) jobLoop() {
 func (w *Worker) pollJobs() {
 	req, _ := http.NewRequest("GET", fmt.Sprintf("%s/api/jobs?worker_id=%s", w.CoordinatorURL, w.WorkerID), nil)
 	req.Header.Set("Authorization", "Bearer "+w.Token)
-	
+
 	resp, err := w.Client.Do(req)
 	if err != nil {
 		return
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != http.StatusOK {
 		return
 	}
-	
+
 	var jobs []models.Job
 	if err := json.NewDecoder(resp.Body).Decode(&jobs); err != nil {
 		return
 	}
-	
+
 	for _, job := range jobs {
 		w.executeJob(job)
 	}
@@ -341,25 +341,25 @@ func (w *Worker) updateJobStatus(jobID, status, result string, logs []string) {
 
 func (w *Worker) executeJob(job models.Job) {
 	fmt.Println("Starting job:", job.ID)
-	
+
 	hw, _ := w.getHardwareInfo()
-	
+
 	w.updateJobStatus(job.ID, "running", "", []string{
 		fmt.Sprintf("Job started on %s (ID: %s)", w.NodeName, w.WorkerID),
 		fmt.Sprintf("OS: %s | CPU: %s", hw.OS, hw.CPUModel),
 		fmt.Sprintf("PID: %d", os.Getpid()),
 	})
-	
+
 	if job.Task == "test" {
 		logs := []string{
 			fmt.Sprintf("Received challenge: %s", job.Challenge),
 		}
-		
+
 		h := sha256.Sum256([]byte(job.Challenge))
 		result := hex.EncodeToString(h[:])
-		
+
 		logs = append(logs, fmt.Sprintf("Calculated SHA-256: %s", result))
-		
+
 		w.updateJobStatus(job.ID, "completed", result, logs)
 	} else {
 		w.updateJobStatus(job.ID, "failed", "unknown task", []string{"Unsupported task type"})

@@ -13,7 +13,7 @@ func TestWorkerCredentials(t *testing.T) {
 	os.Setenv("XDG_DATA_HOME", tmpDir)
 	os.Setenv("LOCALAPPDATA", tmpDir)
 	os.Setenv("APPDATA", tmpDir)
-	
+
 	// Ensure reset handles cleanly when missing
 	err := ResetCredentials()
 	if err != nil {
@@ -25,7 +25,7 @@ func TestWorkerCredentials(t *testing.T) {
 	w1.Token = "token-abc"
 	w1.CoordinatorURL = "http://127.0.0.1:8080"
 	w1.Fingerprint = "fp-xxx"
-	
+
 	creds := WorkerCredentials{
 		WorkerID:       w1.WorkerID,
 		Token:          w1.Token,
@@ -46,7 +46,7 @@ func TestWorkerCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to load credentials: %v", err)
 	}
-	
+
 	// Test 3: Restart reconnects with same ID
 	if w2.WorkerID != w1.WorkerID {
 		t.Fatalf("Expected WorkerID %s, got %s", w1.WorkerID, w2.WorkerID)
@@ -54,13 +54,13 @@ func TestWorkerCredentials(t *testing.T) {
 	if w2.Token != w1.Token {
 		t.Fatalf("Expected Token %s, got %s", w1.Token, w2.Token)
 	}
-	
+
 	// Test 7: Reset removes credentials
 	err = ResetCredentials()
 	if err != nil {
 		t.Fatalf("Failed to reset credentials: %v", err)
 	}
-	
+
 	err = w2.LoadCreds()
 	if err == nil {
 		t.Fatalf("Expected LoadCreds to fail after reset, but it succeeded")
@@ -73,7 +73,7 @@ func TestHardwareDetection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Hardware detection failed: %v", err)
 	}
-	
+
 	// Test 8: Disk detection returns non-zero
 	if info.FreeWorkspaceDisk == 0 {
 		t.Fatalf("FreeWorkspaceDisk reported 0. Workspace: %s", w.Workspace)

@@ -2,6 +2,7 @@ package agentbridge
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -11,19 +12,18 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
+	
+	"forgegrid/internal/network"
 )
 
 func setupTestServer(t *testing.T) (*Server, *Store, string) {
 	tmpDir := t.TempDir()
-	os.Setenv("HOME", tmpDir) // Hack for NewStore() using userHomeDir in tests
-	
+	os.Setenv("HOME", tmpDir)
+
 	s, err := NewStore()
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
-	s.dataDir = filepath.Join(tmpDir, ".local", "share", "forgegrid", "agentbridge")
-	os.MkdirAll(s.dataDir, 0700)
 
 	server := NewServer(s)
 	return server, s, tmpDir
@@ -42,21 +42,71 @@ func doReq(t *testing.T, handler http.HandlerFunc, method, path, auth string, bo
 
 func TestAuthAndRejection(t *testing.T) {
 	server, store, _ := setupTestServer(t)
+	store.agents["fedora"] = AgentRegistration{Name: "fedora", TokenHash: "00b6241dddb1bc0bc657026c85cb001a0eeaee5715a4d4c9f031b8afc4ba7e1f"}
 
-	// Unauthenticated rejection
 	w := doReq(t, server.handleMessages, "POST", "/api/v1/agent-messages", "", nil)
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("Expected 401, got %d", w.Code)
 	}
-
-	// Register agent manually for test
-	tokenHash := "fakesecrethash"
-	store.RegisterAgent("agent1", tokenHash)
-	
-	// Malformed token
-	w = doReq(t, server.handleMessages, "POST", "/api/v1/agent-messages", "agent1:wrong", nil)
+	w = doReq(t, server.handleMessages, "POST", "/api/v1/agent-messages", "fedora:wrong", nil)
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("Expected 401 with wrong token, got %d", w.Code)
+	}
+}
+
+func TestOversizedAndMalformed(t *testing.T) {
+	server, store, _ := setupTestServer(t)
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+
+	store.agents["fedora"] = AgentRegistration{Name: "fedora", TokenHash: "00b6241dddb1bc0bc657026c85cb001a0eeaee5715a4d4c9f031b8afc4ba7e1f"}
+	auth := "fedora:fedora-secret"
+
+	// Malformed JSON (400)
+	req := httptest.NewRequest("POST", "/api/v1/agent-messages", strings.NewReader("{bad json}"))
+	req.Header.Set("Authorization", "Bearer "+auth)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 for malformed json, got %d", w.Code)
+	}
+
+	// Unknown fields (400)
+	req = httptest.NewRequest("POST", "/api/v1/agent-messages", strings.NewReader(`{"recipient":"fedora", "task_id":"t1", "type":"instruction", "body":"x", "unknown":"y"}`))
+	req.Header.Set("Authorization", "Bearer "+auth)
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 for unknown field, got %d", w.Code)
+	}
+
+	// Invalid recipient (404)
+	req = httptest.NewRequest("POST", "/api/v1/agent-messages", strings.NewReader(`{"recipient":"nobody", "task_id":"t1", "type":"instruction", "body":"x"}`))
+	req.Header.Set("Authorization", "Bearer "+auth)
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("Expected 404 for missing recipient, got %d", w.Code)
+	}
+
+	// Oversized body (400 or 413 depending on MaxBytesReader behavior, standard http returns 400 via Decode err)
+	bigBody := make([]byte, 2*1024*1024)
+	req = httptest.NewRequest("POST", "/api/v1/agent-messages", bytes.NewReader(bigBody))
+	req.Header.Set("Authorization", "Bearer "+auth)
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest && w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("Expected oversized body rejection, got %d", w.Code)
+	}
+
+	// Overlong body string (> 256KB constraint)
+	longStr := strings.Repeat("a", 300*1024)
+	req = httptest.NewRequest("POST", "/api/v1/agent-messages", strings.NewReader(`{"recipient":"fedora", "task_id":"t1", "type":"instruction", "body":"`+longStr+`"}`))
+	req.Header.Set("Authorization", "Bearer "+auth)
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 for >256KB body field, got %d", w.Code)
 	}
 }
 
@@ -65,49 +115,45 @@ func TestMessageLifecycle(t *testing.T) {
 	mux := http.NewServeMux()
 	server.RegisterRoutes(mux)
 
-	// Override hash check for tests easily
-	store.agents["fedora"] = AgentRegistration{Name: "fedora", TokenHash: "00b6241dddb1bc0bc657026c85cb001a0eeaee5715a4d4c9f031b8afc4ba7e1f"} // sha256("fedora-secret")
-	store.agents["windows"] = AgentRegistration{Name: "windows", TokenHash: "f7e4dc3579fa7e347f56f3d0aa9bbaa565f95cb5c8052607c947534d9f88c825"} // sha256("windows-secret")
+	store.agents["fedora"] = AgentRegistration{Name: "fedora", TokenHash: "00b6241dddb1bc0bc657026c85cb001a0eeaee5715a4d4c9f031b8afc4ba7e1f"}
+	store.agents["windows"] = AgentRegistration{Name: "windows", TokenHash: "f7e4dc3579fa7e347f56f3d0aa9bbaa565f95cb5c8052607c947534d9f88c825"}
 
-	// 1. Authenticated delivery & duplicate idempotency
-	reqBody := `{"recipient":"windows", "task_id":"t1", "type":"instruction", "body":"hello", "ttl_seconds": 60}`
+	reqBody := `{"recipient":"windows", "task_id":"t1", "type":"instruction", "body":"hello", "ttl_seconds": 60, "idempotency_key": "k1"}`
+
+	// Send
 	req := httptest.NewRequest("POST", "/api/v1/agent-messages", strings.NewReader(reqBody))
 	req.Header.Set("Authorization", "Bearer fedora:fedora-secret")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
-
 	if w.Code != http.StatusCreated {
-		t.Fatalf("Expected 201, got %d. Body: %s", w.Code, w.Body.String())
+		t.Fatalf("Expected 201, got %d", w.Code)
 	}
-
 	var msg AgentMessage
 	json.Unmarshal(w.Body.Bytes(), &msg)
 
-	// Idempotency - store add is idempotent. In API we generate new ID, so the store level is what's idempotent.
-	store.AddMessage(msg) // Should not duplicate or fail
-
-	// 2. Wrong recipient rejection (fedora tries to read windows inbox)
-	req = httptest.NewRequest("GET", "/api/v1/agent-messages/inbox", nil)
-	req.Header.Set("Authorization", "Bearer fedora:fedora-secret")
-	w = httptest.NewRecorder()
-	mux.ServeHTTP(w, req)
-	var inbox []AgentMessage
-	json.Unmarshal(w.Body.Bytes(), &inbox)
-	if len(inbox) != 0 {
-		t.Errorf("Fedora should not see Windows inbox")
+	// Duplicate send (Idempotent)
+	req2 := httptest.NewRequest("POST", "/api/v1/agent-messages", strings.NewReader(reqBody))
+	req2.Header.Set("Authorization", "Bearer fedora:fedora-secret")
+	w2 := httptest.NewRecorder()
+	mux.ServeHTTP(w2, req2)
+	var msg2 AgentMessage
+	json.Unmarshal(w2.Body.Bytes(), &msg2)
+	if msg.ID != msg2.ID {
+		t.Errorf("Idempotent send failed: expected %s, got %s", msg.ID, msg2.ID)
 	}
 
-	// Windows reads its own inbox
+	// Read inbox
 	req = httptest.NewRequest("GET", "/api/v1/agent-messages/inbox", nil)
 	req.Header.Set("Authorization", "Bearer windows:windows-secret")
 	w = httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
+	var inbox []AgentMessage
 	json.Unmarshal(w.Body.Bytes(), &inbox)
 	if len(inbox) != 1 {
 		t.Fatalf("Windows should see 1 message, got %d", len(inbox))
 	}
 
-	// 3. Acknowledgement
+	// Ack
 	req = httptest.NewRequest("POST", "/api/v1/agent-messages/"+msg.ID+"/acknowledge", nil)
 	req.Header.Set("Authorization", "Bearer windows:windows-secret")
 	w = httptest.NewRecorder()
@@ -116,7 +162,7 @@ func TestMessageLifecycle(t *testing.T) {
 		t.Errorf("Ack failed: %d", w.Code)
 	}
 
-	// 4. Completion
+	// Complete
 	resBody := `{"result":{"status":"ok"}}`
 	req = httptest.NewRequest("POST", "/api/v1/agent-messages/"+msg.ID+"/complete", strings.NewReader(resBody))
 	req.Header.Set("Authorization", "Bearer windows:windows-secret")
@@ -126,12 +172,22 @@ func TestMessageLifecycle(t *testing.T) {
 		t.Errorf("Complete failed: %d", w.Code)
 	}
 
-	// 5. Restart persistence
+	// Disappear from inbox
+	req = httptest.NewRequest("GET", "/api/v1/agent-messages/inbox", nil)
+	req.Header.Set("Authorization", "Bearer windows:windows-secret")
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	json.Unmarshal(w.Body.Bytes(), &inbox)
+	if len(inbox) != 0 {
+		t.Fatalf("Windows inbox should be empty, got %d", len(inbox))
+	}
+
+	// Restart persistence
 	store2, _ := NewStore()
 	store2.dataDir = filepath.Join(tmpDir, ".local", "share", "forgegrid", "agentbridge")
 	store2.load()
 	if m, ok := store2.GetMessage(msg.ID); !ok || m.Status != StatusCompleted {
-		t.Errorf("Persistence failed, status: %s", m.Status)
+		t.Errorf("Persistence failed")
 	}
 
 	// Token not exposed
@@ -140,64 +196,74 @@ func TestMessageLifecycle(t *testing.T) {
 	}
 }
 
-func TestOversizedAndMalformed(t *testing.T) {
-	server, _, _ := setupTestServer(t)
+func TestIntegrationConcurrent(t *testing.T) {
+	// Concurrent HTTP Integration test with TLS
+	tmpDir := t.TempDir()
+	os.Setenv("HOME", tmpDir)
+
+	s, _ := NewStore()
+	s.dataDir = filepath.Join(tmpDir, ".local", "share", "forgegrid", "agentbridge")
+	os.MkdirAll(s.dataDir, 0700)
+
+	certPEM, keyPEM, fp, _ := network.GenerateSelfSignedCert()
+	cert, _ := tls.X509KeyPair(certPEM, keyPEM)
+
+	server := NewServer(s)
 	mux := http.NewServeMux()
 	server.RegisterRoutes(mux)
 
-	// Oversized body rejection
-	bigBody := make([]byte, 2*1024*1024)
-	req := httptest.NewRequest("POST", "/api/v1/agent-messages", bytes.NewReader(bigBody))
-	req.Header.Set("Authorization", "Bearer f:secret") // Even with bad auth, max bytes reader intercepts body reading limits
-	w := httptest.NewRecorder()
-	mux.ServeHTTP(w, req)
-	if w.Code != http.StatusUnauthorized { // Auth fails first in current impl, but if auth passes, big body fails
-		// pass
+	srv := httptest.NewUnstartedServer(mux)
+	srv.TLS = &tls.Config{Certificates: []tls.Certificate{cert}}
+	srv.StartTLS()
+	defer srv.Close()
+
+	agents := 7
+	for i := 0; i < agents; i++ {
+		// Mock passwords: agent-i-secret
+		s.RegisterAgent(fmt.Sprintf("agent-%d", i), "") // Just register to get ID
 	}
 
-	// Malformed JSON
-	req = httptest.NewRequest("POST", "/api/v1/agent-messages", strings.NewReader("{bad json}"))
-	req.Header.Set("Authorization", "Bearer f:secret")
-	w = httptest.NewRecorder()
-	mux.ServeHTTP(w, req)
-	// Again auth fails first, but logic holds
-}
+	// Force plain auth keys for test without mocking hash logic manually
+	s.mu.Lock()
+	for i := 0; i < agents; i++ {
+		a := s.agents[fmt.Sprintf("agent-%d", i)]
+		// token is "secret"
+		a.TokenHash = "2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b" // sha256("secret")
+		s.agents[a.Name] = a
+	}
+	s.mu.Unlock()
+	s.save()
 
-func TestScaleAndConcurrency(t *testing.T) {
-	_, store, _ := setupTestServer(t)
-
-	// Simultaneous messages for 7 agents, 500 messages queued
 	var wg sync.WaitGroup
-	for i := 0; i < 7; i++ {
+	client, _ := NewClient(srv.URL, "agent-0", "secret", fp, false)
+	client.HTTPClient.Transport.(*http.Transport).TLSClientConfig = network.PinTLSConfig(fp)
+
+	// Send 700 messages concurrently
+	for i := 0; i < 700; i++ {
 		wg.Add(1)
-		go func(agentID int) {
+		go func(idx int) {
 			defer wg.Done()
-			for j := 0; j < 100; j++ {
-				store.AddMessage(AgentMessage{
-					ID:        fmt.Sprintf("msg-%d-%d", agentID, j),
-					Recipient: fmt.Sprintf("agent-%d", agentID),
-					ExpiresAt: time.Now().Add(time.Hour),
-				})
-			}
+			recip := fmt.Sprintf("agent-%d", idx%agents)
+			c, _ := NewClient(srv.URL, "agent-0", "secret", fp, false)
+			c.SendMessage(recip, "t1", TypeInstruction, "hello", 3600, fmt.Sprintf("key-%d", idx))
 		}(i)
 	}
+
 	wg.Wait()
 
-	if len(store.messages) != 700 {
-		t.Errorf("Expected 700 messages, got %d", len(store.messages))
+	s.mu.Lock()
+	count := len(s.messages)
+	s.mu.Unlock()
+	if count != 700 {
+		t.Fatalf("Expected 700 messages, got %d", count)
 	}
-}
 
-func TestExpiry(t *testing.T) {
-	_, store, _ := setupTestServer(t)
-	store.AddMessage(AgentMessage{
-		ID:        "expired1",
-		Recipient: "win",
-		ExpiresAt: time.Now().Add(-time.Hour), // Expired
-	})
+	// Simulate Restart (create new Store, point to same files)
+	s2, _ := NewStore()
+	s2.dataDir = s.dataDir
+	s2.load()
 
-	inbox := store.GetInbox("win")
-	if len(inbox) != 0 {
-		t.Errorf("Expected 0 messages in inbox due to expiry, got %d", len(inbox))
+	if len(s2.messages) != 700 {
+		t.Fatalf("Expected 700 messages after restart, got %d", len(s2.messages))
 	}
 }

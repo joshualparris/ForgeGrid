@@ -12,10 +12,10 @@ import (
 )
 
 type Store struct {
-	mu        sync.RWMutex
-	dataDir   string
-	agents    map[string]AgentRegistration
-	messages  map[string]AgentMessage
+	mu       sync.RWMutex
+	dataDir  string
+	agents   map[string]AgentRegistration
+	messages map[string]AgentMessage
 }
 
 func NewStore() (*Store, error) {
@@ -23,7 +23,7 @@ func NewStore() (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	dataDir := filepath.Join(home, ".local", "share", "forgegrid", "agentbridge")
 	if err := os.MkdirAll(dataDir, 0700); err != nil {
 		return nil, fmt.Errorf("failed to create agentbridge data dir: %w", err)
@@ -107,15 +107,23 @@ func (s *Store) GetAgent(name string) (AgentRegistration, bool) {
 	return a, ok
 }
 
-func (s *Store) AddMessage(msg AgentMessage) error {
+func (s *Store) AddMessage(msg AgentMessage) (AgentMessage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if msg.IdempotencyKey != "" {
+		for _, existing := range s.messages {
+			if existing.Sender == msg.Sender && existing.IdempotencyKey == msg.IdempotencyKey {
+				return existing, nil // Return existing message
+			}
+		}
+	}
+
 	if _, ok := s.messages[msg.ID]; ok {
-		return nil // Idempotent
+		return msg, nil // Idempotent fallback
 	}
 	s.messages[msg.ID] = msg
-	return s.save()
+	return msg, s.save()
 }
 
 func (s *Store) GetMessage(id string) (AgentMessage, bool) {
@@ -139,7 +147,9 @@ func (s *Store) GetInbox(recipient string) []AgentMessage {
 	var inbox []AgentMessage
 	for _, m := range s.messages {
 		if m.Recipient == recipient && time.Now().Before(m.ExpiresAt) {
-			inbox = append(inbox, m)
+			if m.Status == StatusPending || m.Status == StatusAcknowledged {
+				inbox = append(inbox, m)
+			}
 		}
 	}
 	return inbox

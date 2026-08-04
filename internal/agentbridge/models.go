@@ -8,22 +8,24 @@ import (
 type MessageType string
 
 const (
-	TypeInstruction    MessageType = "instruction"
+	TypeInstruction     MessageType = "instruction"
 	TypeAcknowledgement MessageType = "acknowledgement"
-	TypeProgress       MessageType = "progress"
-	TypeResult         MessageType = "result"
-	TypeError          MessageType = "error"
-	TypeQuestion       MessageType = "question"
-	TypeAnswer         MessageType = "answer"
-	TypeShutdownNotice MessageType = "shutdown_notice"
+	TypeProgress        MessageType = "progress"
+	TypeResult          MessageType = "result"
+	TypeError           MessageType = "error"
+	TypeQuestion        MessageType = "question"
+	TypeAnswer          MessageType = "answer"
+	TypeShutdownNotice  MessageType = "shutdown_notice"
 )
 
 type MessageStatus string
 
 const (
-	StatusPending   MessageStatus = "pending"
-	StatusCompleted MessageStatus = "completed"
-	StatusFailed    MessageStatus = "failed"
+	StatusPending      MessageStatus = "pending"
+	StatusAcknowledged MessageStatus = "acknowledged"
+	StatusCompleted    MessageStatus = "completed"
+	StatusFailed       MessageStatus = "failed"
+	StatusExpired      MessageStatus = "expired"
 )
 
 type AgentMessage struct {
@@ -33,6 +35,7 @@ type AgentMessage struct {
 	TaskID         string          `json:"task_id"`
 	Type           MessageType     `json:"type"`
 	Body           string          `json:"body"`
+	IdempotencyKey string          `json:"idempotency_key,omitempty"`
 	CreatedAt      time.Time       `json:"created_at"`
 	ExpiresAt      time.Time       `json:"expires_at"`
 	Status         MessageStatus   `json:"status"`
@@ -43,6 +46,6 @@ type AgentMessage struct {
 
 type AgentRegistration struct {
 	Name      string    `json:"name"`
-	TokenHash string    `json:"-"`
+	TokenHash string    `json:"token_hash"`
 	CreatedAt time.Time `json:"created_at"`
 }

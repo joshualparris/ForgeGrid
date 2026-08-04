@@ -39,14 +39,14 @@ func New(s *store.Store, insecure bool) *Coordinator {
 
 func (c *Coordinator) Start(port string) error {
 	mux := http.NewServeMux()
-	
+
 	// Ensure identity and TLS cert
 	c.Store.Mu.Lock()
 	if c.Store.CoordinatorCfg.Identity == "" {
 		c.Store.CoordinatorCfg.Identity = fmt.Sprintf("ForgeGrid-%d", time.Now().UnixNano()) // fallback if rand fails later
 		c.Store.Save()
 	}
-	
+
 	if len(c.Store.CoordinatorCfg.CertPEM) == 0 {
 		certPEM, keyPEM, fp, err := network.GenerateSelfSignedCert()
 		if err != nil {
@@ -81,9 +81,9 @@ func (c *Coordinator) Start(port string) error {
 	mux.Handle("/", http.FileServer(http.FS(ui.DashboardFS)))
 
 	addr := fmt.Sprintf("0.0.0.0:%s", port)
-	
+
 	go c.checkWorkerStatus()
-	
+
 	scheme := "https"
 	if c.Insecure {
 		scheme = "http"
@@ -93,19 +93,19 @@ func (c *Coordinator) Start(port string) error {
 	if !c.Insecure {
 		fmt.Printf("TLS Fingerprint: %s\n", c.Fingerprint)
 	}
-	
+
 	ui.OpenBrowser(uiURL)
-	
+
 	if c.Insecure {
 		return http.ListenAndServe(addr, mux)
 	}
-	
+
 	// Create tls cert from PEM
 	cert, err := tls.X509KeyPair(c.Store.CoordinatorCfg.CertPEM, c.Store.CoordinatorCfg.KeyPEM)
 	if err != nil {
 		return err
 	}
-	
+
 	server := &http.Server{
 		Addr:    addr,
 		Handler: mux,
@@ -113,7 +113,7 @@ func (c *Coordinator) Start(port string) error {
 			Certificates: []tls.Certificate{cert},
 		},
 	}
-	
+
 	return server.ListenAndServeTLS("", "")
 }
 
