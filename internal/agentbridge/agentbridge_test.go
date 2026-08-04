@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -216,6 +217,11 @@ func TestIntegrationConcurrent(t *testing.T) {
 	server.RegisterRoutes(mux)
 
 	srv := httptest.NewUnstartedServer(mux)
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen failed: %v", err)
+	}
+	srv.Listener = l
 	srv.TLS = &tls.Config{Certificates: []tls.Certificate{cert}}
 	srv.StartTLS()
 
@@ -321,6 +327,11 @@ func TestIntegrationConcurrent(t *testing.T) {
 	server2.RegisterRoutes(mux2)
 
 	srv2 := httptest.NewUnstartedServer(mux2)
+	l2, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen failed: %v", err)
+	}
+	srv2.Listener = l2
 	srv2.TLS = &tls.Config{Certificates: []tls.Certificate{cert}}
 	srv2.StartTLS()
 	defer srv2.Close()
