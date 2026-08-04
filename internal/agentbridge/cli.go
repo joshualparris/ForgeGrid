@@ -7,17 +7,14 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
-	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
-
-	"golang.org/x/term"
 
 	"forgegrid/internal/network"
 )
@@ -202,44 +199,37 @@ func getConfigPath() string {
 func configureClientCmd(args []string) {
 	fs := flag.NewFlagSet("configure-client", flag.ExitOnError)
 	name := fs.String("name", "", "Agent name")
-	tokenFile := fs.String("token-file", "", "File containing the agent token (will be deleted after reading)")
 	url := fs.String("url", "https://127.0.0.1:9090", "Relay URL")
+	tokenFile := fs.String("token-file", "", "File containing the agent token (will be deleted after reading)")
+	tokenStdin := fs.Bool("token-stdin", false, "Read agent token from standard input")
 	fp := fs.String("fingerprint", "", "TLS Fingerprint")
 	fs.Parse(args)
 
 	if *name == "" || *fp == "" {
-		log.Fatal("--name and --fingerprint are required")
+		fmt.Println("Usage: configure-client -name <name> -fingerprint <fp> [-url <url>] [-token-file <file> | -token-stdin]")
+		os.Exit(1)
 	}
 
 	var token string
-	if *tokenFile != "" {
+	if *tokenStdin {
+		b, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			log.Fatalf("Failed to read token from stdin: %v", err)
+		}
+		token = strings.TrimSpace(string(b))
+	} else if *tokenFile != "" {
 		b, err := os.ReadFile(*tokenFile)
 		if err != nil {
 			log.Fatalf("Failed to read token file: %v", err)
 		}
 		token = strings.TrimSpace(string(b))
-
-		// Securely overwrite and delete
-		zeroes := make([]byte, len(b))
-		if err := os.WriteFile(*tokenFile, zeroes, 0600); err != nil {
-			log.Fatalf("Failed to overwrite token file: %v", err)
-		}
-		if err := os.Remove(*tokenFile); err != nil {
-			log.Fatalf("Failed to delete token file: %v", err)
-		}
+		os.Remove(*tokenFile) // Delete the file after reading
 	} else {
-		// Fallback for when token-file is not provided
-		fmt.Print("Enter token: ")
-		pwd, err := term.ReadPassword(int(os.Stdin.Fd()))
-		fmt.Println()
-		if err != nil {
-			log.Fatalf("Failed to read token: %v", err)
-		}
-		token = strings.TrimSpace(string(pwd))
+		log.Fatalf("Token must be provided via -token-file or -token-stdin")
 	}
 
 	if token == "" {
-		log.Fatal("Token is required")
+		log.Fatalf("Token cannot be empty")
 	}
 
 	cfg := ClientConfig{
@@ -250,34 +240,15 @@ func configureClientCmd(args []string) {
 	}
 
 	path := getConfigPath()
-	os.MkdirAll(filepath.Dir(path), 0700)
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		log.Fatalf("Failed to marshal config: %v", err)
+	}
 
-	b, _ := json.Marshal(cfg)
-	if err := os.WriteFile(path, b, 0600); err != nil {
+	if err := writeSecureConfig(path, b); err != nil {
 		log.Fatalf("Failed to save config: %v", err)
 	}
-	if runtime.GOOS == "windows" {
-		u, err := user.Current()
-		if err != nil {
-			os.Remove(path)
-			log.Fatalf("Failed to get current user for ACL: %v", err)
-		}
-		sid := u.Uid
-		
-		// /inheritance:r removes inheritance. /grant *SID:F grants full control to SID.
-		cmd := exec.Command("icacls", path, "/inheritance:r", "/grant", "*"+sid+":F")
-		if err := cmd.Run(); err != nil {
-			os.Remove(path)
-			log.Fatalf("Failed to set file ACLs: %v", err)
-		}
-		
-		verifyCmd := exec.Command("icacls", path)
-		out, err := verifyCmd.CombinedOutput()
-		if err != nil || !strings.Contains(string(out), u.Username) {
-			os.Remove(path)
-			log.Fatalf("Failed to verify file ACLs")
-		}
-	}
+
 	fmt.Printf("Client configured successfully at %s.\n", path)
 	fmt.Println("Note: Token is stored in plaintext and protected by a current-user Windows ACL.")
 }

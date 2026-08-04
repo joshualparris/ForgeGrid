@@ -31,6 +31,6 @@ func lockFile(f *os.File) error {
 	}
 }
 
-func unlockFile(f *os.File) error {
+var unlockFile = func(f *os.File) error {
 	return unix.Flock(int(f.Fd()), unix.LOCK_UN)
 }

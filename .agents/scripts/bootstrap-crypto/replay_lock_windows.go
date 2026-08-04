@@ -20,9 +20,14 @@ func lockFile(f *os.File) error {
 			locked = true
 			break
 		}
+
+		if err != windows.ERROR_LOCK_VIOLATION && err != windows.ERROR_IO_PENDING {
+			return fmt.Errorf("unexpected lock error: %w", err)
+		}
+
 		select {
 		case <-timeout:
-			return fmt.Errorf("timeout waiting for lock")
+			return fmt.Errorf("timeout waiting for lock: %w", err)
 		default:
 			time.Sleep(50 * time.Millisecond)
 		}
@@ -33,7 +38,7 @@ func lockFile(f *os.File) error {
 	return nil
 }
 
-func unlockFile(f *os.File) error {
+var unlockFile = func(f *os.File) error {
 	var ol windows.Overlapped
 	return windows.UnlockFileEx(windows.Handle(f.Fd()), 0, 1, 0, &ol)
 }

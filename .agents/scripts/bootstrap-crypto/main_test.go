@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,6 +29,7 @@ func buildMockForgeGrid(t *testing.T, dir string) string {
 	if err := os.WriteFile(mockForgeGridSrc, []byte(`package main
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 )
@@ -41,10 +43,14 @@ func main() {
 	if os.Getenv("MOCK_FAIL") == "1" {
 		os.Exit(1)
 	}
-	var name, tokenFile, url, fp string
+	var name, url, fp string
+	var token string
 	for i, arg := range os.Args {
-		if arg == "--token-file" && i+1 < len(os.Args) {
-			tokenFile = os.Args[i+1]
+		if arg == "--token-stdin" {
+			b, err := io.ReadAll(os.Stdin)
+			if err == nil {
+				token = string(b)
+			}
 		}
 		if arg == "--name" && i+1 < len(os.Args) {
 			name = os.Args[i+1]
@@ -55,15 +61,6 @@ func main() {
 		if arg == "--fingerprint" && i+1 < len(os.Args) {
 			fp = os.Args[i+1]
 		}
-	}
-	
-	token := ""
-	if tokenFile != "" {
-		b, err := os.ReadFile(tokenFile)
-		if err == nil {
-			token = string(b)
-		}
-		os.Remove(tokenFile)
 	}
 	
 	// Create mock config to satisfy decrypt-and-apply
@@ -248,6 +245,25 @@ func TestReplayStore(t *testing.T) {
 
 		// clear file
 		os.Remove(storePath)
+	})
+
+	t.Run("UnlockFailure", func(t *testing.T) {
+		// Mock unlockFile
+		origUnlock := unlockFile
+		defer func() { unlockFile = origUnlock }()
+
+		unlockFile = func(f *os.File) error {
+			origUnlock(f) // Still actually unlock it
+			return fmt.Errorf("mock unlock error")
+		}
+
+		err := rs.Reserve("unlock-test")
+		if err == nil {
+			t.Fatalf("Expected error due to unlock failure, got nil")
+		}
+		if !strings.Contains(err.Error(), "mock unlock error") {
+			t.Fatalf("Expected error to contain 'mock unlock error', got: %v", err)
+		}
 	})
 }
 
