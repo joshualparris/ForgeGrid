@@ -11,17 +11,34 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func applySecureACL(path string, isDir bool) error {
+func currentUserSID() (string, error) {
 	tok, err := windows.OpenCurrentProcessToken()
 	if err != nil {
-		return fmt.Errorf("failed to open process token: %w", err)
+		return "", fmt.Errorf("failed to open current process token: %w", err)
 	}
 	defer tok.Close()
+
 	u, err := tok.GetTokenUser()
 	if err != nil {
-		return fmt.Errorf("failed to get token user: %w", err)
+		return "", fmt.Errorf("failed to get token user: %w", err)
 	}
+	if u == nil || u.User.Sid == nil {
+		return "", fmt.Errorf("invalid token user or SID")
+	}
+
 	sid := u.User.Sid.String()
+	if sid == "" {
+		return "", fmt.Errorf("empty SID string")
+	}
+
+	return sid, nil
+}
+
+func applySecureACL(path string, isDir bool) error {
+	sid, err := currentUserSID()
+	if err != nil {
+		return err
+	}
 
 	inherit := ""
 	if isDir {
@@ -34,7 +51,13 @@ func applySecureACL(path string, isDir bool) error {
 		return fmt.Errorf("failed to create security descriptor: %w", err)
 	}
 
-	dacl, _, _ := sd.DACL()
+	dacl, present, err := sd.DACL()
+	if err != nil {
+		return fmt.Errorf("failed to extract DACL: %w", err)
+	}
+	if !present || dacl == nil {
+		return fmt.Errorf("security descriptor contains no DACL")
+	}
 
 	err = windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
 	if err != nil {
@@ -149,10 +172,11 @@ func writeSecureConfig(path string, b []byte) error {
 		return fmt.Errorf("failed to replace temp file: %w", err)
 	}
 
-	tok, _ := windows.OpenCurrentProcessToken()
-	defer tok.Close()
-	u, _ := tok.GetTokenUser()
-	sid := u.User.Sid.String()
+	sid, err := currentUserSID()
+	if err != nil {
+		os.Remove(path)
+		return fmt.Errorf("failed to obtain SID for final ACL verification: %w", err)
+	}
 	if err := verifySecureACL(path, sid); err != nil {
 		os.Remove(path)
 		return fmt.Errorf("failed to verify final file ACLs: %w", err)
