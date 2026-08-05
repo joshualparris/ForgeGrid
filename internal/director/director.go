@@ -47,10 +47,9 @@ func (d *Director) SubmitManifest(m *manifest.Manifest) error {
 			ID:             jobID,
 			WorkerID:       assignedWorker,
 			Task:           "execute",
-			Status:         "pending",
+			Status:         models.StatusPending,
 			Profile:        task.Execution.Profile,
-			Args:           task.Execution.Args,
-			Env:            task.Execution.Env,
+			Parameters:     task.Execution.Parameters,
 			TimeoutSeconds: task.Execution.TimeoutSeconds,
 		}
 

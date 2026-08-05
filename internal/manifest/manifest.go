@@ -28,8 +28,7 @@ type Requirements struct {
 
 type Execution struct {
 	Profile        string            `yaml:"profile"`
-	Args           []string          `yaml:"args"`
-	Env            map[string]string `yaml:"env"`
+	Parameters     map[string]string `yaml:"parameters"`
 	TimeoutSeconds int               `yaml:"timeout_seconds"`
 }
 

@@ -326,9 +326,9 @@ func (w *Worker) pollJobs() {
 	}
 
 	for _, job := range jobs {
-		if job.Status == "cancelled" {
+		if job.Status == models.StatusCancelled && job.Result == "cancelled" {
 			w.cancelJob(job.ID)
-		} else if job.Status == "pending" {
+		} else if job.Status == models.StatusPending {
 			w.mu.Lock()
 			if w.activeJobs == nil {
 				w.activeJobs = make(map[string]context.CancelFunc)
@@ -336,7 +336,12 @@ func (w *Worker) pollJobs() {
 			_, active := w.activeJobs[job.ID]
 			w.mu.Unlock()
 			if !active {
-				go w.executeJob(job)
+				// Try to claim
+				attemptID, ok := w.claimJob(job.ID)
+				if ok {
+					job.AttemptID = attemptID
+					go w.executeJob(job)
+				}
 			}
 		}
 	}
@@ -351,12 +356,40 @@ func (w *Worker) cancelJob(jobID string) {
 	}
 }
 
-func (w *Worker) updateJobStatus(jobID, attemptID, status, result string, logs []string) {
+func (w *Worker) claimJob(jobID string) (string, bool) {
+	reqBody := map[string]interface{}{}
+	body, _ := json.Marshal(reqBody)
+	req, _ := http.NewRequest("POST", fmt.Sprintf("%s/api/jobs/%s/claim", w.CoordinatorURL, jobID), bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+w.Token)
+	resp, err := w.Client.Do(req)
+	if err != nil {
+		fmt.Println("DEBUG claim err:", err)
+		return "", false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var errRes map[string]interface{}
+		json.NewDecoder(resp.Body).Decode(&errRes)
+		fmt.Println("DEBUG claim status not OK:", resp.StatusCode, errRes)
+		return "", false
+	}
+
+	var job models.Job
+	if err := json.NewDecoder(resp.Body).Decode(&job); err != nil {
+		return "", false
+	}
+	return job.AttemptID, true
+}
+
+func (w *Worker) updateJobStatus(jobID, attemptID string, status models.JobStatus, result string, logs []byte, seq int) {
 	reqBody := map[string]interface{}{
 		"attempt_id": attemptID,
 		"status":     status,
 		"result":     result,
 		"logs":       logs,
+		"log_seq":    seq,
 	}
 	body, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequest("POST", fmt.Sprintf("%s/api/jobs/%s", w.CoordinatorURL, jobID), bytes.NewReader(body))
@@ -370,10 +403,6 @@ func (w *Worker) updateJobStatus(jobID, attemptID, status, result string, logs [
 
 func (w *Worker) executeJob(job models.Job) {
 	fmt.Println("Starting job:", job.ID)
-
-	if job.AttemptID == "" {
-		job.AttemptID = fmt.Sprintf("attempt-%d", time.Now().UnixNano())
-	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -393,68 +422,61 @@ func (w *Worker) executeJob(job models.Job) {
 
 	hw, _ := w.getHardwareInfo()
 
-	w.updateJobStatus(job.ID, job.AttemptID, "running", "", []string{
-		fmt.Sprintf("Job started on %s (ID: %s)", w.NodeName, w.WorkerID),
-		fmt.Sprintf("OS: %s | CPU: %s", hw.OS, hw.CPUModel),
-		fmt.Sprintf("PID: %d", os.Getpid()),
-	})
+	logSeq := 1
+	startLogs := []byte(fmt.Sprintf("Job started on %s (ID: %s)\nOS: %s | CPU: %s\nPID: %d\n", w.NodeName, w.WorkerID, hw.OS, hw.CPUModel, os.Getpid()))
+	w.updateJobStatus(job.ID, job.AttemptID, models.StatusRunning, "", startLogs, logSeq)
+	logSeq++
 
 	if job.Task == "test" {
-		logs := []string{
-			fmt.Sprintf("Received challenge: %s", job.Challenge),
-		}
-
+		logs := []byte(fmt.Sprintf("Received challenge: %s\n", job.Challenge))
 		h := sha256.Sum256([]byte(job.Challenge))
 		result := hex.EncodeToString(h[:])
-
-		logs = append(logs, fmt.Sprintf("Calculated SHA-256: %s", result))
-
-		w.updateJobStatus(job.ID, job.AttemptID, "completed", result, logs)
+		logs = append(logs, []byte(fmt.Sprintf("Calculated SHA-256: %s\n", result))...)
+		w.updateJobStatus(job.ID, job.AttemptID, models.StatusCompleted, result, logs, logSeq)
 	} else if job.Task == "execute" {
 		profile, err := execution.GetProfile(job.Profile)
 		if err != nil {
-			w.updateJobStatus(job.ID, job.AttemptID, "failed", err.Error(), []string{err.Error()})
+			w.updateJobStatus(job.ID, job.AttemptID, models.StatusFailed, err.Error(), []byte(err.Error()+"\n"), logSeq)
 			return
 		}
 
 		workDir, err := execution.SecureWorkspacePath(w.Workspace, ".")
 		if err != nil {
-			w.updateJobStatus(job.ID, job.AttemptID, "failed", "workspace error", []string{err.Error()})
+			w.updateJobStatus(job.ID, job.AttemptID, models.StatusFailed, "workspace error", []byte(err.Error()+"\n"), logSeq)
 			return
 		}
 
-		timeout := time.Duration(job.TimeoutSeconds) * time.Second
-		if timeout == 0 {
-			timeout = 5 * time.Minute
+		timeoutSeconds := job.TimeoutSeconds
+		if timeoutSeconds == 0 || timeoutSeconds > profile.MaxTimeoutSecs {
+			timeoutSeconds = profile.MaxTimeoutSecs
 		}
+		timeout := time.Duration(timeoutSeconds) * time.Second
 
 		execCtx, execCancel := context.WithTimeout(ctx, timeout)
 		defer execCancel()
 
 		executor := execution.NewExecutor()
-		res := executor.Run(execCtx, profile, job.Args, job.Env, workDir)
+		output, err := executor.Execute(execCtx, profile, job.Parameters, workDir)
 
-		finalStatus := "completed"
-		if res.ExitCode != 0 || res.Error != nil {
+		finalResult := "success"
+		finalStatus := models.StatusCompleted
+		if err != nil {
 			if execCtx.Err() == context.DeadlineExceeded {
-				finalStatus = "failed"
-				res.Logs = append(res.Logs, "Job timed out")
+				finalResult = "timeout"
+				finalStatus = models.StatusFailed
+				output = append(output, []byte("\nJob timed out")...)
 			} else if ctx.Err() == context.Canceled {
-				finalStatus = "cancelled"
-				res.Logs = append(res.Logs, "Job cancelled by coordinator")
+				finalResult = "cancelled"
+				finalStatus = models.StatusCancelled
+				output = append(output, []byte("\nJob cancelled by coordinator")...)
 			} else {
-				finalStatus = "failed"
+				finalResult = fmt.Sprintf("error: %v", err)
+				finalStatus = models.StatusFailed
 			}
 		}
 
-		resultStr := fmt.Sprintf("ExitCode: %d", res.ExitCode)
-		if res.Error != nil {
-			resultStr += fmt.Sprintf(", Error: %v", res.Error)
-		}
-
-		w.updateJobStatus(job.ID, job.AttemptID, finalStatus, resultStr, res.Logs)
-
+		w.updateJobStatus(job.ID, job.AttemptID, finalStatus, finalResult, output, logSeq)
 	} else {
-		w.updateJobStatus(job.ID, job.AttemptID, "failed", "unknown task", []string{"Unsupported task type"})
+		w.updateJobStatus(job.ID, job.AttemptID, models.StatusFailed, "unknown task", []byte("Unsupported task type\n"), logSeq)
 	}
 }
