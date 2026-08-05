@@ -34,6 +34,36 @@ func currentUserSID() (string, error) {
 	return sid, nil
 }
 
+func extractExplicitDACL(sd *windows.SECURITY_DESCRIPTOR) (*windows.ACL, error) {
+	if sd == nil {
+		return nil, fmt.Errorf("nil security descriptor")
+	}
+
+	control, _, err := sd.Control()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read security descriptor control flags: %w", err)
+	}
+
+	if control&windows.SE_DACL_PRESENT == 0 {
+		return nil, fmt.Errorf("security descriptor does not contain a DACL")
+	}
+
+	dacl, defaulted, err := sd.DACL()
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract DACL: %w", err)
+	}
+
+	if dacl == nil {
+		return nil, fmt.Errorf("security descriptor contains a null DACL")
+	}
+
+	if defaulted {
+		return nil, fmt.Errorf("security descriptor unexpectedly contains a defaulted DACL")
+	}
+
+	return dacl, nil
+}
+
 func applySecureACL(path string, isDir bool) error {
 	sid, err := currentUserSID()
 	if err != nil {
@@ -51,12 +81,9 @@ func applySecureACL(path string, isDir bool) error {
 		return fmt.Errorf("failed to create security descriptor: %w", err)
 	}
 
-	dacl, present, err := sd.DACL()
+	dacl, err := extractExplicitDACL(sd)
 	if err != nil {
-		return fmt.Errorf("failed to extract DACL: %w", err)
-	}
-	if !present || dacl == nil {
-		return fmt.Errorf("security descriptor contains no DACL")
+		return err
 	}
 
 	err = windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
