@@ -1,0 +1,11 @@
+project: "ForgeGrid-Example"
+tasks:
+  say_hello:
+    description: "Says hello and saves it to an artefact"
+    requirements:
+      os: "linux"
+    commands:
+      linux: "echo 'hello from linux' > hello.txt"
+      windows: "echo 'hello from windows' > hello.txt"
+    artefacts:
+      - "hello.txt"

@@ -2,6 +2,7 @@ package worker
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -11,8 +12,10 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
+	"forgegrid/internal/execution"
 	"forgegrid/internal/models"
 	"forgegrid/internal/network"
 
@@ -31,6 +34,9 @@ type Worker struct {
 	Workspace      string
 	Insecure       bool
 	Fingerprint    string
+
+	mu         sync.Mutex
+	activeJobs map[string]context.CancelFunc
 }
 
 type WorkerCredentials struct {
@@ -77,9 +83,10 @@ func ResetCredentials() error {
 
 func New(nodeName, workspace string, insecure bool) *Worker {
 	return &Worker{
-		NodeName:  nodeName,
-		Workspace: workspace,
-		Insecure:  insecure,
+		NodeName:   nodeName,
+		Workspace:  workspace,
+		Insecure:   insecure,
+		activeJobs: make(map[string]context.CancelFunc),
 	}
 }
 
@@ -319,15 +326,37 @@ func (w *Worker) pollJobs() {
 	}
 
 	for _, job := range jobs {
-		w.executeJob(job)
+		if job.Status == "cancelled" {
+			w.cancelJob(job.ID)
+		} else if job.Status == "pending" {
+			w.mu.Lock()
+			if w.activeJobs == nil {
+				w.activeJobs = make(map[string]context.CancelFunc)
+			}
+			_, active := w.activeJobs[job.ID]
+			w.mu.Unlock()
+			if !active {
+				go w.executeJob(job)
+			}
+		}
 	}
 }
 
-func (w *Worker) updateJobStatus(jobID, status, result string, logs []string) {
+func (w *Worker) cancelJob(jobID string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if cancel, ok := w.activeJobs[jobID]; ok {
+		cancel()
+		delete(w.activeJobs, jobID)
+	}
+}
+
+func (w *Worker) updateJobStatus(jobID, attemptID, status, result string, logs []string) {
 	reqBody := map[string]interface{}{
-		"status": status,
-		"result": result,
-		"logs":   logs,
+		"attempt_id": attemptID,
+		"status":     status,
+		"result":     result,
+		"logs":       logs,
 	}
 	body, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequest("POST", fmt.Sprintf("%s/api/jobs/%s", w.CoordinatorURL, jobID), bytes.NewReader(body))
@@ -342,9 +371,29 @@ func (w *Worker) updateJobStatus(jobID, status, result string, logs []string) {
 func (w *Worker) executeJob(job models.Job) {
 	fmt.Println("Starting job:", job.ID)
 
+	if job.AttemptID == "" {
+		job.AttemptID = fmt.Sprintf("attempt-%d", time.Now().UnixNano())
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	w.mu.Lock()
+	if w.activeJobs == nil {
+		w.activeJobs = make(map[string]context.CancelFunc)
+	}
+	w.activeJobs[job.ID] = cancel
+	w.mu.Unlock()
+
+	defer func() {
+		w.mu.Lock()
+		delete(w.activeJobs, job.ID)
+		w.mu.Unlock()
+		cancel()
+	}()
+
 	hw, _ := w.getHardwareInfo()
 
-	w.updateJobStatus(job.ID, "running", "", []string{
+	w.updateJobStatus(job.ID, job.AttemptID, "running", "", []string{
 		fmt.Sprintf("Job started on %s (ID: %s)", w.NodeName, w.WorkerID),
 		fmt.Sprintf("OS: %s | CPU: %s", hw.OS, hw.CPUModel),
 		fmt.Sprintf("PID: %d", os.Getpid()),
@@ -360,8 +409,52 @@ func (w *Worker) executeJob(job models.Job) {
 
 		logs = append(logs, fmt.Sprintf("Calculated SHA-256: %s", result))
 
-		w.updateJobStatus(job.ID, "completed", result, logs)
+		w.updateJobStatus(job.ID, job.AttemptID, "completed", result, logs)
+	} else if job.Task == "execute" {
+		profile, err := execution.GetProfile(job.Profile)
+		if err != nil {
+			w.updateJobStatus(job.ID, job.AttemptID, "failed", err.Error(), []string{err.Error()})
+			return
+		}
+
+		workDir, err := execution.SecureWorkspacePath(w.Workspace, ".")
+		if err != nil {
+			w.updateJobStatus(job.ID, job.AttemptID, "failed", "workspace error", []string{err.Error()})
+			return
+		}
+
+		timeout := time.Duration(job.TimeoutSeconds) * time.Second
+		if timeout == 0 {
+			timeout = 5 * time.Minute
+		}
+
+		execCtx, execCancel := context.WithTimeout(ctx, timeout)
+		defer execCancel()
+
+		executor := execution.NewExecutor()
+		res := executor.Run(execCtx, profile, job.Args, job.Env, workDir)
+
+		finalStatus := "completed"
+		if res.ExitCode != 0 || res.Error != nil {
+			if execCtx.Err() == context.DeadlineExceeded {
+				finalStatus = "failed"
+				res.Logs = append(res.Logs, "Job timed out")
+			} else if ctx.Err() == context.Canceled {
+				finalStatus = "cancelled"
+				res.Logs = append(res.Logs, "Job cancelled by coordinator")
+			} else {
+				finalStatus = "failed"
+			}
+		}
+
+		resultStr := fmt.Sprintf("ExitCode: %d", res.ExitCode)
+		if res.Error != nil {
+			resultStr += fmt.Sprintf(", Error: %v", res.Error)
+		}
+
+		w.updateJobStatus(job.ID, job.AttemptID, finalStatus, resultStr, res.Logs)
+
 	} else {
-		w.updateJobStatus(job.ID, "failed", "unknown task", []string{"Unsupported task type"})
+		w.updateJobStatus(job.ID, job.AttemptID, "failed", "unknown task", []string{"Unsupported task type"})
 	}
 }

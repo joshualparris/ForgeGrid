@@ -295,18 +295,27 @@ func (c *Coordinator) handleJobAction(w http.ResponseWriter, r *http.Request) {
 		}
 
 		var req struct {
-			Status string   `json:"status"`
-			Result string   `json:"result"`
-			Logs   []string `json:"logs"`
+			AttemptID string   `json:"attempt_id"`
+			Status    string   `json:"status"`
+			Result    string   `json:"result"`
+			Logs      []string `json:"logs"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Malformed JSON", "")
 			return
 		}
 
+		if job.AttemptID != "" && req.AttemptID != job.AttemptID {
+			writeError(w, http.StatusConflict, "CONFLICT", "Invalid attempt ID", "")
+			return
+		}
+
 		if job.Status == "pending" && req.Status == "running" {
 			now := time.Now()
 			job.StartTime = &now
+			if job.AttemptID == "" {
+				job.AttemptID = req.AttemptID
+			}
 		}
 		job.Status = req.Status
 		if req.Result != "" {

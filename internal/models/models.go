@@ -23,14 +23,22 @@ type WorkerState struct {
 
 type Job struct {
 	ID        string     `json:"id"`
+	AttemptID string     `json:"attempt_id,omitempty"` // For duplicate-attempt prevention
 	WorkerID  string     `json:"worker_id"`
-	Task      string     `json:"task"`   // e.g. "test"
+	Task      string     `json:"task"`   // e.g. "test", "execute"
 	Status    string     `json:"status"` // pending, running, completed, failed, cancelled
 	StartTime *time.Time `json:"start_time,omitempty"`
 	EndTime   *time.Time `json:"end_time,omitempty"`
 	Result    string     `json:"result,omitempty"`
 	Logs      []string   `json:"logs,omitempty"`
-	Challenge string     `json:"challenge,omitempty"` // For test task
+
+	// Structured Execution
+	Profile        string            `json:"profile,omitempty"`
+	Args           []string          `json:"args,omitempty"`
+	Env            map[string]string `json:"env,omitempty"`
+	TimeoutSeconds int               `json:"timeout_seconds,omitempty"`
+
+	Challenge string `json:"challenge,omitempty"` // For test task
 }
 
 type CoordinatorState struct {
