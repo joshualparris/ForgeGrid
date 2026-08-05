@@ -13,9 +13,10 @@ type Profile struct {
 }
 
 var Profiles = map[string]Profile{
-	"go":   {Name: "go", Executable: "go"},
-	"node": {Name: "node", Executable: "node"},
-	"test": {Name: "test", Executable: "echo"}, // for testing
+	"go":     {Name: "go", Executable: "go"},
+	"node":   {Name: "node", Executable: "node"},
+	"python": {Name: "python", Executable: "python"},
+	"test":   {Name: "test", Executable: "echo"}, // for testing
 }
 
 func GetProfile(name string) (Profile, error) {
