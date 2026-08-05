@@ -56,6 +56,11 @@ func TestWindowsSecurity(t *testing.T) {
 	binPath := buildBinary(t)
 	tmpDir := t.TempDir()
 
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Fatalf("os.Hostname failed: %v", err)
+	}
+
 	realForgeGridExe := filepath.Join(tmpDir, "forgegrid.exe")
 	if out, err := exec.Command("go", "build", "-o", realForgeGridExe, "forgegrid").CombinedOutput(); err != nil {
 		t.Fatalf("Failed to build real forgegrid: %v\n%s", err, string(out))
@@ -79,6 +84,12 @@ func TestWindowsSecurity(t *testing.T) {
 		t.Fatalf("private.blob contains plaintext PEM header")
 	}
 
+	// Preserve a retry copy of private.blob for the second test
+	backupPrivBlobPath := filepath.Join(tmpDir, "private.blob.backup")
+	if err := os.WriteFile(backupPrivBlobPath, blobBytes, 0600); err != nil {
+		t.Fatalf("Failed to backup private blob: %v", err)
+	}
+
 	// Create signer keys
 	signPub, signPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -86,22 +97,27 @@ func TestWindowsSecurity(t *testing.T) {
 	}
 	signerPubPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: signPub})
 	signerPubPath := filepath.Join(tmpDir, "signer_pub.pem")
-	os.WriteFile(signerPubPath, signerPubPEM, 0644)
+	if err := os.WriteFile(signerPubPath, signerPubPEM, 0644); err != nil {
+		t.Fatalf("Failed to write signer public key: %v", err)
+	}
 	signerPrivPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: signPriv})
 	signerPrivPath := filepath.Join(tmpDir, "signer_priv.pem")
-	os.WriteFile(signerPrivPath, signerPrivPEM, 0600)
+	if err := os.WriteFile(signerPrivPath, signerPrivPEM, 0600); err != nil {
+		t.Fatalf("Failed to write signer private key: %v", err)
+	}
 
 	// 2. Encrypt a dummy bundle
 	plainIn := filepath.Join(tmpDir, "plain.json")
+	firstBootstrapID := "boot-" + time.Now().UTC().Format("150405999999")
 	b := agentbridge.BundleData{
 		SchemaVersion: "1",
-		AgentName:     "windows-test",
+		AgentName:     hostname,
 		Token:         "dummy-test-token-not-valid",
 		RelayURL:      "https://127.0.0.1:9091",
 		Fingerprint:   strings.Repeat("a", 64),
-		Issued:        time.Now().Format(time.RFC3339),
-		Expiry:        time.Now().Add(5 * time.Minute).Format(time.RFC3339),
-		BootstrapID:   "boot-" + time.Now().Format("150405999999"),
+		Issued:        time.Now().UTC().Format(time.RFC3339),
+		Expiry:        time.Now().UTC().Add(5 * time.Minute).Format(time.RFC3339),
+		BootstrapID:   firstBootstrapID,
 	}
 	bBytes, err := json.Marshal(b)
 	if err != nil {
@@ -118,7 +134,9 @@ func TestWindowsSecurity(t *testing.T) {
 
 	// Set up local app data
 	localAppData := filepath.Join(tmpDir, "LocalAppData_Security")
-	os.Setenv("LOCALAPPDATA", localAppData)
+	if err := os.Setenv("LOCALAPPDATA", localAppData); err != nil {
+		t.Fatalf("Failed to set LOCALAPPDATA: %v", err)
+	}
 	defer os.Unsetenv("LOCALAPPDATA")
 
 	signPubHash := sha256.Sum256(signPub)
@@ -139,7 +157,10 @@ func TestWindowsSecurity(t *testing.T) {
 
 	// Check temporary token files
 	bootstrapDir := filepath.Join(localAppData, "ForgeGrid", "bootstrap")
-	entries, _ := os.ReadDir(bootstrapDir)
+	entries, err := os.ReadDir(bootstrapDir)
+	if err != nil {
+		t.Fatalf("ReadDir failed: %v", err)
+	}
 	for _, e := range entries {
 		if strings.HasPrefix(e.Name(), "tmp_token_") {
 			t.Fatalf("Temporary token file was created and not cleaned up: %s", e.Name())
@@ -150,11 +171,11 @@ func TestWindowsSecurity(t *testing.T) {
 	configPath := filepath.Join(localAppData, "ForgeGrid", "agentclient.json")
 	cfgBytes, err := os.ReadFile(configPath)
 	if err != nil {
-		t.Fatalf("Config file not created")
+		t.Fatalf("Config file not created: %v", err)
 	}
 	var cfg agentbridge.ClientConfig
 	if err := json.Unmarshal(cfgBytes, &cfg); err != nil {
-		t.Fatalf("Config unmarshal failed")
+		t.Fatalf("Config unmarshal failed: %v", err)
 	}
 	if cfg.Token != "dummy-test-token-not-valid" {
 		t.Fatalf("Token does not match")
@@ -162,25 +183,57 @@ func TestWindowsSecurity(t *testing.T) {
 
 	// 4. Verify ACL excludes unrelated user (we can't easily query ACL, but icacls helps)
 	verifyCmd := exec.Command("icacls", configPath)
-	aclOut, _ := verifyCmd.CombinedOutput()
+	aclOut, err := verifyCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("icacls verify failed: %v", err)
+	}
 	if strings.Contains(string(aclOut), "BUILTIN\\Users") {
 		t.Fatalf("Config ACL includes BUILTIN\\Users, which should be excluded")
 	}
 	verifyDirCmd := exec.Command("icacls", bootstrapDir)
-	aclDirOut, _ := verifyDirCmd.CombinedOutput()
+	aclDirOut, err := verifyDirCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("icacls verify dir failed: %v", err)
+	}
 	if strings.Contains(string(aclDirOut), "BUILTIN\\Users") {
 		t.Fatalf("Bootstrap dir ACL includes BUILTIN\\Users, which should be excluded")
 	}
 
 	// 5. TestConfigReplacement: Write a different valid config to the same path
-	cfg.Token = "second-token-valid"
-	bBytes2, _ := json.Marshal(cfg)
+	secondBootstrapID := "boot-second-" + time.Now().UTC().Format("150405999999")
+	b2 := agentbridge.BundleData{
+		SchemaVersion: "1",
+		AgentName:     hostname,
+		Token:         "second-token-valid",
+		RelayURL:      "https://127.0.0.1:9091",
+		Fingerprint:   strings.Repeat("a", 64),
+		Issued:        time.Now().UTC().Format(time.RFC3339),
+		Expiry:        time.Now().UTC().Add(5 * time.Minute).Format(time.RFC3339),
+		BootstrapID:   secondBootstrapID,
+	}
+	bBytes2, err := json.Marshal(b2)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
 	plainIn2 := filepath.Join(tmpDir, "plain2.json")
-	os.WriteFile(plainIn2, bBytes2, 0600)
+	if err := os.WriteFile(plainIn2, bBytes2, 0600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
 
 	hybridOut2 := filepath.Join(tmpDir, "hybrid2.json")
 	cmdEnc2 := exec.Command(binPath, "encrypt", pubPath, plainIn2, signerPrivPath, hybridOut2)
-	cmdEnc2.Run()
+	if out, err := cmdEnc2.CombinedOutput(); err != nil {
+		t.Fatalf("encrypt second bundle failed: %v\nOutput: %s", err, string(out))
+	}
+
+	// Restore private.blob from backup
+	backupBytes, err := os.ReadFile(backupPrivBlobPath)
+	if err != nil {
+		t.Fatalf("ReadFile backup failed: %v", err)
+	}
+	if err := os.WriteFile(privBlobPath, backupBytes, 0600); err != nil {
+		t.Fatalf("Failed to restore private.blob: %v", err)
+	}
 
 	// Decrypt and apply second time (proving MoveFileEx replacement works)
 	cmdDec2 := exec.Command(binPath, "decrypt-protected-and-apply", privBlobPath, hybridOut2, signerPubPath, expectedFingerprint, realForgeGridExe)
@@ -195,16 +248,35 @@ func TestWindowsSecurity(t *testing.T) {
 		t.Fatalf("Config file missing after replacement")
 	}
 	var cfg2 agentbridge.ClientConfig
-	json.Unmarshal(cfgBytes2, &cfg2)
+	if err := json.Unmarshal(cfgBytes2, &cfg2); err != nil {
+		t.Fatalf("Config unmarshal failed: %v", err)
+	}
 	if cfg2.Token != "second-token-valid" {
 		t.Fatalf("Token does not match after replacement, got %s", cfg2.Token)
+	}
+	if cfg2.Token == "dummy-test-token-not-valid" {
+		t.Fatalf("First token is still present")
 	}
 
 	// Verify final ACL still excludes ordinary users
 	verifyCmd2 := exec.Command("icacls", configPath)
-	aclOut2, _ := verifyCmd2.CombinedOutput()
+	aclOut2, err := verifyCmd2.CombinedOutput()
+	if err != nil {
+		t.Fatalf("icacls verify 2 failed: %v", err)
+	}
 	if strings.Contains(string(aclOut2), "BUILTIN\\Users") {
 		t.Fatalf("Config ACL after replacement includes BUILTIN\\Users")
+	}
+
+	// Check that no tmp file remains
+	entries2, err := os.ReadDir(filepath.Dir(configPath))
+	if err != nil {
+		t.Fatalf("ReadDir 2 failed: %v", err)
+	}
+	for _, e := range entries2 {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Fatalf("Temporary config file was not cleaned up: %s", e.Name())
+		}
 	}
 
 	// 6. TestReplayStoreReplacement
@@ -212,20 +284,32 @@ func TestWindowsSecurity(t *testing.T) {
 	rsPath := filepath.Join(bootstrapDir, "replay-state.json")
 	lockPath := filepath.Join(bootstrapDir, "replay-state.lock")
 	rs := &WindowsReplayStore{Path: rsPath, LockFile: lockPath}
-	rs.Reserve("boot-A")
-	rs.Release("boot-A")
-	rs.Reserve("boot-A")
-	rs.Commit("boot-A")
+	if err := rs.Reserve("boot-A"); err != nil {
+		t.Fatalf("Reserve boot-A failed: %v", err)
+	}
+	if err := rs.Release("boot-A"); err != nil {
+		t.Fatalf("Release boot-A failed: %v", err)
+	}
+	if err := rs.Reserve("boot-A"); err != nil {
+		t.Fatalf("Reserve boot-A second time failed: %v", err)
+	}
+	if err := rs.Commit("boot-A"); err != nil {
+		t.Fatalf("Commit boot-A failed: %v", err)
+	}
 
 	// Reopen store, confirm A is consumed
 	rs2 := &WindowsReplayStore{Path: rsPath, LockFile: lockPath}
 	if err := rs2.Reserve("boot-A"); err == nil || !strings.Contains(err.Error(), "already consumed") {
 		t.Fatalf("Expected already consumed error for A, got %v", err)
 	}
-	rs2.Reserve("boot-B")
-	rs2.Commit("boot-B")
+	if err := rs2.Reserve("boot-B"); err != nil {
+		t.Fatalf("Reserve boot-B failed: %v", err)
+	}
+	if err := rs2.Commit("boot-B"); err != nil {
+		t.Fatalf("Commit boot-B failed: %v", err)
+	}
 
-	// Confirm both survive restart
+	// Confirm both survive restart, and that the original bundle IDs are also consumed.
 	rs3 := &WindowsReplayStore{Path: rsPath, LockFile: lockPath}
 	if err := rs3.Reserve("boot-A"); err == nil {
 		t.Fatalf("A should be consumed")
@@ -233,8 +317,13 @@ func TestWindowsSecurity(t *testing.T) {
 	if err := rs3.Reserve("boot-B"); err == nil {
 		t.Fatalf("B should be consumed")
 	}
+	if err := rs3.Reserve(firstBootstrapID); err == nil {
+		t.Fatalf("First bootstrap ID should be consumed")
+	}
+	if err := rs3.Reserve(secondBootstrapID); err == nil {
+		t.Fatalf("Second bootstrap ID should be consumed")
+	}
 
-	// The unlock error was tested in main_test.go
 	// LockFileEx unexpected error test
 	t.Run("UnexpectedLockError", func(t *testing.T) {
 		f, err := os.CreateTemp("", "fake")
@@ -243,8 +332,12 @@ func TestWindowsSecurity(t *testing.T) {
 		}
 		path := f.Name()
 		// Close the file so the handle is invalid
-		f.Close()
-		os.Remove(path)
+		if err := f.Close(); err != nil {
+			t.Fatalf("Close failed: %v", err)
+		}
+		if err := os.Remove(path); err != nil {
+			t.Fatalf("Remove failed: %v", err)
+		}
 
 		err = lockFile(f)
 		if err == nil {
