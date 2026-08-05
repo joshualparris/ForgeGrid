@@ -81,7 +81,14 @@ sh -c 'while true; do echo alive >> "`+outPath+`"; sleep 0.1; done'
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
-		time.Sleep(500 * time.Millisecond)
+		// Wait up to 5 seconds for file to be created
+		for i := 0; i < 50; i++ {
+			if _, err := os.Stat(outPath); err == nil {
+				time.Sleep(200 * time.Millisecond) // Give it time to write a bit more
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
 		cancel()
 	}()
 

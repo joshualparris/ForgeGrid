@@ -77,6 +77,7 @@ func (c *Coordinator) Start(port string) error {
 	mux.HandleFunc("/api/jobs/test", c.handleTestJob)
 	mux.HandleFunc("/api/jobs", c.handleListJobs)
 	mux.HandleFunc("/api/jobs/", c.handleJobAction)
+	mux.HandleFunc("/api/jobs/manifest", c.handleManifest)
 
 	// Serve UI
 	mux.Handle("/", http.FileServer(http.FS(ui.DashboardFS)))

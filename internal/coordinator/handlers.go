@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"forgegrid/internal/director"
+	"forgegrid/internal/manifest"
 	"forgegrid/internal/models"
 )
 
@@ -336,11 +338,35 @@ func (c *Coordinator) handleJobAction(w http.ResponseWriter, r *http.Request) {
 		if len(req.Logs) > 0 {
 			job.Logs = append(job.Logs, req.Logs...)
 		}
-		if req.Status == "completed" || req.Status == "failed" {
+		if req.Status == "completed" || req.Status == "failed" || req.Status == "cancelled" {
 			now := time.Now()
 			job.EndTime = &now
 		}
 		c.Store.Save()
 		json.NewEncoder(w).Encode(job)
 	}
+}
+
+func (c *Coordinator) handleManifest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", "")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 65536)
+	m, err := manifest.Parse(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Failed to parse manifest", err.Error())
+		return
+	}
+
+	dir := director.New(c.Store)
+	err = dir.SubmitManifest(m)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "Failed to dispatch manifest tasks", err.Error())
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "dispatched", "project": m.Project})
 }
