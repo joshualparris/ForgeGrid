@@ -95,7 +95,7 @@ try {
     }
 } finally {
     Write-Host "[Stage 5] Cleaning up isolated test process..."
-    
+
     if ($Process -and $Process.Id) {
         try {
             $p = Get-Process -Id $Process.Id -ErrorAction SilentlyContinue
