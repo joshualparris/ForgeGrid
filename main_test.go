@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -21,9 +21,13 @@ import (
 
 func TestIntegration(t *testing.T) {
 	ui.DisableBrowser = true
-	os.RemoveAll("./test-data")
+	testRoot := t.TempDir()
+	storeDir := filepath.Join(testRoot, "data")
+	workspaceBad := filepath.Join(testRoot, "workspace-bad")
+	workspaceOne := filepath.Join(testRoot, "workspace-one")
+	workspaceLate := filepath.Join(testRoot, "workspace-late")
 
-	s, err := store.NewStore("./test-data")
+	s, err := store.NewStore(storeDir)
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
@@ -67,7 +71,7 @@ func TestIntegration(t *testing.T) {
 	}
 
 	// 2. Reject incorrect pairing code
-	wBad := worker.New("TestWorker-Bad", "./test-ws-bad", false)
+	wBad := worker.New("TestWorker-Bad", workspaceBad, false)
 	err = wBad.Pair(serverAddr, "999999", c.Fingerprint)
 	if err == nil {
 		t.Fatal("Expected pairing to fail with bad code")
@@ -75,8 +79,8 @@ func TestIntegration(t *testing.T) {
 
 	// 3. Successful worker pairing
 	// We need to set env vars for worker creds to save properly in a safe place
-	os.Setenv("XDG_DATA_HOME", "./test-data/creds")
-	w1 := worker.New("TestWorker-1", "./test-ws-1", false)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(testRoot, "creds"))
+	w1 := worker.New("TestWorker-1", workspaceOne, false)
 	err = w1.Pair(serverAddr, code, c.Fingerprint)
 	if err != nil {
 		t.Fatalf("Pairing failed: %v", err)
@@ -89,14 +93,14 @@ func TestIntegration(t *testing.T) {
 	}
 
 	// 4. Rate Limiting / One-time use: Re-use code should fail
-	wLate := worker.New("LateWorker", "./test-ws-late", false)
+	wLate := worker.New("LateWorker", workspaceLate, false)
 	err = wLate.Pair(serverAddr, code, c.Fingerprint)
 	if err == nil {
 		t.Fatalf("Expected re-use of pairing code to fail")
 	}
 
 	// Test 4: Restart loads credentials and does not require a pairing code
-	w1Restarted := worker.New("TestWorker-1-Restarted", "./test-ws-1", false)
+	w1Restarted := worker.New("TestWorker-1-Restarted", workspaceOne, false)
 	err = w1Restarted.LoadCreds()
 	if err != nil {
 		t.Fatalf("Restarted worker failed to load credentials: %v", err)
@@ -106,14 +110,14 @@ func TestIntegration(t *testing.T) {
 	}
 
 	// Test 5: Incorrect saved token is rejected
-	wBadToken := worker.New("TestWorker-1", "./test-ws-1", false)
+	wBadToken := worker.New("TestWorker-1", workspaceOne, false)
 	wBadToken.LoadCreds()
 	wBadToken.Token = "invalid-token"
 	wBadToken.Client = w1Restarted.Client // copy TLS client
 	// We can't easily capture the stdout of sendHeartbeat, but we can verify it doesn't stay online.
 
 	// Test 6: Changed TLS fingerprint is rejected
-	wBadTLS := worker.New("TestWorker-1", "./test-ws-1", false)
+	wBadTLS := worker.New("TestWorker-1", workspaceOne, false)
 	wBadTLS.LoadCreds()
 	wBadTLS.Fingerprint = "bad-fingerprint"
 	wBadTLS.Client = nil                     // Force new client creation if needed
@@ -187,11 +191,9 @@ func TestIntegration(t *testing.T) {
 	}
 
 	// 9. Restart persistence check
-	s2, _ := store.NewStore("./test-data")
+	s2, _ := store.NewStore(storeDir)
 	if len(s2.Workers) != 1 {
 		t.Fatalf("Expected persistence to load 1 worker, got %d", len(s2.Workers))
 	}
 
-	os.RemoveAll("./test-data")
-	os.RemoveAll("./test-ws-1")
 }
