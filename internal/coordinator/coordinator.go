@@ -17,6 +17,7 @@ type Coordinator struct {
 	IP          string
 	Insecure    bool
 	Fingerprint string
+	Listener    net.Listener
 }
 
 func getOutboundIP() string {
@@ -80,7 +81,12 @@ func (c *Coordinator) Start(port string) error {
 	// Serve UI
 	mux.Handle("/", http.FileServer(http.FS(ui.DashboardFS)))
 
-	addr := fmt.Sprintf("0.0.0.0:%s", port)
+	var addr string
+	if c.Listener != nil {
+		addr = c.Listener.Addr().String()
+	} else {
+		addr = fmt.Sprintf("0.0.0.0:%s", port)
+	}
 
 	go c.checkWorkerStatus()
 
@@ -95,6 +101,23 @@ func (c *Coordinator) Start(port string) error {
 	}
 
 	ui.OpenBrowser(uiURL)
+
+	if c.Listener != nil {
+		if c.Insecure {
+			return http.Serve(c.Listener, mux)
+		}
+		cert, err := tls.X509KeyPair(c.Store.CoordinatorCfg.CertPEM, c.Store.CoordinatorCfg.KeyPEM)
+		if err != nil {
+			return err
+		}
+		server := &http.Server{
+			Handler: mux,
+			TLSConfig: &tls.Config{
+				Certificates: []tls.Certificate{cert},
+			},
+		}
+		return server.ServeTLS(c.Listener, "", "")
+	}
 
 	if c.Insecure {
 		return http.ListenAndServe(addr, mux)

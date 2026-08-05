@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,13 +20,15 @@ import (
 
 func setupTestServer(t *testing.T) (*Server, *Store, string) {
 	tmpDir := t.TempDir()
-	os.Setenv("HOME", tmpDir)
-	
+	t.Setenv("LOCALAPPDATA", filepath.Join(tmpDir, "localappdata"))
+	t.Setenv("USERPROFILE", filepath.Join(tmpDir, "userprofile"))
+	t.Setenv("HOME", tmpDir)
+
 	s, err := NewStore()
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
-	
+
 	server := NewServer(s)
 	return server, s, tmpDir
 }
@@ -42,6 +45,9 @@ func doReq(t *testing.T, handler http.HandlerFunc, method, path, auth string, bo
 }
 
 func TestAuthAndRejection(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", filepath.Join(t.TempDir(), "localappdata"))
+	t.Setenv("USERPROFILE", filepath.Join(t.TempDir(), "userprofile"))
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
 	server, store, _ := setupTestServer(t)
 	store.agents["fedora"] = AgentRegistration{Name: "fedora", TokenHash: "00b6241dddb1bc0bc657026c85cb001a0eeaee5715a4d4c9f031b8afc4ba7e1f"}
 
@@ -95,7 +101,7 @@ func TestOversizedAndMalformed(t *testing.T) {
 	if w.Code != http.StatusBadRequest && w.Code != http.StatusRequestEntityTooLarge {
 		t.Errorf("Expected oversized body rejection, got %d", w.Code)
 	}
-	
+
 	longStr := strings.Repeat("a", 300*1024)
 	req = httptest.NewRequest("POST", "/api/v1/agent-messages", strings.NewReader(`{"recipient":"fedora", "task_id":"t1", "type":"instruction", "body":"`+longStr+`"}`))
 	req.Header.Set("Authorization", "Bearer "+auth)
@@ -124,7 +130,7 @@ func TestMessageLifecycle(t *testing.T) {
 	store.agents["windows"] = AgentRegistration{Name: "windows", TokenHash: "f7e4dc3579fa7e347f56f3d0aa9bbaa565f95cb5c8052607c947534d9f88c825"}
 
 	reqBody := `{"recipient":"windows", "task_id":"t1", "type":"instruction", "body":"hello", "ttl_seconds": 60, "idempotency_key": "k1"}`
-	
+
 	req := httptest.NewRequest("POST", "/api/v1/agent-messages", strings.NewReader(reqBody))
 	req.Header.Set("Authorization", "Bearer fedora:fedora-secret")
 	w := httptest.NewRecorder()
@@ -152,7 +158,7 @@ func TestMessageLifecycle(t *testing.T) {
 	var inbox []AgentMessage
 	json.Unmarshal(w.Body.Bytes(), &inbox)
 	if len(inbox) != 1 {
-		t.Fatalf("Windows should see 1 message, got %d", len(inbox))
+		t.Fatalf("Windows should see 1 message, got %d. Code: %d, Body: %s", len(inbox), w.Code, w.Body.String())
 	}
 
 	req = httptest.NewRequest("POST", "/api/v1/agent-messages/"+msg.ID+"/acknowledge", nil)
@@ -195,8 +201,10 @@ func TestMessageLifecycle(t *testing.T) {
 
 func TestIntegrationConcurrent(t *testing.T) {
 	tmpDir := t.TempDir()
-	os.Setenv("HOME", tmpDir)
-	
+	t.Setenv("LOCALAPPDATA", filepath.Join(tmpDir, "localappdata"))
+	t.Setenv("USERPROFILE", filepath.Join(tmpDir, "userprofile"))
+	t.Setenv("HOME", tmpDir)
+
 	s, _ := NewStore()
 	s.dataDir = filepath.Join(tmpDir, ".local", "share", "forgegrid", "agentbridge")
 	os.MkdirAll(s.dataDir, 0700)
@@ -209,6 +217,11 @@ func TestIntegrationConcurrent(t *testing.T) {
 	server.RegisterRoutes(mux)
 
 	srv := httptest.NewUnstartedServer(mux)
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen failed: %v", err)
+	}
+	srv.Listener = l
 	srv.TLS = &tls.Config{Certificates: []tls.Certificate{cert}}
 	srv.StartTLS()
 
@@ -226,11 +239,15 @@ func TestIntegrationConcurrent(t *testing.T) {
 	s.save()
 
 	var wg sync.WaitGroup
+	sem := make(chan struct{}, 50) // Limit concurrency to avoid ephemeral port / backlog exhaustion on Windows
 	// 700 messages sent concurrently (100 per agent sending to others)
 	for i := 0; i < 700; i++ {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
 			senderId := idx % agents
 			recipId := (idx + 1) % agents
 			c, err := NewClient(srv.URL, fmt.Sprintf("agent-%d", senderId), "secret", fp, false)
@@ -247,9 +264,9 @@ func TestIntegrationConcurrent(t *testing.T) {
 			}
 		}(i)
 	}
-	
+
 	wg.Wait()
-	
+
 	s.mu.Lock()
 	count := len(s.messages)
 	s.mu.Unlock()
@@ -308,8 +325,13 @@ func TestIntegrationConcurrent(t *testing.T) {
 	server2 := NewServer(s2)
 	mux2 := http.NewServeMux()
 	server2.RegisterRoutes(mux2)
-	
+
 	srv2 := httptest.NewUnstartedServer(mux2)
+	l2, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen failed: %v", err)
+	}
+	srv2.Listener = l2
 	srv2.TLS = &tls.Config{Certificates: []tls.Certificate{cert}}
 	srv2.StartTLS()
 	defer srv2.Close()
@@ -320,14 +342,14 @@ func TestIntegrationConcurrent(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed client creation after restart: %v", err)
 		}
-		
+
 		if i == 0 {
 			// send at least one fresh message after restart
 			msg, err := c.SendMessage("agent-1", "t2", TypeInstruction, "hello again", 3600, "new-key")
 			if err != nil {
 				t.Fatalf("SendMessage failed after restart: %v", err)
 			}
-			
+
 			c2, _ := NewClient(srv2.URL, "agent-1", "secret", fp, false)
 			inbox, err := c2.GetInbox()
 			if err != nil {
@@ -336,11 +358,11 @@ func TestIntegrationConcurrent(t *testing.T) {
 			if len(inbox) != 1 || inbox[0].ID != msg.ID {
 				t.Fatalf("Did not find fresh message in inbox")
 			}
-			
+
 			if _, err := c2.Acknowledge(msg.ID); err != nil {
 				t.Fatalf("Acknowledge failed after restart: %v", err)
 			}
-			
+
 			if _, err := c2.Complete(msg.ID, []byte(`{"status":"ok"}`)); err != nil {
 				t.Fatalf("Complete failed after restart: %v", err)
 			}

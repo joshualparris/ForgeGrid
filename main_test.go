@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -29,8 +30,17 @@ func TestIntegration(t *testing.T) {
 
 	c := coordinator.New(s, false) // secure mode
 
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen failed: %v", err)
+	}
+	c.Listener = l
+	port := l.Addr().(*net.TCPAddr).Port
+	serverAddr := fmt.Sprintf("127.0.0.1:%d", port)
+	serverURL := fmt.Sprintf("https://%s", serverAddr)
+
 	go func() {
-		err := c.Start("8443")
+		err := c.Start(fmt.Sprintf("%d", port))
 		if err != nil {
 			fmt.Println("Coordinator start err:", err)
 		}
@@ -43,7 +53,7 @@ func TestIntegration(t *testing.T) {
 	client := &http.Client{Transport: tr}
 
 	// 1. Generate pairing code via API
-	resp, err := client.Post("https://127.0.0.1:8443/api/pairing/code", "application/json", nil)
+	resp, err := client.Post(serverURL+"/api/pairing/code", "application/json", nil)
 	if err != nil {
 		t.Fatalf("Failed to generate code: %v", err)
 	}
@@ -58,7 +68,7 @@ func TestIntegration(t *testing.T) {
 
 	// 2. Reject incorrect pairing code
 	wBad := worker.New("TestWorker-Bad", "./test-ws-bad", false)
-	err = wBad.Pair("127.0.0.1:8443", "999999", c.Fingerprint)
+	err = wBad.Pair(serverAddr, "999999", c.Fingerprint)
 	if err == nil {
 		t.Fatal("Expected pairing to fail with bad code")
 	}
@@ -67,7 +77,7 @@ func TestIntegration(t *testing.T) {
 	// We need to set env vars for worker creds to save properly in a safe place
 	os.Setenv("XDG_DATA_HOME", "./test-data/creds")
 	w1 := worker.New("TestWorker-1", "./test-ws-1", false)
-	err = w1.Pair("127.0.0.1:8443", code, c.Fingerprint)
+	err = w1.Pair(serverAddr, code, c.Fingerprint)
 	if err != nil {
 		t.Fatalf("Pairing failed: %v", err)
 	}
@@ -80,7 +90,7 @@ func TestIntegration(t *testing.T) {
 
 	// 4. Rate Limiting / One-time use: Re-use code should fail
 	wLate := worker.New("LateWorker", "./test-ws-late", false)
-	err = wLate.Pair("127.0.0.1:8443", code, c.Fingerprint)
+	err = wLate.Pair(serverAddr, code, c.Fingerprint)
 	if err == nil {
 		t.Fatalf("Expected re-use of pairing code to fail")
 	}
@@ -121,7 +131,7 @@ func TestIntegration(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	// 6. Worker appearing online
-	resp, err = client.Get("https://127.0.0.1:8443/api/workers")
+	resp, err = client.Get(serverURL + "/api/workers")
 	if err != nil {
 		t.Fatalf("Failed to fetch workers: %v", err)
 	}
@@ -147,7 +157,7 @@ func TestIntegration(t *testing.T) {
 	// 7. Test-job assignment
 	jobReq := map[string]string{"worker_id": w1Restarted.WorkerID}
 	b, _ := json.Marshal(jobReq)
-	resp, err = client.Post("https://127.0.0.1:8443/api/jobs/test", "application/json", bytes.NewReader(b))
+	resp, err = client.Post(serverURL+"/api/jobs/test", "application/json", bytes.NewReader(b))
 	if err != nil {
 		t.Fatalf("Failed to post job: %v", err)
 	}
@@ -162,7 +172,7 @@ func TestIntegration(t *testing.T) {
 	// 8. Test-job completion & Challenge Verification
 	time.Sleep(3 * time.Second)
 
-	resp, err = client.Get("https://127.0.0.1:8443/api/jobs/" + jobRes.ID)
+	resp, err = client.Get(serverURL + "/api/jobs/" + jobRes.ID)
 	if err != nil {
 		t.Fatalf("Failed to get job status: %v", err)
 	}
