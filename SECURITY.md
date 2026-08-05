@@ -12,7 +12,7 @@ ForgeGrid executes arbitrary processes (builds, tests) on connected machines. Se
 ## Workspace Security
 - **Path Restrictions**: Commands are restricted strictly to the designated `ForgeGrid` workspace folder.
 - **Traversal Protection**: All paths provided by the Coordinator (for files and artefacts) are sanitized to prevent directory traversal (e.g., `../../`).
-- **Command Limitations**: 
+- **Command Limitations**:
   - Arbitrary remote shell access is forbidden.
   - No remote shutdown or OS administration commands are allowed in v1.
   - "Destructive-looking" commands (like `rm -rf`) require explicit allow-lists and confirmation.

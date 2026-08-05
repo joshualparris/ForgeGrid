@@ -25,3 +25,15 @@ Thumbs.db
 .vscode/
 .idea/
 forgegrid
+.agents/scripts/bootstrap-crypto/bootstrap-crypto.exe
+encrypted-bundle.bin
+
+# Generated bootstrap materials
+*.blob
+bootstrap-public.pem
+signer_priv.pem
+signer_pub.pem
+hybrid.json
+plain.json
+agentclient.json
+replay-state.json

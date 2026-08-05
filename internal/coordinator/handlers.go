@@ -93,35 +93,35 @@ func (c *Coordinator) handlePair(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Malformed JSON", err.Error())
 		return
 	}
-	
+
 	if req.NodeName == "" || len(req.NodeName) > 64 {
 		writeError(w, http.StatusBadRequest, "INVALID_NODE_NAME", "Node name is invalid or too long", "")
 		return
 	}
-	
+
 	c.Store.Mu.Lock()
 	defer c.Store.Mu.Unlock()
-	
+
 	if c.Store.CoordinatorCfg.PairingFailures > 5 {
 		writeError(w, http.StatusTooManyRequests, "RATE_LIMIT", "Too many failed pairing attempts", "Generate a new code")
 		return
 	}
-	
+
 	if c.Store.CoordinatorCfg.PairingCode == "" || c.Store.CoordinatorCfg.PairingCode != req.Code || time.Now().After(c.Store.CoordinatorCfg.PairingExpiry) {
 		c.Store.CoordinatorCfg.PairingFailures++
 		c.Store.Save()
 		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid or expired pairing code", "")
 		return
 	}
-	
+
 	// Invalidate code
 	c.Store.CoordinatorCfg.PairingCode = ""
 	c.Store.CoordinatorCfg.PairingFailures = 0
-	
+
 	// Generate token and ID
 	token := cryptoRandomHex(32)
 	workerID := "worker-" + cryptoRandomHex(16)
-	
+
 	c.Store.Workers[workerID] = &models.WorkerState{
 		ID:                workerID,
 		NodeName:          req.NodeName,
@@ -139,7 +139,7 @@ func (c *Coordinator) handlePair(w http.ResponseWriter, r *http.Request) {
 		Status:            "online",
 	}
 	c.Store.Save()
-	
+
 	json.NewEncoder(w).Encode(map[string]string{
 		"worker_id": workerID,
 		"token":     token,
@@ -157,19 +157,19 @@ func (c *Coordinator) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Malformed JSON", "")
 		return
 	}
-	
+
 	token := r.Header.Get("Authorization")
 	token = strings.TrimPrefix(token, "Bearer ")
-	
+
 	c.Store.Mu.Lock()
 	defer c.Store.Mu.Unlock()
-	
+
 	worker, ok := c.Store.Workers[req.WorkerID]
 	if !ok || worker.TokenHash != hashToken(token) {
 		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Unauthorized", "")
 		return
 	}
-	
+
 	worker.AvailableRAM = req.AvailableRAM
 	worker.FreeWorkspaceDisk = req.FreeDisk
 	worker.LastSeen = time.Now()
@@ -197,15 +197,15 @@ func (c *Coordinator) handleTestJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Malformed JSON", "")
 		return
 	}
-	
+
 	c.Store.Mu.Lock()
 	defer c.Store.Mu.Unlock()
-	
+
 	if _, ok := c.Store.Workers[req.WorkerID]; !ok {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "Worker not found", "")
 		return
 	}
-	
+
 	jobID := "job-" + cryptoRandomHex(16)
 	challenge := cryptoRandomHex(32)
 	job := &models.Job{
@@ -217,17 +217,17 @@ func (c *Coordinator) handleTestJob(w http.ResponseWriter, r *http.Request) {
 	}
 	c.Store.Jobs[jobID] = job
 	c.Store.Save()
-	
+
 	json.NewEncoder(w).Encode(job)
 }
 
 func (c *Coordinator) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	c.Store.Mu.RLock()
 	defer c.Store.Mu.RUnlock()
-	
+
 	workerID := r.URL.Query().Get("worker_id")
 	token := r.Header.Get("Authorization")
-	
+
 	if workerID != "" {
 		token = strings.TrimPrefix(token, "Bearer ")
 		worker, ok := c.Store.Workers[workerID]
@@ -244,7 +244,7 @@ func (c *Coordinator) handleListJobs(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(jobs)
 		return
 	}
-	
+
 	var jobs []models.Job
 	for _, j := range c.Store.Jobs {
 		jobs = append(jobs, *j)
@@ -260,21 +260,21 @@ func (c *Coordinator) handleJobAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jobID := parts[3]
-	
+
 	c.Store.Mu.Lock()
 	defer c.Store.Mu.Unlock()
-	
+
 	job, ok := c.Store.Jobs[jobID]
 	if !ok || job == nil {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "Job not found", "")
 		return
 	}
-	
+
 	if r.Method == http.MethodGet {
 		json.NewEncoder(w).Encode(job)
 		return
 	}
-	
+
 	if r.Method == http.MethodPost {
 		if len(parts) == 5 && parts[4] == "cancel" {
 			job.Status = "cancelled"
@@ -284,7 +284,7 @@ func (c *Coordinator) handleJobAction(w http.ResponseWriter, r *http.Request) {
 			json.NewEncoder(w).Encode(job)
 			return
 		}
-		
+
 		// Worker updating job status
 		token := r.Header.Get("Authorization")
 		token = strings.TrimPrefix(token, "Bearer ")
@@ -293,7 +293,7 @@ func (c *Coordinator) handleJobAction(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Unauthorized", "")
 			return
 		}
-		
+
 		var req struct {
 			Status string   `json:"status"`
 			Result string   `json:"result"`
@@ -303,7 +303,7 @@ func (c *Coordinator) handleJobAction(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Malformed JSON", "")
 			return
 		}
-		
+
 		if job.Status == "pending" && req.Status == "running" {
 			now := time.Now()
 			job.StartTime = &now

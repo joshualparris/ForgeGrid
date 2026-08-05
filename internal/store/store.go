@@ -2,10 +2,10 @@ package store
 
 import (
 	"encoding/json"
+	"forgegrid/internal/models"
 	"os"
 	"path/filepath"
 	"sync"
-	"forgegrid/internal/models"
 )
 
 type Store struct {
@@ -59,7 +59,7 @@ func (s *Store) Save() error {
 		}
 		return os.Rename(tmp, filepath.Join(s.dir, name))
 	}
-	
+
 	if err := saveFile("coordinator.json", s.CoordinatorCfg); err != nil {
 		return err
 	}

@@ -26,8 +26,8 @@ To verify the robust, secure LAN communication between the Coordinator and a phy
    Verify it returns the hardware information (OS, RAM, CPU) WITHOUT any `token` or `token_hash` field.
 2. **Dashboard Screenshot**: The Dashboard should show the worker as `online` with correct hardware specs.
 3. **Run Test Job**: Click "Run Test Job" on the Dashboard. Verify the worker terminal logs the challenge received and the SHA-256 result computed, and the Dashboard updates to `completed`.
-4. **Reconnection (Credential Persistence)**: 
-   - Close the Windows worker terminal. Wait 20 seconds. The Dashboard should show the worker as `offline`. 
+4. **Reconnection (Credential Persistence)**:
+   - Close the Windows worker terminal. Wait 20 seconds. The Dashboard should show the worker as `offline`.
    - Restart the worker **without** the `-code`, `-fingerprint`, or `-name` flags:
      `.\ForgeGrid.exe -mode worker`
    - It should immediately state `Loaded saved worker credentials` and resume heartbeats, returning to `online` on the Dashboard.

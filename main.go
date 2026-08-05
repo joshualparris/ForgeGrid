@@ -5,12 +5,18 @@ import (
 	"fmt"
 	"os"
 
+	"forgegrid/internal/agentbridge"
 	"forgegrid/internal/coordinator"
 	"forgegrid/internal/store"
 	"forgegrid/internal/worker"
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "agent-bridge" {
+		agentbridge.RunCLI(os.Args[2:])
+		return
+	}
+
 	mode := flag.String("mode", "", "coordinator or worker")
 	port := flag.String("port", "8080", "coordinator port")
 	nodeName := flag.String("name", "Unnamed-Node", "name of this node")
@@ -19,7 +25,7 @@ func main() {
 	insecure := flag.Bool("insecure", false, "Disable TLS (DEVELOPMENT ONLY)")
 	fingerprint := flag.String("fingerprint", "", "TLS certificate fingerprint of the coordinator (worker mode)")
 	resetWorker := flag.Bool("reset-worker", false, "Reset saved worker credentials")
-	
+
 	flag.Parse()
 
 	if *mode == "" {
@@ -53,9 +59,9 @@ func main() {
 			}
 			os.Exit(0)
 		}
-		
+
 		w := worker.New(*nodeName, "./forgegrid-workspace", *insecure)
-		
+
 		err := w.LoadCreds()
 		if err == nil {
 			fmt.Println("Loaded saved worker credentials.")
@@ -75,7 +81,7 @@ func main() {
 			}
 		}
 		w.Start()
-		
+
 		// Block forever
 		select {}
 	} else {
