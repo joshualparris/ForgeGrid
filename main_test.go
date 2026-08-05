@@ -169,7 +169,7 @@ func TestIntegration(t *testing.T) {
 	json.NewDecoder(resp.Body).Decode(&jobRes)
 	resp.Body.Close()
 
-	if jobRes.Status != "pending" {
+	if jobRes.Status != "PENDING" {
 		t.Fatalf("Expected job to be pending, got %s", jobRes.Status)
 	}
 
@@ -183,7 +183,7 @@ func TestIntegration(t *testing.T) {
 	json.NewDecoder(resp.Body).Decode(&jobRes)
 	resp.Body.Close()
 
-	if jobRes.Status != "completed" {
+	if jobRes.Status != "COMPLETED" {
 		t.Fatalf("Expected job to be completed, got %s. Result: %s", jobRes.Status, jobRes.Result)
 	}
 	if jobRes.Result != "success" {

@@ -21,21 +21,33 @@ type WorkerState struct {
 	Status            string    `json:"status"` // online, offline
 }
 
+type JobStatus string
+
+const (
+	StatusPending         JobStatus = "PENDING"
+	StatusClaimed         JobStatus = "CLAIMED"
+	StatusRunning         JobStatus = "RUNNING"
+	StatusCancelRequested JobStatus = "CANCEL_REQUESTED"
+	StatusCancelled       JobStatus = "CANCELLED"
+	StatusCompleted       JobStatus = "COMPLETED"
+	StatusFailed          JobStatus = "FAILED"
+)
+
 type Job struct {
 	ID        string     `json:"id"`
 	AttemptID string     `json:"attempt_id,omitempty"` // For duplicate-attempt prevention
 	WorkerID  string     `json:"worker_id"`
-	Task      string     `json:"task"`   // e.g. "test", "execute"
-	Status    string     `json:"status"` // pending, running, completed, failed, cancelled
+	Task      string     `json:"task"`
+	Status    JobStatus  `json:"status"`
 	StartTime *time.Time `json:"start_time,omitempty"`
 	EndTime   *time.Time `json:"end_time,omitempty"`
 	Result    string     `json:"result,omitempty"`
-	Logs      []string   `json:"logs,omitempty"`
+	Logs      []byte     `json:"logs,omitempty"`
+	LogSeq    int        `json:"log_seq,omitempty"`
 
 	// Structured Execution
 	Profile        string            `json:"profile,omitempty"`
-	Args           []string          `json:"args,omitempty"`
-	Env            map[string]string `json:"env,omitempty"`
+	Parameters     map[string]string `json:"parameters,omitempty"` // Typed, profile-specific parameters
 	TimeoutSeconds int               `json:"timeout_seconds,omitempty"`
 
 	Challenge string `json:"challenge,omitempty"` // For test task

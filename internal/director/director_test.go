@@ -34,10 +34,14 @@ tasks:
     requirements:
       os: "linux"
     execution:
-      profile: "go"
-      args: ["build", "./..."]
+      profile: "GoTest"
+      parameters:
+        package: "./..."
 `
-	m, _ := manifest.Parse(strings.NewReader(yamlData))
+	m, err := manifest.Parse(strings.NewReader(yamlData))
+	if err != nil {
+		t.Fatalf("Failed to parse manifest: %v", err)
+	}
 
 	err = dir.SubmitManifest(m)
 	if err != nil {
@@ -54,8 +58,8 @@ tasks:
 		if j.WorkerID != "worker-123" {
 			t.Errorf("Expected job assigned to worker-123, got %s", j.WorkerID)
 		}
-		if j.Profile != "go" {
-			t.Errorf("Expected profile 'go', got %s", j.Profile)
+		if j.Profile != "GoTest" {
+			t.Errorf("Expected profile 'GoTest', got %s", j.Profile)
 		}
 	}
 }
@@ -77,9 +81,12 @@ tasks:
     requirements:
       os: "linux"
     execution:
-      profile: "go"
+      profile: "GoTest"
 `
-	m, _ := manifest.Parse(strings.NewReader(yamlData))
+	m, err := manifest.Parse(strings.NewReader(yamlData))
+	if err != nil {
+		t.Fatalf("Failed to parse manifest: %v", err)
+	}
 
 	err = dir.SubmitManifest(m)
 	if err == nil {

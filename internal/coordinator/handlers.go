@@ -214,7 +214,7 @@ func (c *Coordinator) handleTestJob(w http.ResponseWriter, r *http.Request) {
 		ID:        jobID,
 		WorkerID:  req.WorkerID,
 		Task:      "test",
-		Status:    "pending",
+		Status:    models.StatusPending,
 		Challenge: challenge,
 	}
 	c.Store.Jobs[jobID] = job
@@ -239,7 +239,7 @@ func (c *Coordinator) handleListJobs(w http.ResponseWriter, r *http.Request) {
 		}
 		var jobs []models.Job
 		for _, j := range c.Store.Jobs {
-			if j.WorkerID == workerID && j.Status == "pending" {
+			if j.WorkerID == workerID && j.Status == models.StatusPending {
 				jobs = append(jobs, *j)
 			}
 		}
@@ -279,9 +279,33 @@ func (c *Coordinator) handleJobAction(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodPost {
 		if len(parts) == 5 && parts[4] == "cancel" {
-			job.Status = "cancelled"
+			job.Status = models.StatusCancelRequested
 			now := time.Now()
 			job.EndTime = &now
+			job.Result = "cancelled"
+			c.Store.Save()
+			json.NewEncoder(w).Encode(job)
+			return
+		}
+
+		if len(parts) == 5 && parts[4] == "claim" {
+			// Worker claiming the job
+			token := r.Header.Get("Authorization")
+			token = strings.TrimPrefix(token, "Bearer ")
+			worker, ok := c.Store.Workers[job.WorkerID]
+			if !ok || worker.TokenHash != hashToken(token) {
+				writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Unauthorized", "")
+				return
+			}
+			if job.Status != models.StatusPending {
+				writeError(w, http.StatusConflict, "CONFLICT", "Job is not pending", "")
+				return
+			}
+			// Atomically assign AttemptID
+			job.AttemptID = "attempt-" + cryptoRandomHex(16)
+			job.Status = models.StatusClaimed
+			now := time.Now()
+			job.StartTime = &now
 			c.Store.Save()
 			json.NewEncoder(w).Encode(job)
 			return
@@ -297,37 +321,43 @@ func (c *Coordinator) handleJobAction(w http.ResponseWriter, r *http.Request) {
 		}
 
 		var req struct {
-			AttemptID string   `json:"attempt_id"`
-			Status    string   `json:"status"`
-			Result    string   `json:"result"`
-			Logs      []string `json:"logs"`
+			AttemptID string           `json:"attempt_id"`
+			Status    models.JobStatus `json:"status"`
+			Result    string           `json:"result"`
+			Logs      []byte           `json:"logs"`
+			LogSeq    int              `json:"log_seq"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Malformed JSON", "")
 			return
 		}
 
-		if job.AttemptID != "" && req.AttemptID != job.AttemptID {
-			writeError(w, http.StatusConflict, "CONFLICT", "Invalid attempt ID", "")
+		// All further updates require matching AttemptID
+		if job.AttemptID == "" || req.AttemptID != job.AttemptID {
+			writeError(w, http.StatusConflict, "CONFLICT", "Invalid attempt ID or duplicate claim", "")
 			return
 		}
 
-		if job.Status == "pending" && req.Status == "running" {
-			now := time.Now()
-			job.StartTime = &now
-			if job.AttemptID == "" {
-				job.AttemptID = req.AttemptID
-			}
+		// Reject terminal state mutations
+		if job.Status == models.StatusCancelled || job.Status == models.StatusCompleted || job.Status == models.StatusFailed {
+			writeError(w, http.StatusConflict, "CONFLICT", "Job is already in terminal state", "")
+			return
 		}
-		job.Status = req.Status
+
+		// Handle valid transitions
+		if req.Status == models.StatusRunning || req.Status == models.StatusCancelled || req.Status == models.StatusCompleted || req.Status == models.StatusFailed {
+			job.Status = req.Status
+		} else {
+			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid status transition", "")
+			return
+		}
+
 		if req.Result != "" {
-			// If completing a test job, verify the challenge
-			if job.Task == "test" && req.Status == "completed" {
+			if job.Task == "test" && req.Status == models.StatusCompleted {
 				expected := hashToken(job.Challenge)
 				if req.Result != expected {
-					job.Status = "failed"
 					job.Result = "challenge verification failed"
-					job.Logs = append(job.Logs, "ERROR: Coordinator rejected challenge result")
+					job.Logs = append(job.Logs, []byte("\nERROR: Coordinator rejected challenge result")...)
 				} else {
 					job.Result = "success"
 				}
@@ -335,10 +365,18 @@ func (c *Coordinator) handleJobAction(w http.ResponseWriter, r *http.Request) {
 				job.Result = req.Result
 			}
 		}
-		if len(req.Logs) > 0 {
+
+		// Byte-bounded sequence-numbered logs
+		if req.LogSeq > job.LogSeq {
 			job.Logs = append(job.Logs, req.Logs...)
+			job.LogSeq = req.LogSeq
+			// Cap logs at 1MB
+			if len(job.Logs) > 1024*1024 {
+				job.Logs = job.Logs[len(job.Logs)-1024*1024:]
+			}
 		}
-		if req.Status == "completed" || req.Status == "failed" || req.Status == "cancelled" {
+
+		if req.Status == models.StatusCancelled || req.Status == models.StatusCompleted || req.Status == models.StatusFailed {
 			now := time.Now()
 			job.EndTime = &now
 		}
