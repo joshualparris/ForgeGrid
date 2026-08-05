@@ -70,12 +70,19 @@ func applySecureACL(path string, isDir bool) error {
 		return err
 	}
 
-	inherit := ""
+	aceFlags := ""
 	if isDir {
-		inherit = "OICI;"
+		aceFlags = "OICI"
 	}
 
-	sddl := "D:PAI(A;" + inherit + "FA;;;" + sid + ")(A;" + inherit + "FA;;;SY)(A;" + inherit + "FA;;;BA)"
+	makeACE := func(account string) string {
+		return "(A;" + aceFlags + ";FA;;;" + account + ")"
+	}
+
+	sddl := "D:PAI" +
+		makeACE(sid) +
+		makeACE("SY") +
+		makeACE("BA")
 	sd, err := windows.SecurityDescriptorFromString(sddl)
 	if err != nil {
 		return fmt.Errorf("failed to create security descriptor: %w", err)
