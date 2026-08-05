@@ -121,6 +121,10 @@ func verifySecureACL(path, expectedSID string) error {
 		"SY":        true,
 		"BA":        true,
 	}
+	expected, err := windows.StringToSid(expectedSID)
+	if err != nil {
+		return fmt.Errorf("invalid expected SID %q: %w", expectedSID, err)
+	}
 
 	daclPart := sddl
 	if idx := strings.Index(daclPart, "S:"); idx != -1 {
@@ -141,7 +145,13 @@ func verifySecureACL(path, expectedSID string) error {
 			aceType := fields[0]
 			accountSid := fields[5]
 			if aceType == "A" { // Allow ACE
-				if !allowedSIDs[accountSid] {
+				matchesExpected := false
+				if accountSD, parseErr := windows.SecurityDescriptorFromString("O:" + accountSid); parseErr == nil {
+					if account, _, ownerErr := accountSD.Owner(); ownerErr == nil && account != nil {
+						matchesExpected = account.Equals(expected)
+					}
+				}
+				if !allowedSIDs[accountSid] && !matchesExpected {
 					return fmt.Errorf("unauthorized SID found in DACL: %s", accountSid)
 				}
 			}
