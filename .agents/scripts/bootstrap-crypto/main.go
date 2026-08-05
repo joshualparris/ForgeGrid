@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"forgegrid/internal/agentbridge"
@@ -30,6 +31,18 @@ func getConfigPath() string {
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".config", "forgegrid", "agentclient.json")
+}
+
+func environmentWithLocalAppData(environ []string, localAppData string) []string {
+	result := make([]string, 0, len(environ)+1)
+	for _, entry := range environ {
+		name, _, found := strings.Cut(entry, "=")
+		if found && strings.EqualFold(name, "LOCALAPPDATA") {
+			continue
+		}
+		result = append(result, entry)
+	}
+	return append(result, "LOCALAPPDATA="+localAppData)
 }
 
 func main() {
@@ -446,6 +459,7 @@ func decryptProtectedAndApply(privBlobPath, bundlePath, signerPubPath, expectedS
 		"--url", bd.RelayURL,
 		"--fingerprint", bd.Fingerprint,
 		"--token-stdin")
+	cmd.Env = environmentWithLocalAppData(os.Environ(), localAppData)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -577,6 +591,7 @@ func decryptAndApply(privPath, bundlePath, signerPubPath, expectedSignerFingerpr
 		"--url", bd.RelayURL,
 		"--fingerprint", bd.Fingerprint,
 		"--token-stdin")
+	cmd.Env = environmentWithLocalAppData(os.Environ(), localAppData)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

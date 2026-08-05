@@ -29,6 +29,25 @@ func buildBinary(t *testing.T) string {
 	return binPath
 }
 
+func TestEnvironmentWithLocalAppDataReplacesCaseInsensitiveDuplicates(t *testing.T) {
+	env := environmentWithLocalAppData([]string{
+		"PATH=example",
+		"LOCALAPPDATA=old-one",
+		"LocalAppData=old-two",
+	}, `C:\\proof\\localappdata`)
+
+	var matches []string
+	for _, entry := range env {
+		name, _, found := strings.Cut(entry, "=")
+		if found && strings.EqualFold(name, "LOCALAPPDATA") {
+			matches = append(matches, entry)
+		}
+	}
+	if len(matches) != 1 || matches[0] != `LOCALAPPDATA=C:\\proof\\localappdata` {
+		t.Fatalf("expected one resolved LOCALAPPDATA entry, got %q", matches)
+	}
+}
+
 func TestReplayStore(t *testing.T) {
 	tmpDir := t.TempDir()
 	storePath := filepath.Join(tmpDir, "replay-state.json")
