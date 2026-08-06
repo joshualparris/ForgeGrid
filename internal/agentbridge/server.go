@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -46,6 +47,9 @@ func (s *Server) cleanupLoop() {
 			}
 		}
 		s.mu.Unlock()
+
+		// Enforce retention limit for ordinary messages
+		s.store.EnforceRetention(1000)
 	}
 }
 
@@ -113,8 +117,26 @@ func (s *Server) authenticate(r *http.Request) (string, bool) {
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/agent-messages", s.handleMessages)
 	mux.HandleFunc("/api/v1/agent-messages/inbox", s.handleInbox)
-	mux.HandleFunc("/api/v1/agent-messages/", s.handleMessageAction)
+	mux.HandleFunc("/api/v1/agent-messages/agents", s.handleAgents)
+	mux.HandleFunc("/api/v1/agent-messages/", s.handleMessageActionOrDelivery)
 	mux.HandleFunc("/api/v1/agent-status", s.handleStatus)
+}
+
+func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
+	_, ok := s.authenticate(r)
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	agents := s.store.GetAgentNames()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(agents)
 }
 
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
@@ -157,27 +179,34 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Bad request: recipient length invalid", http.StatusBadRequest)
 		return
 	}
-	if len(req.TaskID) == 0 || len(req.TaskID) > 100 {
-		http.Error(w, "Bad request: task ID length invalid", http.StatusBadRequest)
+	if req.Type == TypeInstruction || req.Type == TypeProgress || req.Type == TypeResult {
+		if len(req.TaskID) == 0 || len(req.TaskID) > 100 {
+			http.Error(w, "Bad request: task ID length invalid", http.StatusBadRequest)
+			return
+		}
+	} else if len(req.TaskID) > 100 {
+		http.Error(w, "Bad request: task ID too long", http.StatusBadRequest)
 		return
 	}
 	if len(req.IdempotencyKey) > 100 {
 		http.Error(w, "Bad request: idempotency key too long", http.StatusBadRequest)
 		return
 	}
-	if len(req.Body) == 0 || len(req.Body) > 256*1024 {
+	if len(req.Body) == 0 || len(req.Body) > 16*1024 {
 		http.Error(w, "Bad request: body too large or empty", http.StatusBadRequest)
 		return
 	}
 
-	if _, ok := s.store.GetAgent(req.Recipient); !ok {
-		http.Error(w, "Recipient not found", http.StatusNotFound)
-		return
+	if req.Recipient != "#all-agents" {
+		if _, ok := s.store.GetAgent(req.Recipient); !ok {
+			http.Error(w, "Recipient not found", http.StatusNotFound)
+			return
+		}
 	}
 
 	// Validate type
 	switch req.Type {
-	case TypeInstruction, TypeAcknowledgement, TypeProgress, TypeResult, TypeError, TypeQuestion, TypeAnswer, TypeShutdownNotice:
+	case TypeInstruction, TypeAcknowledgement, TypeProgress, TypeResult, TypeError, TypeQuestion, TypeAnswer, TypeShutdownNotice, TypeChat, TypeSystem:
 	default:
 		http.Error(w, "Invalid message type", http.StatusBadRequest)
 		return
@@ -231,19 +260,44 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	inbox := s.store.GetInbox(recipient)
+	limit := 100
+	offset := 0
+
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, _ := fmt.Sscanf(l, "%d", &limit); n != 1 || limit <= 0 || limit > 1000 {
+			limit = 100
+		}
+	}
+	if o := r.URL.Query().Get("offset"); o != "" {
+		if n, _ := fmt.Sscanf(o, "%d", &offset); n != 1 || offset < 0 {
+			offset = 0
+		}
+	}
+
+	var statuses []MessageStatus
+	if st := r.URL.Query().Get("status"); st != "" {
+		for _, s := range strings.Split(st, ",") {
+			statuses = append(statuses, MessageStatus(s))
+		}
+	} else {
+		// By default, just like the old behavior, only return actionable messages
+		statuses = []MessageStatus{StatusPending, StatusAcknowledged}
+	}
+
+	includeOutgoing := r.URL.Query().Get("include_outgoing") == "true"
+	inbox := s.store.GetInbox(recipient, limit, offset, includeOutgoing, statuses...)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(inbox)
 }
 
-func (s *Server) handleMessageAction(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleMessageActionOrDelivery(w http.ResponseWriter, r *http.Request) {
 	agent, ok := s.authenticate(r)
 	if !ok {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	if r.Method != http.MethodPost {
+	if r.Method != http.MethodPost && r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -256,6 +310,33 @@ func (s *Server) handleMessageAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id, action := parts[0], parts[1]
+
+	if action == "delivery" {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		msg, ok := s.store.GetMessage(id)
+		if !ok {
+			http.Error(w, "Not found", http.StatusNotFound)
+			return
+		}
+
+		if msg.Sender != agent {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(msg)
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 
 	var req struct {
 		Result json.RawMessage `json:"result"`
