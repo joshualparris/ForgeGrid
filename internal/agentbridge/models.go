@@ -16,6 +16,8 @@ const (
 	TypeQuestion        MessageType = "question"
 	TypeAnswer          MessageType = "answer"
 	TypeShutdownNotice  MessageType = "shutdown_notice"
+	TypeChat            MessageType = "chat"
+	TypeSystem          MessageType = "system"
 )
 
 type MessageStatus string

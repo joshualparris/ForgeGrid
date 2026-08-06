@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 )
@@ -178,19 +179,65 @@ func (s *Store) TransitionMessage(id, recipient, action string, result json.RawM
 	return msg, nil
 }
 
-func (s *Store) GetInbox(recipient string) []AgentMessage {
+func (s *Store) GetInbox(recipient string, limit, offset int, statuses ...MessageStatus) []AgentMessage {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	statusMap := make(map[MessageStatus]bool)
+	for _, st := range statuses {
+		statusMap[st] = true
+	}
+
 	var inbox []AgentMessage
 	for _, m := range s.messages {
-		if m.Recipient == recipient && time.Now().Before(m.ExpiresAt) {
-			if m.Status == StatusPending || m.Status == StatusAcknowledged {
+		if (m.Recipient == recipient || m.Recipient == "#all-agents") && time.Now().Before(m.ExpiresAt) {
+			if len(statusMap) == 0 || statusMap[m.Status] {
 				inbox = append(inbox, m)
 			}
 		}
 	}
-	return inbox
+
+	// Sort newest first
+	sort.Slice(inbox, func(i, j int) bool {
+		return inbox[i].CreatedAt.After(inbox[j].CreatedAt)
+	})
+
+	if offset >= len(inbox) {
+		return []AgentMessage{}
+	}
+
+	end := offset + limit
+	if end > len(inbox) {
+		end = len(inbox)
+	}
+
+	return inbox[offset:end]
+}
+
+func (s *Store) EnforceRetention(limit int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(s.messages) <= limit {
+		return nil
+	}
+
+	var all []AgentMessage
+	for _, m := range s.messages {
+		all = append(all, m)
+	}
+
+	sort.Slice(all, func(i, j int) bool {
+		return all[i].CreatedAt.After(all[j].CreatedAt)
+	})
+
+	// Keep only the newest 'limit' messages
+	s.messages = make(map[string]AgentMessage)
+	for i := 0; i < limit; i++ {
+		s.messages[all[i].ID] = all[i]
+	}
+
+	return s.save()
 }
 
 func GenerateID() (string, error) {

@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -46,6 +47,9 @@ func (s *Server) cleanupLoop() {
 			}
 		}
 		s.mu.Unlock()
+		
+		// Enforce retention limit for ordinary messages
+		s.store.EnforceRetention(1000)
 	}
 }
 
@@ -165,19 +169,21 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Bad request: idempotency key too long", http.StatusBadRequest)
 		return
 	}
-	if len(req.Body) == 0 || len(req.Body) > 256*1024 {
+	if len(req.Body) == 0 || len(req.Body) > 16*1024 {
 		http.Error(w, "Bad request: body too large or empty", http.StatusBadRequest)
 		return
 	}
 
-	if _, ok := s.store.GetAgent(req.Recipient); !ok {
-		http.Error(w, "Recipient not found", http.StatusNotFound)
-		return
+	if req.Recipient != "#all-agents" {
+		if _, ok := s.store.GetAgent(req.Recipient); !ok {
+			http.Error(w, "Recipient not found", http.StatusNotFound)
+			return
+		}
 	}
 
 	// Validate type
 	switch req.Type {
-	case TypeInstruction, TypeAcknowledgement, TypeProgress, TypeResult, TypeError, TypeQuestion, TypeAnswer, TypeShutdownNotice:
+	case TypeInstruction, TypeAcknowledgement, TypeProgress, TypeResult, TypeError, TypeQuestion, TypeAnswer, TypeShutdownNotice, TypeChat, TypeSystem:
 	default:
 		http.Error(w, "Invalid message type", http.StatusBadRequest)
 		return
@@ -231,7 +237,31 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	inbox := s.store.GetInbox(recipient)
+	limit := 100
+	offset := 0
+	
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, _ := fmt.Sscanf(l, "%d", &limit); n != 1 || limit <= 0 || limit > 1000 {
+			limit = 100
+		}
+	}
+	if o := r.URL.Query().Get("offset"); o != "" {
+		if n, _ := fmt.Sscanf(o, "%d", &offset); n != 1 || offset < 0 {
+			offset = 0
+		}
+	}
+
+	var statuses []MessageStatus
+	if st := r.URL.Query().Get("status"); st != "" {
+		for _, s := range strings.Split(st, ",") {
+			statuses = append(statuses, MessageStatus(s))
+		}
+	} else {
+		// By default, just like the old behavior, only return actionable messages
+		statuses = []MessageStatus{StatusPending, StatusAcknowledged}
+	}
+
+	inbox := s.store.GetInbox(recipient, limit, offset, statuses...)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(inbox)
 }
