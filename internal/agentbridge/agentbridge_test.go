@@ -382,3 +382,30 @@ func TestIntegrationConcurrent(t *testing.T) {
 		t.Fatalf("Expected 701 messages in s3, got %d", len(s3.messages))
 	}
 }
+
+func TestOptionalTaskIDForChat(t *testing.T) {
+	server, store, _ := setupTestServer(t)
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+
+	store.agents["fedora"] = AgentRegistration{Name: "fedora", TokenHash: "00b6241dddb1bc0bc657026c85cb001a0eeaee5715a4d4c9f031b8afc4ba7e1f"}
+	auth := "fedora:fedora-secret"
+
+	// Missing task_id for chat should succeed
+	req := httptest.NewRequest("POST", "/api/v1/agent-messages", strings.NewReader(`{"recipient":"fedora", "type":"chat", "body":"hello"}`))
+	req.Header.Set("Authorization", "Bearer "+auth)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Errorf("Expected 201 for chat without task_id, got %d", w.Code)
+	}
+
+	// Missing task_id for instruction should fail
+	req2 := httptest.NewRequest("POST", "/api/v1/agent-messages", strings.NewReader(`{"recipient":"fedora", "type":"instruction", "body":"hello"}`))
+	req2.Header.Set("Authorization", "Bearer "+auth)
+	w2 := httptest.NewRecorder()
+	mux.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 for instruction without task_id, got %d", w2.Code)
+	}
+}

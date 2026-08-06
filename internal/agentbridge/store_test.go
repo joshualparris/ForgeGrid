@@ -69,3 +69,50 @@ func TestStore_EnforceRetention(t *testing.T) {
 		}
 	}
 }
+
+func TestStore_AllAgentsIndependentReceipts(t *testing.T) {
+	store, _ := NewStore()
+	store.dataDir = t.TempDir()
+	store.messages = make(map[string]AgentMessage)
+	store.agents = make(map[string]AgentRegistration)
+	store.agents["agentA"] = AgentRegistration{Name: "agentA"}
+	store.agents["agentB"] = AgentRegistration{Name: "agentB"}
+
+	msg := AgentMessage{
+		ID:        "msg1",
+		Recipient: "#all-agents",
+		CreatedAt: time.Now(),
+		ExpiresAt: time.Now().Add(1 * time.Hour),
+	}
+	store.AddMessage(msg)
+
+	// Acknowledge for agentA
+	_, err := store.TransitionMessage("msg1", "agentA", "acknowledge", nil)
+	if err != nil {
+		t.Fatalf("Failed to ack for agentA: %v", err)
+	}
+
+	// Complete for agentA
+	_, err = store.TransitionMessage("msg1", "agentA", "complete", []byte(`{"status":"ok"}`))
+	if err != nil {
+		t.Fatalf("Failed to complete for agentA: %v", err)
+	}
+
+	// Duplicate complete for agentA should be idempotent
+	_, err = store.TransitionMessage("msg1", "agentA", "complete", []byte(`{"status":"ok"}`))
+	if err != nil {
+		t.Fatalf("Duplicate complete for agentA failed: %v", err)
+	}
+
+	// Verify agentA inbox
+	inboxA := store.GetInbox("agentA", 100, 0)
+	if len(inboxA) != 1 || inboxA[0].Status != StatusCompleted {
+		t.Fatalf("Expected agentA to see completed message, got %+v", inboxA)
+	}
+
+	// Verify agentB inbox
+	inboxB := store.GetInbox("agentB", 100, 0)
+	if len(inboxB) != 1 || inboxB[0].Status != StatusPending {
+		t.Fatalf("Expected agentB to see pending message, got %+v", inboxB)
+	}
+}

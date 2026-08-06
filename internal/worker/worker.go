@@ -445,7 +445,7 @@ func (w *Worker) executeJob(job models.Job) {
 		var gm *gitworkspace.Manager
 		var mainRepoDir string
 		var branchName string
-		
+
 		var output []byte
 		finalResult := "success"
 		finalStatus := models.StatusCompleted
@@ -453,7 +453,7 @@ func (w *Worker) executeJob(job models.Job) {
 		if job.RepositoryURL != "" {
 			allowed := []string{"https://github.com/joshualparris/TextGame.git"} // Hardcoded allowlist for prototype safety
 			gm = gitworkspace.NewManager(w.Workspace, allowed)
-			
+
 			branchName = job.BranchName
 			if branchName == "" {
 				branchName = "forgegrid-" + job.ID
@@ -466,7 +466,7 @@ func (w *Worker) executeJob(job models.Job) {
 			}
 			workDir = wd
 			mainRepoDir = filepath.Join(w.Workspace, strings.TrimSuffix(filepath.Base(job.RepositoryURL), ".git"))
-			
+
 			// Setup cleanup and reporting
 			defer func() {
 				diff, diffErr := gm.ProduceDiff(workDir)
@@ -496,7 +496,7 @@ func (w *Worker) executeJob(job models.Job) {
 
 		executor := execution.NewExecutor()
 		output, err = executor.Execute(execCtx, profile, job.Parameters, workDir)
-		
+
 		if err != nil {
 			if execCtx.Err() == context.DeadlineExceeded {
 				finalResult = "timeout"

@@ -123,6 +123,16 @@ func (s *Store) AddMessage(msg AgentMessage) (AgentMessage, error) {
 	if _, ok := s.messages[msg.ID]; ok {
 		return msg, nil // Idempotent fallback
 	}
+
+	if msg.Recipient == "#all-agents" {
+		msg.Receipts = make(map[string]*MessageReceipt)
+		for name := range s.agents {
+			msg.Receipts[name] = &MessageReceipt{
+				Status: StatusPending,
+			}
+		}
+	}
+
 	s.messages[msg.ID] = msg
 	return msg, s.save()
 }
@@ -143,32 +153,65 @@ func (s *Store) TransitionMessage(id, recipient, action string, result json.RawM
 		return AgentMessage{}, fmt.Errorf("not found")
 	}
 
-	if msg.Recipient != recipient {
+	if msg.Recipient != recipient && msg.Recipient != "#all-agents" {
 		return AgentMessage{}, fmt.Errorf("forbidden")
 	}
 
-	now := time.Now()
-
-	switch action {
-	case "acknowledge":
-		if msg.Status == StatusPending {
-			msg.Status = StatusAcknowledged
-			msg.AcknowledgedAt = &now
+	if msg.Recipient == "#all-agents" {
+		if msg.Receipts == nil {
+			msg.Receipts = make(map[string]*MessageReceipt)
 		}
-	case "complete":
-		if msg.Status != StatusCompleted && msg.Status != StatusFailed {
-			msg.Status = StatusCompleted
-			msg.CompletedAt = &now
-			msg.Result = result
+		receipt, ok := msg.Receipts[recipient]
+		if !ok {
+			receipt = &MessageReceipt{Status: StatusPending}
+			msg.Receipts[recipient] = receipt
 		}
-	case "fail":
-		if msg.Status != StatusCompleted && msg.Status != StatusFailed {
-			msg.Status = StatusFailed
-			msg.CompletedAt = &now
-			msg.Result = result
+		
+		now := time.Now()
+		switch action {
+		case "acknowledge":
+			if receipt.Status == StatusPending {
+				receipt.Status = StatusAcknowledged
+				receipt.AcknowledgedAt = &now
+			}
+		case "complete":
+			if receipt.Status != StatusCompleted && receipt.Status != StatusFailed {
+				receipt.Status = StatusCompleted
+				receipt.CompletedAt = &now
+				receipt.Result = result
+			}
+		case "fail":
+			if receipt.Status != StatusCompleted && receipt.Status != StatusFailed {
+				receipt.Status = StatusFailed
+				receipt.CompletedAt = &now
+				receipt.Result = result
+			}
+		default:
+			return AgentMessage{}, fmt.Errorf("invalid action")
 		}
-	default:
-		return AgentMessage{}, fmt.Errorf("invalid action")
+	} else {
+		now := time.Now()
+		switch action {
+		case "acknowledge":
+			if msg.Status == StatusPending {
+				msg.Status = StatusAcknowledged
+				msg.AcknowledgedAt = &now
+			}
+		case "complete":
+			if msg.Status != StatusCompleted && msg.Status != StatusFailed {
+				msg.Status = StatusCompleted
+				msg.CompletedAt = &now
+				msg.Result = result
+			}
+		case "fail":
+			if msg.Status != StatusCompleted && msg.Status != StatusFailed {
+				msg.Status = StatusFailed
+				msg.CompletedAt = &now
+				msg.Result = result
+			}
+		default:
+			return AgentMessage{}, fmt.Errorf("invalid action")
+		}
 	}
 
 	s.messages[id] = msg
@@ -191,8 +234,21 @@ func (s *Store) GetInbox(recipient string, limit, offset int, statuses ...Messag
 	var inbox []AgentMessage
 	for _, m := range s.messages {
 		if (m.Recipient == recipient || m.Recipient == "#all-agents") && time.Now().Before(m.ExpiresAt) {
-			if len(statusMap) == 0 || statusMap[m.Status] {
-				inbox = append(inbox, m)
+			mCopy := m
+			
+			if m.Recipient == "#all-agents" {
+				if receipt, ok := m.Receipts[recipient]; ok {
+					mCopy.Status = receipt.Status
+					mCopy.AcknowledgedAt = receipt.AcknowledgedAt
+					mCopy.CompletedAt = receipt.CompletedAt
+					mCopy.Result = receipt.Result
+				} else {
+					mCopy.Status = StatusPending
+				}
+			}
+
+			if len(statusMap) == 0 || statusMap[mCopy.Status] {
+				inbox = append(inbox, mCopy)
 			}
 		}
 	}

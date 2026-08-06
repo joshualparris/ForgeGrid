@@ -161,8 +161,13 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Bad request: recipient length invalid", http.StatusBadRequest)
 		return
 	}
-	if len(req.TaskID) == 0 || len(req.TaskID) > 100 {
-		http.Error(w, "Bad request: task ID length invalid", http.StatusBadRequest)
+	if req.Type == TypeInstruction || req.Type == TypeProgress || req.Type == TypeResult {
+		if len(req.TaskID) == 0 || len(req.TaskID) > 100 {
+			http.Error(w, "Bad request: task ID length invalid", http.StatusBadRequest)
+			return
+		}
+	} else if len(req.TaskID) > 100 {
+		http.Error(w, "Bad request: task ID too long", http.StatusBadRequest)
 		return
 	}
 	if len(req.IdempotencyKey) > 100 {

@@ -44,6 +44,14 @@ type AgentMessage struct {
 	AcknowledgedAt *time.Time      `json:"acknowledged_at,omitempty"`
 	CompletedAt    *time.Time      `json:"completed_at,omitempty"`
 	Result         json.RawMessage `json:"result,omitempty"`
+	Receipts       map[string]*MessageReceipt `json:"receipts,omitempty"` // For #all-agents
+}
+
+type MessageReceipt struct {
+	Status         MessageStatus   `json:"status"`
+	AcknowledgedAt *time.Time      `json:"acknowledged_at,omitempty"`
+	CompletedAt    *time.Time      `json:"completed_at,omitempty"`
+	Result         json.RawMessage `json:"result,omitempty"`
 }
 
 type AgentRegistration struct {
