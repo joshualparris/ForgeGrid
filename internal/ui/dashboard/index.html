@@ -82,6 +82,22 @@
             fetchJobs();
         }
 
+        async function disconnectWorker(workerId) {
+            if (confirm("Are you sure you want to disconnect this worker?")) {
+                await fetch('/api/workers/disconnect', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ worker_id: workerId })
+                });
+                fetchWorkers();
+            }
+        }
+
+        function escapeHTML(str) {
+            if (!str) return '';
+            return str.toString().replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
+
         async function fetchWorkers() {
             const res = await fetch('/api/workers');
             const workers = await res.json();
@@ -92,12 +108,13 @@
                     const statusClass = w.status === 'online' ? 'status-online' : 'status-offline';
                     tbody.innerHTML += `
                         <tr>
-                            <td>${w.node_name}</td>
-                            <td>${w.os}</td>
-                            <td>${w.cpu} / ${w.ram}GB</td>
-                            <td class="${statusClass}">${w.status}</td>
+                            <td>${escapeHTML(w.node_name)}</td>
+                            <td>${escapeHTML(w.os)}</td>
+                            <td>${escapeHTML(w.cpu_model || w.cpu)} / ${Math.round(w.total_ram / 1073741824)}GB</td>
+                            <td class="${statusClass}">${escapeHTML(w.status)}</td>
                             <td>
-                                <button onclick="runTestJob('${w.id}')" ${w.status !== 'online' ? 'disabled' : ''}>Run Test Job</button>
+                                <button onclick="runTestJob('${escapeHTML(w.id)}')" ${w.status !== 'online' ? 'disabled' : ''}>Run Test Job</button>
+                                <button onclick="disconnectWorker('${escapeHTML(w.id)}')" style="background: #ff4d4d;">Disconnect</button>
                             </td>
                         </tr>
                     `;
@@ -114,11 +131,11 @@
                 jobs.forEach(j => {
                     tbody.innerHTML += `
                         <tr>
-                            <td>${j.id}</td>
-                            <td>${j.worker_id}</td>
-                            <td>${j.task}</td>
-                            <td>${j.status}</td>
-                            <td>${j.result || '-'}</td>
+                            <td>${escapeHTML(j.id)}</td>
+                            <td>${escapeHTML(j.worker_id)}</td>
+                            <td>${escapeHTML(j.task)}</td>
+                            <td>${escapeHTML(j.status)}</td>
+                            <td>${escapeHTML(j.result || '-')}</td>
                         </tr>
                     `;
                 });

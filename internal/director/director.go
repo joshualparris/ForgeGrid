@@ -51,6 +51,9 @@ func (d *Director) SubmitManifest(m *manifest.Manifest) error {
 			Profile:        task.Execution.Profile,
 			Parameters:     task.Execution.Parameters,
 			TimeoutSeconds: task.Execution.TimeoutSeconds,
+			RepositoryURL:  m.Repository.URL,
+			BaseCommit:     m.Repository.BaseCommit,
+			BranchName:     m.Repository.Branch,
 		}
 
 		d.Store.Jobs[jobID] = job

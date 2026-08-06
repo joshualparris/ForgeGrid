@@ -1,7 +1,9 @@
 package coordinator
 
 import (
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"net/http"
@@ -41,10 +43,19 @@ func New(s *store.Store, insecure bool) *Coordinator {
 func (c *Coordinator) Start(port string) error {
 	mux := http.NewServeMux()
 
-	// Ensure identity and TLS cert
+	// Ensure identity, AdminToken and TLS cert
 	c.Store.Mu.Lock()
 	if c.Store.CoordinatorCfg.Identity == "" {
 		c.Store.CoordinatorCfg.Identity = fmt.Sprintf("ForgeGrid-%d", time.Now().UnixNano()) // fallback if rand fails later
+		c.Store.Save()
+	}
+	if c.Store.CoordinatorCfg.AdminToken == "" {
+		b := make([]byte, 32)
+		if _, err := rand.Read(b); err != nil {
+			c.Store.Mu.Unlock()
+			return fmt.Errorf("failed to generate secure admin token: %w", err)
+		}
+		c.Store.CoordinatorCfg.AdminToken = hex.EncodeToString(b)
 		c.Store.Save()
 	}
 
@@ -66,21 +77,37 @@ func (c *Coordinator) Start(port string) error {
 		}
 		c.Fingerprint = fp
 	}
+	adminToken := c.Store.CoordinatorCfg.AdminToken
 	c.Store.Mu.Unlock()
 
-	mux.HandleFunc("/api/coordinator/start", c.handleStart)
-	mux.HandleFunc("/api/coordinator/status", c.handleStatus)
-	mux.HandleFunc("/api/pairing/code", c.handleGenerateCode)
+	adminAuth := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			user, pass, ok := r.BasicAuth()
+			if !ok || user != "admin" || pass != adminToken {
+				w.Header().Set("WWW-Authenticate", `Basic realm="ForgeGrid Dashboard"`)
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+			next.ServeHTTP(w, r)
+		}
+	}
+
+	mux.HandleFunc("/api/coordinator/start", adminAuth(c.handleStart))
+	mux.HandleFunc("/api/coordinator/status", adminAuth(c.handleStatus))
+	mux.HandleFunc("/api/pairing/code", adminAuth(c.handleGenerateCode))
 	mux.HandleFunc("/api/workers/pair", c.handlePair)
 	mux.HandleFunc("/api/workers/heartbeat", c.handleHeartbeat)
-	mux.HandleFunc("/api/workers", c.handleListWorkers)
-	mux.HandleFunc("/api/jobs/test", c.handleTestJob)
+	mux.HandleFunc("/api/workers/disconnect", adminAuth(c.handleDisconnectWorker))
+	mux.HandleFunc("/api/workers", c.handleListWorkers) // Dashboard uses this, but let's let workers use it too or add auth inside handler
+	mux.HandleFunc("/api/jobs/test", adminAuth(c.handleTestJob))
 	mux.HandleFunc("/api/jobs", c.handleListJobs)
 	mux.HandleFunc("/api/jobs/", c.handleJobAction)
-	mux.HandleFunc("/api/jobs/manifest", c.handleManifest)
+	mux.HandleFunc("/api/jobs/manifest", adminAuth(c.handleManifest))
 
 	// Serve UI
-	mux.Handle("/", http.FileServer(http.FS(ui.DashboardFS)))
+	mux.Handle("/", http.HandlerFunc(adminAuth(func(w http.ResponseWriter, r *http.Request) {
+		http.FileServer(http.FS(ui.DashboardFS)).ServeHTTP(w, r)
+	})))
 
 	var addr string
 	if c.Listener != nil {
@@ -100,12 +127,19 @@ func (c *Coordinator) Start(port string) error {
 	if !c.Insecure {
 		fmt.Printf("TLS Fingerprint: %s\n", c.Fingerprint)
 	}
+	fmt.Printf("Admin Password (Dashboard): %s\n", adminToken)
 
 	ui.OpenBrowser(uiURL)
 
 	if c.Listener != nil {
 		if c.Insecure {
-			return http.Serve(c.Listener, mux)
+			server := &http.Server{
+				Handler:      mux,
+				ReadTimeout:  15 * time.Second,
+				WriteTimeout: 15 * time.Second,
+				IdleTimeout:  60 * time.Second,
+			}
+			return server.Serve(c.Listener)
 		}
 		cert, err := tls.X509KeyPair(c.Store.CoordinatorCfg.CertPEM, c.Store.CoordinatorCfg.KeyPEM)
 		if err != nil {
@@ -116,12 +150,22 @@ func (c *Coordinator) Start(port string) error {
 			TLSConfig: &tls.Config{
 				Certificates: []tls.Certificate{cert},
 			},
+			ReadTimeout:  15 * time.Second,
+			WriteTimeout: 15 * time.Second,
+			IdleTimeout:  60 * time.Second,
 		}
 		return server.ServeTLS(c.Listener, "", "")
 	}
 
 	if c.Insecure {
-		return http.ListenAndServe(addr, mux)
+		server := &http.Server{
+			Addr:         addr,
+			Handler:      mux,
+			ReadTimeout:  15 * time.Second,
+			WriteTimeout: 15 * time.Second,
+			IdleTimeout:  60 * time.Second,
+		}
+		return server.ListenAndServe()
 	}
 
 	// Create tls cert from PEM
@@ -136,6 +180,9 @@ func (c *Coordinator) Start(port string) error {
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{cert},
 		},
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
 
 	return server.ListenAndServeTLS("", "")

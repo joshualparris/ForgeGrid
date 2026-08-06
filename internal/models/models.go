@@ -47,8 +47,13 @@ type Job struct {
 
 	// Structured Execution
 	Profile        string            `json:"profile,omitempty"`
-	Parameters     map[string]string `json:"parameters,omitempty"` // Typed, profile-specific parameters
+	Parameters     map[string]string `json:"parameters,omitempty"`
 	TimeoutSeconds int               `json:"timeout_seconds,omitempty"`
+
+	// Git Workspace Info
+	RepositoryURL string `json:"repository_url,omitempty"`
+	BaseCommit    string `json:"base_commit,omitempty"`
+	BranchName    string `json:"branch_name,omitempty"`
 
 	Challenge string `json:"challenge,omitempty"` // For test task
 }
@@ -58,6 +63,7 @@ type CoordinatorState struct {
 	PairingCode     string    `json:"pairing_code"`
 	PairingExpiry   time.Time `json:"pairing_expiry"`
 	PairingFailures int       `json:"pairing_failures"`
+	AdminToken      string    `json:"admin_token"`
 	CertPEM         []byte    `json:"cert_pem,omitempty"`
 	KeyPEM          []byte    `json:"key_pem,omitempty"`
 }

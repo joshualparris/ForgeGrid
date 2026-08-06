@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -187,7 +188,42 @@ func (c *Coordinator) handleListWorkers(w http.ResponseWriter, r *http.Request) 
 	for _, w := range c.Store.Workers {
 		workers = append(workers, w.ToDTO())
 	}
+	
+	sort.Slice(workers, func(i, j int) bool {
+		if workers[i].NodeName == workers[j].NodeName {
+			return workers[i].ID < workers[j].ID
+		}
+		return workers[i].NodeName < workers[j].NodeName
+	})
+	
 	json.NewEncoder(w).Encode(workers)
+}
+
+func (c *Coordinator) handleDisconnectWorker(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", "")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1024)
+	var req struct {
+		WorkerID string `json:"worker_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Malformed JSON", "")
+		return
+	}
+
+	c.Store.Mu.Lock()
+	defer c.Store.Mu.Unlock()
+
+	if _, ok := c.Store.Workers[req.WorkerID]; ok {
+		delete(c.Store.Workers, req.WorkerID)
+		c.Store.Save()
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "disconnected"})
+	} else {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "Worker not found", "")
+	}
 }
 
 func (c *Coordinator) handleTestJob(w http.ResponseWriter, r *http.Request) {
@@ -251,6 +287,11 @@ func (c *Coordinator) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	for _, j := range c.Store.Jobs {
 		jobs = append(jobs, *j)
 	}
+	
+	sort.Slice(jobs, func(i, j int) bool {
+		return jobs[i].ID < jobs[j].ID
+	})
+	
 	json.NewEncoder(w).Encode(jobs)
 }
 

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"forgegrid/internal/execution"
+	"forgegrid/internal/gitworkspace"
 	"forgegrid/internal/models"
 	"forgegrid/internal/network"
 
@@ -440,10 +441,48 @@ func (w *Worker) executeJob(job models.Job) {
 			return
 		}
 
-		workDir, err := execution.SecureWorkspacePath(w.Workspace, ".")
-		if err != nil {
-			w.updateJobStatus(job.ID, job.AttemptID, models.StatusFailed, "workspace error", []byte(err.Error()+"\n"), logSeq)
-			return
+		var workDir string
+		var gm *gitworkspace.Manager
+		var mainRepoDir string
+		var branchName string
+		
+		var output []byte
+		finalResult := "success"
+		finalStatus := models.StatusCompleted
+
+		if job.RepositoryURL != "" {
+			allowed := []string{"https://github.com/joshualparris/TextGame.git"} // Hardcoded allowlist for prototype safety
+			gm = gitworkspace.NewManager(w.Workspace, allowed)
+			
+			branchName = job.BranchName
+			if branchName == "" {
+				branchName = "forgegrid-" + job.ID
+			}
+
+			wd, err := gm.PrepareWorkspace(job.RepositoryURL, job.BaseCommit, branchName, job.ID)
+			if err != nil {
+				w.updateJobStatus(job.ID, job.AttemptID, models.StatusFailed, "workspace prep error", []byte(err.Error()+"\n"), logSeq)
+				return
+			}
+			workDir = wd
+			mainRepoDir = filepath.Join(w.Workspace, strings.TrimSuffix(filepath.Base(job.RepositoryURL), ".git"))
+			
+			// Setup cleanup and reporting
+			defer func() {
+				diff, diffErr := gm.ProduceDiff(workDir)
+				if diffErr == nil {
+					output = append(output, []byte("\n--- WORKSPACE STATUS ---\n"+diff)...)
+				}
+				gm.CleanupWorktree(mainRepoDir, workDir, branchName)
+				// Need to push output again since we appended
+				w.updateJobStatus(job.ID, job.AttemptID, finalStatus, finalResult, output, logSeq+1)
+			}()
+		} else {
+			workDir, err = execution.SecureWorkspacePath(w.Workspace, ".")
+			if err != nil {
+				w.updateJobStatus(job.ID, job.AttemptID, models.StatusFailed, "workspace error", []byte(err.Error()+"\n"), logSeq)
+				return
+			}
 		}
 
 		timeoutSeconds := job.TimeoutSeconds
@@ -456,10 +495,8 @@ func (w *Worker) executeJob(job models.Job) {
 		defer execCancel()
 
 		executor := execution.NewExecutor()
-		output, err := executor.Execute(execCtx, profile, job.Parameters, workDir)
-
-		finalResult := "success"
-		finalStatus := models.StatusCompleted
+		output, err = executor.Execute(execCtx, profile, job.Parameters, workDir)
+		
 		if err != nil {
 			if execCtx.Err() == context.DeadlineExceeded {
 				finalResult = "timeout"
@@ -475,7 +512,9 @@ func (w *Worker) executeJob(job models.Job) {
 			}
 		}
 
-		w.updateJobStatus(job.ID, job.AttemptID, finalStatus, finalResult, output, logSeq)
+		if gm == nil {
+			w.updateJobStatus(job.ID, job.AttemptID, finalStatus, finalResult, output, logSeq)
+		}
 	} else {
 		w.updateJobStatus(job.ID, job.AttemptID, models.StatusFailed, "unknown task", []byte("Unsupported task type\n"), logSeq)
 	}

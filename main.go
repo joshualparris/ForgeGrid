@@ -35,8 +35,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	dataDir := "./forgegrid-data"
-	os.MkdirAll(dataDir, 0755)
+	getDataDir := func() string {
+		dir, _ := os.UserConfigDir()
+		if dir == "" {
+			dir, _ = os.UserHomeDir()
+			dir = dir + "/.config"
+		}
+		return dir + "/forgegrid/coordinator"
+	}
+	dataDir := getDataDir()
+	os.MkdirAll(dataDir, 0700)
 
 	if *mode == "coordinator" {
 		s, err := store.NewStore(dataDir)

@@ -54,7 +54,7 @@ func (s *Store) Save() error {
 		}
 		// Atomic save
 		tmp := filepath.Join(s.dir, name+".tmp")
-		if err := os.WriteFile(tmp, b, 0644); err != nil {
+		if err := os.WriteFile(tmp, b, 0600); err != nil {
 			return err
 		}
 		return os.Rename(tmp, filepath.Join(s.dir, name))

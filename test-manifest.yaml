@@ -1,0 +1,9 @@
+project: "Harmless-Test"
+tasks:
+  test_task:
+    requirements:
+      os: "windows"
+    execution:
+      profile: "PythonUnittest"
+      parameters:
+        module: ""

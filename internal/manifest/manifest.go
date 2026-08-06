@@ -9,8 +9,15 @@ import (
 )
 
 type Manifest struct {
-	Project string          `yaml:"project"`
-	Tasks   map[string]Task `yaml:"tasks"`
+	Project    string          `yaml:"project"`
+	Repository Repository      `yaml:"repository"`
+	Tasks      map[string]Task `yaml:"tasks"`
+}
+
+type Repository struct {
+	URL        string `yaml:"url"`
+	BaseCommit string `yaml:"base_commit"`
+	Branch     string `yaml:"branch"`
 }
 
 type Task struct {
