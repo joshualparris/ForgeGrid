@@ -47,7 +47,7 @@ func (s *Server) cleanupLoop() {
 			}
 		}
 		s.mu.Unlock()
-		
+
 		// Enforce retention limit for ordinary messages
 		s.store.EnforceRetention(1000)
 	}
@@ -244,7 +244,7 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 
 	limit := 100
 	offset := 0
-	
+
 	if l := r.URL.Query().Get("limit"); l != "" {
 		if n, _ := fmt.Sscanf(l, "%d", &limit); n != 1 || limit <= 0 || limit > 1000 {
 			limit = 100
@@ -266,7 +266,8 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		statuses = []MessageStatus{StatusPending, StatusAcknowledged}
 	}
 
-	inbox := s.store.GetInbox(recipient, limit, offset, statuses...)
+	includeOutgoing := r.URL.Query().Get("include_outgoing") == "true"
+	inbox := s.store.GetInbox(recipient, limit, offset, includeOutgoing, statuses...)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(inbox)
 }

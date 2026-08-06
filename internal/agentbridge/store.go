@@ -127,8 +127,10 @@ func (s *Store) AddMessage(msg AgentMessage) (AgentMessage, error) {
 	if msg.Recipient == "#all-agents" {
 		msg.Receipts = make(map[string]*MessageReceipt)
 		for name := range s.agents {
-			msg.Receipts[name] = &MessageReceipt{
-				Status: StatusPending,
+			if name != msg.Sender { // Exclude sender from actionable Receipts
+				msg.Receipts[name] = &MessageReceipt{
+					Status: StatusPending,
+				}
 			}
 		}
 	}
@@ -158,15 +160,11 @@ func (s *Store) TransitionMessage(id, recipient, action string, result json.RawM
 	}
 
 	if msg.Recipient == "#all-agents" {
-		if msg.Receipts == nil {
-			msg.Receipts = make(map[string]*MessageReceipt)
-		}
 		receipt, ok := msg.Receipts[recipient]
 		if !ok {
-			receipt = &MessageReceipt{Status: StatusPending}
-			msg.Receipts[recipient] = receipt
+			return AgentMessage{}, fmt.Errorf("forbidden") // True broadcast snapshot enforcement
 		}
-		
+
 		now := time.Now()
 		switch action {
 		case "acknowledge":
@@ -222,7 +220,7 @@ func (s *Store) TransitionMessage(id, recipient, action string, result json.RawM
 	return msg, nil
 }
 
-func (s *Store) GetInbox(recipient string, limit, offset int, statuses ...MessageStatus) []AgentMessage {
+func (s *Store) GetInbox(recipient string, limit, offset int, includeOutgoing bool, statuses ...MessageStatus) []AgentMessage {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -233,19 +231,33 @@ func (s *Store) GetInbox(recipient string, limit, offset int, statuses ...Messag
 
 	var inbox []AgentMessage
 	for _, m := range s.messages {
-		if (m.Recipient == recipient || m.Recipient == "#all-agents") && time.Now().Before(m.ExpiresAt) {
+		isRecipient := false
+		isSender := (m.Sender == recipient)
+
+		if m.Recipient == recipient {
+			isRecipient = true
+		} else if m.Recipient == "#all-agents" {
+			if _, ok := m.Receipts[recipient]; ok {
+				isRecipient = true
+			}
+		}
+
+		if (isRecipient || (isSender && includeOutgoing)) && time.Now().Before(m.ExpiresAt) {
 			mCopy := m
-			
+
 			if m.Recipient == "#all-agents" {
 				if receipt, ok := m.Receipts[recipient]; ok {
 					mCopy.Status = receipt.Status
 					mCopy.AcknowledgedAt = receipt.AcknowledgedAt
 					mCopy.CompletedAt = receipt.CompletedAt
 					mCopy.Result = receipt.Result
-				} else {
-					mCopy.Status = StatusPending
+				} else if isSender {
+					mCopy.Status = StatusCompleted // Sender sees its own group message as completed
 				}
 			}
+
+			// Clear Receipts map to enforce receipt privacy
+			mCopy.Receipts = nil
 
 			if len(statusMap) == 0 || statusMap[mCopy.Status] {
 				inbox = append(inbox, mCopy)
