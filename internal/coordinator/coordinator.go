@@ -15,11 +15,12 @@ import (
 )
 
 type Coordinator struct {
-	Store       *store.Store
-	IP          string
-	Insecure    bool
-	Fingerprint string
-	Listener    net.Listener
+	Store            *store.Store
+	IP               string
+	Insecure         bool
+	Fingerprint      string
+	Listener         net.Listener
+	MessagingGateway MessagingGateway
 }
 
 func getOutboundIP() string {
@@ -80,6 +81,14 @@ func (c *Coordinator) Start(port string) error {
 	adminToken := c.Store.CoordinatorCfg.AdminToken
 	c.Store.Mu.Unlock()
 
+	if c.MessagingGateway == nil {
+		gw, err := NewLiveMessagingGateway()
+		if err == nil {
+			c.MessagingGateway = gw
+		}
+		// If err != nil, c.MessagingGateway remains nil (Messaging unavailable)
+	}
+
 	adminAuth := func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			user, pass, ok := r.BasicAuth()
@@ -95,6 +104,13 @@ func (c *Coordinator) Start(port string) error {
 	mux.HandleFunc("/api/coordinator/start", adminAuth(c.handleStart))
 	mux.HandleFunc("/api/coordinator/status", adminAuth(c.handleStatus))
 	mux.HandleFunc("/api/pairing/code", adminAuth(c.handleGenerateCode))
+
+	// Messaging API
+	mux.HandleFunc("/api/dashboard/messaging/status", adminAuth(c.handleMessagingStatus))
+	mux.HandleFunc("/api/dashboard/messaging/agents", adminAuth(c.handleMessagingAgents))
+	mux.HandleFunc("/api/dashboard/messages", adminAuth(c.handleMessages))
+	mux.HandleFunc("/api/dashboard/messages/", adminAuth(c.handleMessageDeliveryOrAck))
+
 	mux.HandleFunc("/api/workers/pair", c.handlePair)
 	mux.HandleFunc("/api/workers/heartbeat", c.handleHeartbeat)
 	mux.HandleFunc("/api/workers/disconnect", adminAuth(c.handleDisconnectWorker))

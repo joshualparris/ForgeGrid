@@ -188,14 +188,14 @@ func (c *Coordinator) handleListWorkers(w http.ResponseWriter, r *http.Request) 
 	for _, w := range c.Store.Workers {
 		workers = append(workers, w.ToDTO())
 	}
-	
+
 	sort.Slice(workers, func(i, j int) bool {
 		if workers[i].NodeName == workers[j].NodeName {
 			return workers[i].ID < workers[j].ID
 		}
 		return workers[i].NodeName < workers[j].NodeName
 	})
-	
+
 	json.NewEncoder(w).Encode(workers)
 }
 
@@ -287,11 +287,11 @@ func (c *Coordinator) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	for _, j := range c.Store.Jobs {
 		jobs = append(jobs, *j)
 	}
-	
+
 	sort.Slice(jobs, func(i, j int) bool {
 		return jobs[i].ID < jobs[j].ID
 	})
-	
+
 	json.NewEncoder(w).Encode(jobs)
 }
 

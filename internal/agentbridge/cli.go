@@ -184,7 +184,7 @@ type ClientConfig struct {
 	Fingerprint string `json:"fingerprint"`
 }
 
-func getConfigPath() string {
+func GetConfigPath() string {
 	if runtime.GOOS == "windows" {
 		localAppData := os.Getenv("LOCALAPPDATA")
 		if localAppData == "" {
@@ -239,7 +239,7 @@ func configureClientCmd(args []string) {
 		Fingerprint: *fp,
 	}
 
-	path := getConfigPath()
+	path := GetConfigPath()
 	b, err := json.Marshal(cfg)
 	if err != nil {
 		log.Fatalf("Failed to marshal config: %v", err)
@@ -254,7 +254,7 @@ func configureClientCmd(args []string) {
 }
 
 func resetClientCmd(args []string) {
-	os.Remove(getConfigPath())
+	os.Remove(GetConfigPath())
 	fmt.Println("Client configuration reset.")
 }
 
@@ -269,7 +269,7 @@ func getClient(fs *flag.FlagSet) *Client {
 
 	// Try loading from config if values not provided via flags
 	if *name == "" || token == "" {
-		b, err := os.ReadFile(getConfigPath())
+		b, err := os.ReadFile(GetConfigPath())
 		if err == nil {
 			var cfg ClientConfig
 			if json.Unmarshal(b, &cfg) == nil {
@@ -335,7 +335,7 @@ func inboxCmd(args []string) {
 	fs := flag.NewFlagSet("inbox", flag.ExitOnError)
 	client := getClient(fs)
 
-	msgs, err := client.GetInbox()
+	msgs, err := client.GetInbox(0, 0, false)
 	if err != nil {
 		log.Fatalf("Inbox error: %v", err)
 	}

@@ -60,11 +60,47 @@
         </table>
     </div>
 
+    <div class="card" id="messagingCard" style="display: none;">
+        <h2>Messaging</h2>
+        <div id="messagingUnavailable" style="display: none; color: #ff4d4d;">AgentBridge is not configured or unavailable.</div>
+        <div id="messagingContainer" style="display: flex; height: 500px; gap: 20px;">
+            <div style="flex: 1; border-right: 1px solid #333; padding-right: 20px; overflow-y: auto;">
+                <h3>Conversations</h3>
+                <ul id="conversationList" style="list-style: none; padding: 0;">
+                </ul>
+            </div>
+            <div style="flex: 3; display: flex; flex-direction: column;">
+                <h3 id="currentConversationTitle">Select a conversation</h3>
+                <div id="messageHistory" style="flex: 1; overflow-y: auto; background: #121212; padding: 10px; border-radius: 4px; margin-bottom: 10px; display: flex; flex-direction: column;">
+                </div>
+                <div style="display: flex; gap: 10px;">
+                    <select id="messageTypeSelect">
+                        <option value="chat">Chat</option>
+                        <option value="instruction">Instruction</option>
+                        <option value="system">System</option>
+                    </select>
+                    <input type="text" id="taskIdInput" placeholder="Task ID (optional)" style="flex: 1; background: #333; color: white; border: 1px solid #555; padding: 5px;">
+                    <input type="text" id="messageInput" placeholder="Type a message..." style="flex: 3; background: #333; color: white; border: 1px solid #555; padding: 5px;">
+                    <button id="sendBtn" onclick="sendMessage()">Send</button>
+                </div>
+                <div id="sendError" style="color: #ff4d4d; margin-top: 5px;"></div>
+            </div>
+        </div>
+    </div>
+
     <script>
+        let coordinatorIdentity = "";
+        let messagingAvailable = false;
+        let currentRecipient = null;
+        let agentNames = [];
+        let messagesStore = []; // Store raw messages
+
         async function fetchStatus() {
             const res = await fetch('/api/coordinator/status');
             const data = await res.json();
             document.getElementById('coordIP').innerText = data.ip;
+            coordinatorIdentity = data.identity;
+            initMessaging();
         }
 
         async function generateCode() {
@@ -96,6 +132,14 @@
         function escapeHTML(str) {
             if (!str) return '';
             return str.toString().replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
+
+        function createEl(tag, text) {
+            const el = document.createElement(tag);
+            if (text !== undefined && text !== null) {
+                el.appendChild(document.createTextNode(text));
+            }
+            return el;
         }
 
         async function fetchWorkers() {
@@ -139,6 +183,271 @@
                         </tr>
                     `;
                 });
+            }
+        }
+
+        async function initMessaging() {
+            try {
+                const res = await fetch('/api/dashboard/messaging/status');
+                if (res.ok) {
+                    const status = await res.json();
+                    if (status.available) {
+                        messagingAvailable = true;
+                        document.getElementById('messagingCard').style.display = 'block';
+                        document.getElementById('messagingContainer').style.display = 'flex';
+                        fetchAgents();
+                        fetchMessages();
+                        setInterval(fetchMessages, 3000);
+                        return;
+                    }
+                }
+            } catch (e) {}
+            document.getElementById('messagingCard').style.display = 'block';
+            document.getElementById('messagingUnavailable').style.display = 'block';
+            document.getElementById('messagingContainer').style.display = 'none';
+        }
+
+        async function fetchAgents() {
+            try {
+                const res = await fetch('/api/dashboard/messaging/agents');
+                if (res.ok) {
+                    agentNames = await res.json() || [];
+                }
+            } catch (e) {}
+        }
+
+        async function fetchMessages() {
+            if (!messagingAvailable) return;
+            try {
+                const res = await fetch('/api/dashboard/messages?limit=1000&include_outgoing=true&status=pending,acknowledged,completed,failed');
+                if (res.ok) {
+                    messagesStore = await res.json() || [];
+                    renderConversations();
+                    renderMessageHistory();
+                }
+            } catch (e) {}
+        }
+
+        function renderConversations() {
+            const list = document.getElementById('conversationList');
+            list.innerHTML = ''; 
+
+            const convos = new Set(['#all-agents', ...agentNames]);
+            messagesStore.forEach(m => {
+                convos.add(m.recipient === '#all-agents' ? '#all-agents' : (m.sender === coordinatorIdentity ? m.recipient : m.sender));
+            });
+
+            Array.from(convos).sort().forEach(c => {
+                const li = document.createElement('li');
+                li.style.padding = '8px';
+                li.style.cursor = 'pointer';
+                li.style.borderBottom = '1px solid #333';
+                if (c === currentRecipient) {
+                    li.style.backgroundColor = '#333';
+                }
+                
+                let unread = 0;
+                messagesStore.forEach(m => {
+                    const isIncoming = m.sender !== coordinatorIdentity;
+                    const isForConvo = m.recipient === '#all-agents' ? c === '#all-agents' : (m.sender === c || m.recipient === c);
+                    if (isForConvo && isIncoming && m.status === 'pending') {
+                        unread++;
+                    }
+                });
+
+                const nameSpan = createEl('span', c);
+                li.appendChild(nameSpan);
+
+                if (unread > 0) {
+                    const unreadBadge = createEl('span', ` (${unread})`);
+                    unreadBadge.style.color = '#ffeb3b';
+                    li.appendChild(unreadBadge);
+                }
+
+                li.onclick = () => {
+                    currentRecipient = c;
+                    document.getElementById('currentConversationTitle').textContent = c;
+                    renderConversations();
+                    renderMessageHistory();
+                };
+                list.appendChild(li);
+            });
+        }
+
+        async function loadDelivery(msgId, el) {
+            try {
+                const res = await fetch(`/api/dashboard/messages/${msgId}/delivery`);
+                if (res.ok) {
+                    const details = await res.json();
+                    el.innerHTML = '';
+                    if (details.receipts) {
+                        let total = 0, ack = 0, comp = 0, fail = 0;
+                        const ul = document.createElement('ul');
+                        ul.style.listStyle = 'none';
+                        ul.style.padding = '0';
+                        for (const [agent, receipt] of Object.entries(details.receipts)) {
+                            total++;
+                            if (receipt.status === 'acknowledged') ack++;
+                            if (receipt.status === 'completed') comp++;
+                            if (receipt.status === 'failed') fail++;
+                            const li = createEl('li', `${agent}: ${receipt.status}`);
+                            ul.appendChild(li);
+                        }
+                        el.appendChild(createEl('div', `${total} recipients, ${ack} acknowledged, ${comp} completed, ${fail} failed`));
+                        const detailBtn = document.createElement('button');
+                        detailBtn.textContent = 'Toggle Details';
+                        detailBtn.style.padding = '2px 5px';
+                        detailBtn.style.fontSize = '0.8em';
+                        detailBtn.style.marginTop = '5px';
+                        const detailContainer = document.createElement('div');
+                        detailContainer.style.display = 'none';
+                        detailContainer.appendChild(ul);
+                        detailBtn.onclick = () => {
+                            detailContainer.style.display = detailContainer.style.display === 'none' ? 'block' : 'none';
+                        };
+                        el.appendChild(detailBtn);
+                        el.appendChild(detailContainer);
+                    } else {
+                        el.appendChild(createEl('span', details.status));
+                    }
+                }
+            } catch (e) {}
+        }
+
+        async function acknowledgeMsg(id) {
+            await fetch(`/api/dashboard/messages/${id}/acknowledge`, { method: 'POST' });
+            fetchMessages();
+        }
+
+        function renderMessageHistory() {
+            const hist = document.getElementById('messageHistory');
+            hist.innerHTML = '';
+            
+            if (!currentRecipient) {
+                hist.appendChild(createEl('div', 'Select a conversation to view history.'));
+                return;
+            }
+
+            const convoMsgs = messagesStore.filter(m => {
+                if (currentRecipient === '#all-agents') return m.recipient === '#all-agents';
+                return (m.sender === currentRecipient && m.recipient !== '#all-agents') || (m.recipient === currentRecipient);
+            }).sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+            if (convoMsgs.length === 0) {
+                hist.appendChild(createEl('div', 'No messages yet.'));
+                return;
+            }
+
+            convoMsgs.forEach(m => {
+                const div = document.createElement('div');
+                div.style.padding = '10px';
+                div.style.marginBottom = '10px';
+                div.style.borderRadius = '5px';
+                div.style.maxWidth = '80%';
+                
+                const isOutgoing = m.sender === coordinatorIdentity;
+                
+                if (isOutgoing) {
+                    div.style.alignSelf = 'flex-end';
+                    div.style.backgroundColor = '#1976d2';
+                } else {
+                    div.style.alignSelf = 'flex-start';
+                    div.style.backgroundColor = '#333';
+                }
+
+                const header = document.createElement('div');
+                header.style.fontSize = '0.8em';
+                header.style.color = '#ccc';
+                header.style.marginBottom = '5px';
+                header.appendChild(createEl('span', `[${m.type}] ${m.sender} - ${new Date(m.created_at).toLocaleString()}`));
+                if (m.task_id) {
+                    header.appendChild(createEl('span', ` | Task: ${m.task_id}`));
+                }
+                div.appendChild(header);
+
+                const body = createEl('div', m.body);
+                body.style.whiteSpace = 'pre-wrap';
+                div.appendChild(body);
+
+                const footer = document.createElement('div');
+                footer.style.fontSize = '0.8em';
+                footer.style.color = '#aaa';
+                footer.style.marginTop = '5px';
+
+                if (isOutgoing) {
+                    if (m.recipient === '#all-agents') {
+                        const statusContainer = document.createElement('div');
+                        const loadBtn = document.createElement('button');
+                        loadBtn.textContent = 'Load Delivery Status';
+                        loadBtn.style.padding = '2px 5px';
+                        loadBtn.style.fontSize = '0.8em';
+                        loadBtn.onclick = () => loadDelivery(m.id, statusContainer);
+                        statusContainer.appendChild(loadBtn);
+                        footer.appendChild(statusContainer);
+                    } else {
+                        footer.appendChild(createEl('span', `Status: ${m.status}`));
+                    }
+                } else {
+                    footer.appendChild(createEl('span', `Status: ${m.status}`));
+                    if (m.status === 'pending') {
+                        const ackBtn = document.createElement('button');
+                        ackBtn.textContent = 'Acknowledge';
+                        ackBtn.style.marginLeft = '10px';
+                        ackBtn.style.padding = '2px 5px';
+                        ackBtn.style.fontSize = '0.8em';
+                        ackBtn.onclick = () => acknowledgeMsg(m.id);
+                        footer.appendChild(ackBtn);
+                    }
+                }
+                
+                if (m.result) {
+                    const resDiv = createEl('div', `Result: ${JSON.stringify(m.result)}`);
+                    resDiv.style.marginTop = '5px';
+                    resDiv.style.color = '#4facfe';
+                    footer.appendChild(resDiv);
+                }
+
+                div.appendChild(footer);
+                hist.appendChild(div);
+            });
+            hist.scrollTop = hist.scrollHeight;
+        }
+
+        async function sendMessage() {
+            if (!currentRecipient) return;
+            const type = document.getElementById('messageTypeSelect').value;
+            const taskId = document.getElementById('taskIdInput').value;
+            const body = document.getElementById('messageInput').value;
+            const errorDiv = document.getElementById('sendError');
+            
+            errorDiv.textContent = '';
+            
+            if (!body) return;
+
+            const idemp = 'ui-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+            
+            try {
+                const res = await fetch('/api/dashboard/messages', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        recipient: currentRecipient,
+                        task_id: taskId,
+                        type: type,
+                        body: body,
+                        idempotency_key: idemp
+                    })
+                });
+
+                if (res.ok) {
+                    document.getElementById('messageInput').value = '';
+                    fetchMessages();
+                } else {
+                    const txt = await res.text();
+                    errorDiv.textContent = `Send failed: ${res.status} ${txt}`;
+                }
+            } catch (e) {
+                errorDiv.textContent = `Send failed: ${e.message}`;
             }
         }
 

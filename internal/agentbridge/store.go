@@ -108,6 +108,16 @@ func (s *Store) GetAgent(name string) (AgentRegistration, bool) {
 	return a, ok
 }
 
+func (s *Store) GetAgentNames() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var names []string
+	for name := range s.agents {
+		names = append(names, name)
+	}
+	return names
+}
+
 func (s *Store) AddMessage(msg AgentMessage) (AgentMessage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

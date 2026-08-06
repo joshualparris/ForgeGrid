@@ -117,8 +117,26 @@ func (s *Server) authenticate(r *http.Request) (string, bool) {
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/agent-messages", s.handleMessages)
 	mux.HandleFunc("/api/v1/agent-messages/inbox", s.handleInbox)
-	mux.HandleFunc("/api/v1/agent-messages/", s.handleMessageAction)
+	mux.HandleFunc("/api/v1/agent-messages/agents", s.handleAgents)
+	mux.HandleFunc("/api/v1/agent-messages/", s.handleMessageActionOrDelivery)
 	mux.HandleFunc("/api/v1/agent-status", s.handleStatus)
+}
+
+func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
+	_, ok := s.authenticate(r)
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	agents := s.store.GetAgentNames()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(agents)
 }
 
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
@@ -272,14 +290,14 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(inbox)
 }
 
-func (s *Server) handleMessageAction(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleMessageActionOrDelivery(w http.ResponseWriter, r *http.Request) {
 	agent, ok := s.authenticate(r)
 	if !ok {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	if r.Method != http.MethodPost {
+	if r.Method != http.MethodPost && r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -292,6 +310,33 @@ func (s *Server) handleMessageAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id, action := parts[0], parts[1]
+
+	if action == "delivery" {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		msg, ok := s.store.GetMessage(id)
+		if !ok {
+			http.Error(w, "Not found", http.StatusNotFound)
+			return
+		}
+
+		if msg.Sender != agent {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(msg)
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 
 	var req struct {
 		Result json.RawMessage `json:"result"`

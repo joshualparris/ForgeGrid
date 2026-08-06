@@ -281,7 +281,7 @@ func TestIntegrationConcurrent(t *testing.T) {
 			defer wg.Done()
 			c, _ := NewClient(srv.URL, fmt.Sprintf("agent-%d", agentId), "secret", fp, false)
 			c.HTTPClient.Timeout = 60 * time.Second
-			inbox, err := c.GetInbox()
+			inbox, err := c.GetInbox(0, 0, false)
 			if err != nil {
 				t.Errorf("Failed to read inbox for agent %d: %v", agentId, err)
 				return
@@ -351,7 +351,7 @@ func TestIntegrationConcurrent(t *testing.T) {
 			}
 
 			c2, _ := NewClient(srv2.URL, "agent-1", "secret", fp, false)
-			inbox, err := c2.GetInbox()
+			inbox, err := c2.GetInbox(0, 0, false)
 			if err != nil {
 				t.Fatalf("GetInbox failed after restart: %v", err)
 			}
