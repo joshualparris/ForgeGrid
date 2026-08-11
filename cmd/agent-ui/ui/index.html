@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AgentBridge GUI</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar: Inbox -->
+        <aside class="sidebar">
+            <header class="sidebar-header">
+                <h2>Inbox</h2>
+                <button id="refresh-btn" class="icon-btn" title="Refresh">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M2.13 15.57a10 10 0 1 0 3.12-10.45l-4.5 4.5"/></svg>
+                </button>
+            </header>
+            
+            <div id="pinned-section" class="pinned-section hidden">
+                <div class="pinned-header">Pinned Contacts</div>
+                <div id="pinned-list" class="pinned-list"></div>
+            </div>
+
+            <div id="inbox-list" class="message-list">
+                <!-- Messages will be injected here -->
+                <div class="loading">Loading messages...</div>
+            </div>
+        </aside>
+
+        <!-- Main Content: Message Composer & Detail -->
+        <main class="main-content">
+            <header class="main-header">
+                <div class="agent-info">
+                    <div class="avatar">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+                    </div>
+                    <div>
+                        <h1 id="my-name">AgentBridge Node</h1>
+                        <span id="my-url" class="status-text">Connected</span>
+                    </div>
+                </div>
+                <a href="http://localhost:8081" target="_blank" class="btn-primary" style="text-decoration: none; display: flex; align-items: center; gap: 8px; font-size: 0.9rem; padding: 8px 16px;">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
+                    Worker Node
+                </a>
+            </header>
+
+            <div class="composer-container">
+                <div class="composer-card glass-panel">
+                    <h3>Send New Message</h3>
+                    <form id="send-form">
+                        <div class="form-group">
+                            <label for="recipient">Recipient</label>
+                            <input type="text" id="recipient" list="known-agents" placeholder="e.g. ProBookAgent, FedoraAgent" required autocomplete="off">
+                            <datalist id="known-agents"></datalist>
+                        </div>
+                        <div class="form-group">
+                            <label for="task-id">Task ID (Optional)</label>
+                            <input type="text" id="task-id" placeholder="Leave blank for auto-generated ID">
+                        </div>
+                        <div class="form-group">
+                            <label for="body">Message</label>
+                            <textarea id="body" rows="4" placeholder="Type your message here..." required></textarea>
+                        </div>
+                        <button type="submit" id="submit-btn" class="btn-primary">
+                            <span>Send Message</span>
+                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                        </button>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Detail Modal overlay (hidden by default) -->
+            <div id="message-detail" class="detail-panel hidden">
+                <div class="detail-header">
+                    <h3 id="detail-subject">Message Detail</h3>
+                    <button id="close-detail" class="icon-btn">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                    </button>
+                </div>
+                <div class="detail-content">
+                    <div class="meta-row" style="display: flex; align-items: center;">
+                        <strong>From:</strong> <span id="detail-sender"></span>
+                        <button id="pin-btn" class="icon-btn" title="Pin Sender" style="margin-left: 8px; padding: 2px;">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3"></circle></svg>
+                        </button>
+                    </div>
+                    <div class="meta-row"><strong>To:</strong> <span id="detail-recipient"></span></div>
+                    <div class="meta-row"><strong>Task ID:</strong> <span id="detail-task"></span></div>
+                    <div class="meta-row"><strong>Type:</strong> <span id="detail-type" class="badge"></span></div>
+                    <div class="meta-row"><strong>Received:</strong> <span id="detail-time"></span></div>
+                    <div class="divider"></div>
+                    <div class="detail-body" id="detail-body"></div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Notification Toast -->
+    <div id="toast" class="toast hidden">
+        <span id="toast-msg"></span>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

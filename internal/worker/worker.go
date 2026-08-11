@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -26,6 +28,9 @@ import (
 	"github.com/shirou/gopsutil/v3/mem"
 )
 
+//go:embed ui/*
+var uiFS embed.FS
+
 type Worker struct {
 	CoordinatorURL string
 	WorkerID       string
@@ -38,6 +43,7 @@ type Worker struct {
 
 	mu         sync.Mutex
 	activeJobs map[string]context.CancelFunc
+	recentJobs []string
 }
 
 type WorkerCredentials struct {
@@ -250,8 +256,42 @@ func (w *Worker) Start() {
 	if w.Client == nil {
 		w.Client = &http.Client{Timeout: 10 * time.Second} // Should only happen in tests that bypassed Pair
 	}
+	go w.serveUI()
 	go w.heartbeatLoop()
 	go w.jobLoop()
+}
+
+func (w *Worker) serveUI() {
+	mux := http.NewServeMux()
+	
+	mux.HandleFunc("/api/status", func(res http.ResponseWriter, req *http.Request) {
+		hw, _ := w.getHardwareInfo()
+		w.mu.Lock()
+		activeJobs := []string{}
+		for jobID := range w.activeJobs {
+			activeJobs = append(activeJobs, jobID)
+		}
+		recentJobs := []string{}
+		recentJobs = append(recentJobs, w.recentJobs...)
+		w.mu.Unlock()
+		
+		status := map[string]interface{}{
+			"worker_id": w.WorkerID,
+			"node_name": w.NodeName,
+			"coordinator_url": w.CoordinatorURL,
+			"hardware": hw,
+			"active_jobs": activeJobs,
+			"recent_jobs": recentJobs,
+		}
+		res.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(res).Encode(status)
+	})
+
+	uiSub, _ := fs.Sub(uiFS, "ui")
+	mux.Handle("/", http.FileServer(http.FS(uiSub)))
+
+	fmt.Println("Worker Dashboard running on http://127.0.0.1:8081")
+	http.ListenAndServe("127.0.0.1:8081", mux)
 }
 
 func (w *Worker) heartbeatLoop() {
@@ -417,6 +457,10 @@ func (w *Worker) executeJob(job models.Job) {
 	defer func() {
 		w.mu.Lock()
 		delete(w.activeJobs, job.ID)
+		if len(w.recentJobs) >= 10 {
+			w.recentJobs = w.recentJobs[1:]
+		}
+		w.recentJobs = append(w.recentJobs, job.ID)
 		w.mu.Unlock()
 		cancel()
 	}()

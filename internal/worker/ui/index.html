@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ForgeGrid Worker Dashboard</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <header class="sidebar-header">
+                <div class="brand">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="brand-icon"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+                    <h2>Worker Node</h2>
+                </div>
+            </header>
+            
+            <div class="status-panel">
+                <div class="status-indicator">
+                    <div id="connection-dot" class="dot green"></div>
+                    <span id="connection-status">Online</span>
+                </div>
+                <div class="meta-row"><strong>Node:</strong> <span id="node-name">Loading...</span></div>
+                <div class="meta-row"><strong>ID:</strong> <span id="worker-id">Loading...</span></div>
+                <div class="meta-row"><strong>Coordinator:</strong> <span id="coordinator-url">Loading...</span></div>
+            </div>
+            
+            <div class="telemetry-panel">
+                <h3>Hardware Telemetry</h3>
+                <div class="stat-box">
+                    <div class="stat-header">
+                        <span>CPU (<span id="cpu-cores">0</span> Cores)</span>
+                        <span id="cpu-model" class="stat-value" style="font-size: 0.75rem;">Loading...</span>
+                    </div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-header">
+                        <span>Memory (RAM)</span>
+                        <span id="ram-usage" class="stat-value">0%</span>
+                    </div>
+                    <div class="progress-bar"><div id="ram-bar" class="progress-fill" style="width: 0%"></div></div>
+                    <div class="stat-subtext"><span id="ram-text">0 / 0 GB</span></div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-header">
+                        <span>Workspace Disk</span>
+                        <span id="disk-free" class="stat-value">0 GB Free</span>
+                    </div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-header">
+                        <span>OS Architecture</span>
+                        <span id="os-arch" class="stat-value">Loading...</span>
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <header class="main-header">
+                <div>
+                    <h1>Active Jobs Queue</h1>
+                    <span class="status-text">Real-time execution monitor</span>
+                </div>
+                <div style="display: flex; gap: 16px; align-items: center;">
+                    <a href="http://localhost:9095" target="_blank" style="background: rgba(59, 130, 246, 0.15); color: var(--accent); padding: 8px 16px; border-radius: 20px; font-weight: 600; font-size: 0.9rem; border: 1px solid rgba(59, 130, 246, 0.3); text-decoration: none; display: flex; align-items: center; gap: 8px; transition: background 0.2s;" onmouseover="this.style.background='rgba(59,130,246,0.25)'" onmouseout="this.style.background='rgba(59,130,246,0.15)'">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+                        Messages
+                    </a>
+                    <div class="job-counter">
+                        <span id="job-count">0</span> Active
+                    </div>
+                </div>
+            </header>
+
+            <div class="jobs-container">
+                <div id="jobs-list" class="jobs-list">
+                    <div class="loading">Loading jobs...</div>
+                </div>
+                <h3 style="margin-top: 32px; margin-bottom: 16px; font-size: 0.9rem; color: var(--text-secondary); text-transform: uppercase;">Recently Completed</h3>
+                <div id="recent-jobs-list" class="jobs-list">
+                    <div class="loading" style="padding: 10px; font-size: 0.85rem;">No recent jobs</div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

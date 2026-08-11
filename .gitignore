@@ -40,3 +40,4 @@ replay-state.json
 coordinator_out.txt
 coord_pid.txt
 *.log
+*.exe
