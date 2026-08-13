@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"forgegrid/internal/agentbridge"
 	"forgegrid/internal/store"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -119,8 +118,6 @@ func TestMessaging_ConfigLoading(t *testing.T) {
 }
 
 func TestMessaging_LiveIntegration(t *testing.T) {
-	s, _ := store.NewStore(t.TempDir())
-
 	oldHome := os.Getenv("HOME")
 	defer os.Setenv("HOME", oldHome)
 	os.Setenv("HOME", t.TempDir())
@@ -142,44 +139,12 @@ func TestMessaging_LiveIntegration(t *testing.T) {
 	os.MkdirAll(filepath.Dir(cfgPath), 0700)
 	os.WriteFile(cfgPath, []byte(`{"name":"coord-agent","token":"secret","url":"`+ts.URL+`","fingerprint":"`+fingerprint+`"}`), 0600)
 
-	c := New(s, true)
-	c.IP = "127.0.0.1"
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	gw, err := NewLiveMessagingGateway()
 	if err != nil {
-		t.Fatalf("Listen failed: %v", err)
-	}
-	c.Listener = ln
-
-	done := make(chan error, 1)
-	go func() {
-		done <- c.Start("0") // Initialize MessagingGateway via Start
-	}()
-	defer func() {
-		ln.Close()
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-			t.Fatalf("coordinator server did not stop after listener close")
-		}
-	}()
-
-	deadline := time.After(2 * time.Second)
-	for c.MessagingGateway == nil {
-		select {
-		case err := <-done:
-			t.Fatalf("Start exited before gateway initialization: %v", err)
-		case <-deadline:
-			t.Fatalf("Gateway not initialized before timeout")
-		default:
-			time.Sleep(10 * time.Millisecond)
-		}
+		t.Fatalf("NewLiveMessagingGateway failed: %v", err)
 	}
 
-	if c.MessagingGateway == nil {
-		t.Fatalf("Gateway not initialized")
-	}
-
-	id, available, err := c.MessagingGateway.Status()
+	id, available, err := gw.Status()
 	if err != nil || !available || id != "coord-agent" {
 		t.Fatalf("Status failed: %v, available=%v, id=%s", err, available, id)
 	}

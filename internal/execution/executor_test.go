@@ -72,6 +72,9 @@ func TestSecureWorkspacePath_Negative(t *testing.T) {
 			if tt.name == "Windows escape" && runtime.GOOS != "windows" {
 				t.Skip("Skipping windows escape test on non-windows platform")
 			}
+			if tt.name == "Escape attempt root" && runtime.GOOS == "windows" {
+				t.Skip("Skipping Unix absolute path test on windows platform")
+			}
 			_, err := SecureWorkspacePath(tmpDir, tt.target)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("SecureWorkspacePath() error = %v, wantErr %v", err, tt.wantErr)
