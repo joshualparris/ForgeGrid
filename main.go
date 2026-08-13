@@ -19,6 +19,7 @@ func main() {
 	insecure := flag.Bool("insecure", false, "Disable TLS (DEVELOPMENT ONLY)")
 	fingerprint := flag.String("fingerprint", "", "TLS certificate fingerprint of the coordinator (worker mode)")
 	resetWorker := flag.Bool("reset-worker", false, "Reset saved worker credentials")
+	msgText := flag.String("msg", "", "Send a message to the coordinator (worker mode)")
 	
 	flag.Parse()
 
@@ -74,6 +75,16 @@ func main() {
 				os.Exit(1)
 			}
 		}
+		
+		if *msgText != "" {
+			if err := w.SendMessage(*msgText); err != nil {
+				fmt.Printf("Error sending message: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("Message sent successfully.")
+			os.Exit(0)
+		}
+		
 		w.Start()
 		
 		// Block forever

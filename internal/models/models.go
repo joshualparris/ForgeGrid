@@ -21,6 +21,14 @@ type WorkerState struct {
 	Status              string    `json:"status"` // online, offline
 }
 
+type WorkerMessage struct {
+	ID        string    `json:"id"`
+	WorkerID  string    `json:"worker_id"`
+	NodeName  string    `json:"node_name"`
+	Text      string    `json:"text"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
 type Job struct {
 	ID         string     `json:"id"`
 	WorkerID   string     `json:"worker_id"`

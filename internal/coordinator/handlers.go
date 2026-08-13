@@ -335,3 +335,66 @@ func (c *Coordinator) handleJobAction(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(job)
 	}
 }
+
+func (c *Coordinator) handlePostMessage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", "")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 16384)
+	
+	var req struct {
+		Text string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Malformed JSON", "")
+		return
+	}
+	
+	token := r.Header.Get("Authorization")
+	token = strings.TrimPrefix(token, "Bearer ")
+	
+	c.Store.Mu.Lock()
+	defer c.Store.Mu.Unlock()
+	
+	// We need to find the worker by token hash, because the request body doesn't include worker_id for simplicity, or we can just iterate.
+	// Actually, the easiest way is to iterate over workers to find the matching token hash.
+	var sender *models.WorkerState
+	targetHash := hashToken(token)
+	for _, worker := range c.Store.Workers {
+		if worker.TokenHash == targetHash {
+			sender = worker
+			break
+		}
+	}
+	
+	if sender == nil {
+		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Unauthorized", "")
+		return
+	}
+	
+	msg := &models.WorkerMessage{
+		ID:        "msg-" + cryptoRandomHex(16),
+		WorkerID:  sender.ID,
+		NodeName:  sender.NodeName,
+		Text:      req.Text,
+		Timestamp: time.Now(),
+	}
+	
+	c.Store.Messages = append(c.Store.Messages, msg)
+	// Optionally keep only the last N messages to avoid infinite growth
+	if len(c.Store.Messages) > 1000 {
+		c.Store.Messages = c.Store.Messages[len(c.Store.Messages)-1000:]
+	}
+	c.Store.Save()
+	
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(msg)
+}
+
+func (c *Coordinator) handleListMessages(w http.ResponseWriter, r *http.Request) {
+	c.Store.Mu.RLock()
+	defer c.Store.Mu.RUnlock()
+	
+	json.NewEncoder(w).Encode(c.Store.Messages)
+}

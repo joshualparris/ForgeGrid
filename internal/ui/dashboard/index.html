@@ -60,6 +60,22 @@
         </table>
     </div>
 
+    <div class="card">
+        <h2>Worker Messages</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Timestamp</th>
+                    <th>Node Name</th>
+                    <th>Worker ID</th>
+                    <th>Message</th>
+                </tr>
+            </thead>
+            <tbody id="messagesTable">
+            </tbody>
+        </table>
+    </div>
+
     <script>
         async function fetchStatus() {
             const res = await fetch('/api/coordinator/status');
@@ -124,11 +140,33 @@
                 });
             }
         }
+        
+        async function fetchMessages() {
+            const res = await fetch('/api/messages');
+            const msgs = await res.json();
+            const tbody = document.getElementById('messagesTable');
+            tbody.innerHTML = '';
+            if (msgs) {
+                // Display latest first
+                msgs.reverse().forEach(m => {
+                    const ts = new Date(m.timestamp).toLocaleString();
+                    tbody.innerHTML += `
+                        <tr>
+                            <td>${ts}</td>
+                            <td>${m.node_name}</td>
+                            <td>${m.worker_id}</td>
+                            <td>${m.text}</td>
+                        </tr>
+                    `;
+                });
+            }
+        }
 
         // Auto-refresh loops
         fetchStatus();
         setInterval(fetchWorkers, 2000);
         setInterval(fetchJobs, 2000);
+        setInterval(fetchMessages, 2000);
     </script>
 </body>
 </html>

@@ -365,3 +365,24 @@ func (w *Worker) executeJob(job models.Job) {
 		w.updateJobStatus(job.ID, "failed", "unknown task", []string{"Unsupported task type"})
 	}
 }
+
+func (w *Worker) SendMessage(text string) error {
+	reqBody := map[string]string{
+		"text": text,
+	}
+	body, _ := json.Marshal(reqBody)
+	req, _ := http.NewRequest("POST", w.CoordinatorURL+"/api/workers/message", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+w.Token)
+	
+	resp, err := w.Client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send message: %v", err)
+	}
+	defer resp.Body.Close()
+	
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("coordinator returned status: %s", resp.Status)
+	}
+	return nil
+}

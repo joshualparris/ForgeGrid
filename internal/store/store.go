@@ -13,6 +13,7 @@ type Store struct {
 	dir            string
 	Workers        map[string]*models.WorkerState
 	Jobs           map[string]*models.Job
+	Messages       []*models.WorkerMessage
 	CoordinatorCfg models.CoordinatorState
 }
 
@@ -22,8 +23,9 @@ func NewStore(dir string) (*Store, error) {
 	}
 	s := &Store{
 		dir:     dir,
-		Workers: make(map[string]*models.WorkerState),
-		Jobs:    make(map[string]*models.Job),
+		Workers:  make(map[string]*models.WorkerState),
+		Jobs:     make(map[string]*models.Job),
+		Messages: make([]*models.WorkerMessage, 0),
 	}
 	s.load()
 	return s, nil
@@ -43,6 +45,10 @@ func (s *Store) load() {
 	b, err = os.ReadFile(filepath.Join(s.dir, "jobs.json"))
 	if err == nil {
 		json.Unmarshal(b, &s.Jobs)
+	}
+	b, err = os.ReadFile(filepath.Join(s.dir, "messages.json"))
+	if err == nil {
+		json.Unmarshal(b, &s.Messages)
 	}
 }
 
@@ -67,6 +73,9 @@ func (s *Store) Save() error {
 		return err
 	}
 	if err := saveFile("jobs.json", s.Jobs); err != nil {
+		return err
+	}
+	if err := saveFile("messages.json", s.Messages); err != nil {
 		return err
 	}
 	return nil
