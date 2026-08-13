@@ -16,6 +16,9 @@ ForgeGrid has undergone a massive security and stability refactor.
 - Development profiles for Go, Node, Python, Godot, Antigravity-style agents, and Codex CLI execution.
 - Worker labels/capabilities and load-aware scheduling.
 - Artifact metadata collection for declared artefact paths.
+- Artifact download links for small files and compressed packages for larger build outputs.
+- Dashboard live log viewer backed by the job log stream endpoint.
+- Runner policy generator for local `worker_policy.json` setup.
 - Offline-worker retry/requeue foundation.
 - Optional GitHub PR creation after successful push when `gh` is authenticated on the worker.
 

@@ -56,6 +56,13 @@ Workers can also advertise labels and capabilities for safer scheduling:
 ./forgegrid -mode worker -labels "trusted,linux-build" -capabilities "go,node,codex,godot,github-pr"
 ```
 
+To configure a runner once, generate a local worker policy file on that runner:
+```bash
+./forgegrid -mode worker -write-worker-policy -allowed-repos "git@github.com:you/game.git" -labels "trusted,linux-build" -capabilities "go,node,codex,godot,github-pr"
+```
+
+The dashboard also includes a runner policy helper that generates this command and the equivalent `worker_policy.json`.
+
 ### 3. Dispatch Repo Jobs
 Submit a manifest to the coordinator from the command node. Git jobs require a pinned `base_commit`, run in an isolated worktree, and can optionally commit/push only when both the manifest and worker policy allow it.
 
@@ -88,6 +95,8 @@ tasks:
 ```
 
 Available execution profiles include `GoTest`, `GoBuild`, `NodeBuild`, `NodeTest`, `NodeLint`, `PythonUnittest`, `GodotExport`, `AIAgent`, and `CodexExec`.
+
+Declared artefacts are collected after successful jobs. Small files are uploaded directly; larger compressible files are uploaded as zip packages when the compressed bundle fits the controller upload cap.
 
 For real multi-laptop validation, GitHub credentials, PR creation, rollback, and firewall troubleshooting, see [COMMAND_NODE_RUNBOOK.md](Documentation/COMMAND_NODE_RUNBOOK.md).
 

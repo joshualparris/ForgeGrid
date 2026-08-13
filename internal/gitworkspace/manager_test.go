@@ -71,3 +71,31 @@ func TestCollectArtifactsSupportsRecursiveBuildPattern(t *testing.T) {
 		t.Fatalf("expected artifact checksums")
 	}
 }
+
+func TestCollectArtifactsPackagesLargeCompressibleFile(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "build"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	large := strings.Repeat("0", 11*1024*1024)
+	if err := os.WriteFile(filepath.Join(root, "build", "game.pck"), []byte(large), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	artifacts, err := NewManager(root).CollectArtifacts(root, []string{"build/game.pck"})
+	if err != nil {
+		t.Fatalf("CollectArtifacts failed: %v", err)
+	}
+	if len(artifacts) != 1 {
+		t.Fatalf("expected 1 artifact, got %d", len(artifacts))
+	}
+	if !artifacts[0].Packaged {
+		t.Fatalf("expected large compressible artifact to be packaged")
+	}
+	if artifacts[0].PackageName != "game.pck.zip" {
+		t.Fatalf("unexpected package name %q", artifacts[0].PackageName)
+	}
+	if artifacts[0].ContentBase64 == "" {
+		t.Fatalf("expected packaged artifact content")
+	}
+}

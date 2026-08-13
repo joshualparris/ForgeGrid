@@ -84,6 +84,8 @@ type Artifact struct {
 	SHA256        string `json:"sha256"`
 	DownloadURL   string `json:"download_url,omitempty"`
 	ContentBase64 string `json:"content_base64,omitempty"`
+	Packaged      bool   `json:"packaged,omitempty"`
+	PackageName   string `json:"package_name,omitempty"`
 }
 
 type CoordinatorState struct {

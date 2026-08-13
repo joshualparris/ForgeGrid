@@ -1,6 +1,7 @@
 package gitworkspace
 
 import (
+	"archive/zip"
 	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
@@ -195,12 +196,8 @@ func (m *Manager) CollectArtifacts(worktreeDir string, patterns []string) ([]Art
 				return nil, err
 			}
 			artifact := Artifact{Path: rel, Size: info.Size(), SHA256: sum}
-			if info.Size() <= 10*1024*1024 {
-				b, err := os.ReadFile(match)
-				if err != nil {
-					return nil, err
-				}
-				artifact.ContentBase64 = base64.StdEncoding.EncodeToString(b)
+			if err := attachArtifactContent(&artifact, match); err != nil {
+				return nil, err
 			}
 			artifacts = append(artifacts, artifact)
 			seen[rel] = true
@@ -236,11 +233,55 @@ func artifactMatches(root, pattern string) ([]string, error) {
 	return filepath.Glob(filepath.Join(root, clean))
 }
 
+func attachArtifactContent(artifact *Artifact, path string) error {
+	if artifact.Size <= 10*1024*1024 {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		artifact.ContentBase64 = base64.StdEncoding.EncodeToString(b)
+		return nil
+	}
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.Create(filepath.Base(path))
+	if err != nil {
+		return err
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		zw.Close()
+		return err
+	}
+	_, copyErr := io.Copy(w, f)
+	closeErr := f.Close()
+	if copyErr != nil {
+		zw.Close()
+		return copyErr
+	}
+	if closeErr != nil {
+		zw.Close()
+		return closeErr
+	}
+	if err := zw.Close(); err != nil {
+		return err
+	}
+	if buf.Len() <= 10*1024*1024 {
+		artifact.ContentBase64 = base64.StdEncoding.EncodeToString(buf.Bytes())
+		artifact.Packaged = true
+		artifact.PackageName = filepath.Base(path) + ".zip"
+	}
+	return nil
+}
+
 type Artifact struct {
 	Path          string
 	Size          int64
 	SHA256        string
 	ContentBase64 string
+	Packaged      bool
+	PackageName   string
 }
 
 // Internal restricted git command execution

@@ -14,6 +14,11 @@
         th, td { text-align: left; padding: 10px; border-bottom: 1px solid #333; }
         .status-online { color: #00ff00; }
         .status-offline { color: #ff0000; }
+        input, textarea, select { background: #333; color: white; border: 1px solid #555; padding: 8px; border-radius: 4px; }
+        .field-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+        .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.72); padding: 32px; z-index: 10; }
+        .modal-content { background: #1e1e1e; border: 1px solid #444; border-radius: 8px; padding: 20px; height: calc(100vh - 96px); display: flex; flex-direction: column; }
+        pre { background: #101010; color: #d7ffd7; padding: 12px; border-radius: 6px; overflow: auto; white-space: pre-wrap; }
     </style>
 </head>
 <body>
@@ -42,6 +47,18 @@
             <tbody id="workersTable">
             </tbody>
         </table>
+    </div>
+
+    <div class="card">
+        <h2>Runner Policy Setup</h2>
+        <div class="field-grid">
+            <label>Allowed Repositories<br><input id="policyRepos" style="width: 100%;" placeholder="git@github.com:you/game.git,git@github.com:you/app.git"></label>
+            <label>Labels<br><input id="policyLabels" style="width: 100%;" placeholder="trusted,linux-build"></label>
+            <label>Capabilities<br><input id="policyCaps" style="width: 100%;" placeholder="go,node,codex,godot,github-pr"></label>
+            <label>Allow Push<br><select id="policyPush" style="width: 100%;"><option value="false">No</option><option value="true">Yes</option></select></label>
+        </div>
+        <button onclick="generateRunnerPolicy()" style="margin-top: 12px; background: #555;">Generate Runner Policy Command</button>
+        <pre id="policyOutput" style="display: none;"></pre>
     </div>
     
     <div class="card">
@@ -105,12 +122,44 @@
         </div>
     </div>
 
+    <div class="modal" id="logModal">
+        <div class="modal-content">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h2 id="logTitle">Job Logs</h2>
+                <button onclick="closeLogViewer()" style="background: #555;">Close</button>
+            </div>
+            <pre id="logOutput" style="flex: 1;"></pre>
+        </div>
+    </div>
+
     <script>
         let coordinatorIdentity = "";
         let messagingAvailable = false;
         let currentRecipient = null;
         let agentNames = [];
         let messagesStore = []; // Store raw messages
+        let logSource = null;
+
+        function splitCSV(value) {
+            return value.split(',').map(v => v.trim()).filter(Boolean);
+        }
+
+        function shellQuote(value) {
+            return `"${value.replace(/"/g, '\\"')}"`;
+        }
+
+        function generateRunnerPolicy() {
+            const repos = splitCSV(document.getElementById('policyRepos').value);
+            const labels = splitCSV(document.getElementById('policyLabels').value);
+            const caps = splitCSV(document.getElementById('policyCaps').value);
+            const allowPush = document.getElementById('policyPush').value === 'true';
+            const pushFlag = allowPush ? ' -allow-push' : '';
+            const cmd = `./forgegrid -mode worker -write-worker-policy -allowed-repos ${shellQuote(repos.join(','))}${pushFlag} -labels ${shellQuote(labels.join(','))} -capabilities ${shellQuote(caps.join(','))}`;
+            const json = JSON.stringify({ allowed_repos: repos, allow_push: allowPush, labels, capabilities: caps }, null, 2);
+            const output = document.getElementById('policyOutput');
+            output.style.display = 'block';
+            output.textContent = `Run this once on the runner:\n${cmd}\n\nEquivalent worker_policy.json:\n${json}`;
+        }
 
         function getTemplate(commit, push) {
             return `project: "MyProject"
@@ -302,23 +351,75 @@ tasks:
             const tbody = document.getElementById('jobsTable');
             tbody.innerHTML = '';
             if (jobs) {
+                const retryChildren = {};
+                jobs.forEach(j => {
+                    if (j.retry_of) {
+                        retryChildren[j.retry_of] = (retryChildren[j.retry_of] || 0) + 1;
+                    }
+                });
                 jobs.forEach(j => {
                     const artifactHTML = (j.artifacts || []).map(a => a.download_url ? `<a style="color:#4facfe;" href="${escapeHTML(a.download_url)}">${escapeHTML(a.path)} (${Math.round(a.size / 1024)}KB)</a>` : `${escapeHTML(a.path)} (${Math.round(a.size / 1024)}KB)`).join(', ');
                     const prHTML = j.pr_url ? `<a style="color:#4facfe;" href="${escapeHTML(j.pr_url)}" target="_blank" rel="noopener">PR</a>` : '';
                     const retryText = j.retry_of ? ` retry of ${j.retry_of}` : (j.max_retries ? ` retries ${j.retry_count || 0}/${j.max_retries}` : '');
-                    const logsHTML = `<a style="color:#4facfe;" href="/api/jobs/${escapeHTML(j.id)}/logs/stream" target="_blank" rel="noopener">logs</a>`;
+                    const childText = retryChildren[j.id] ? ` spawned ${retryChildren[j.id]} retry` : '';
+                    const logsHTML = `<button onclick="openLogViewer('${escapeHTML(j.id)}')" style="background:#333;border:1px solid #555;">Logs</button>`;
                     tbody.innerHTML += `
                         <tr>
                             <td>${escapeHTML(j.id)}</td>
                             <td>${escapeHTML(j.worker_id)}</td>
                             <td>${escapeHTML(j.task)}</td>
                             <td>${escapeHTML(j.status)}</td>
-                            <td>${escapeHTML((j.result || '-') + retryText)} | ${logsHTML}</td>
+                            <td>${escapeHTML((j.result || '-') + retryText + childText)} | ${logsHTML}</td>
                             <td>${[artifactHTML, prHTML].filter(Boolean).join(' | ') || '-'}</td>
                         </tr>
                     `;
                 });
             }
+        }
+
+        async function openLogViewer(jobId) {
+            closeLogViewer();
+            document.getElementById('logTitle').textContent = `Job Logs: ${jobId}`;
+            const output = document.getElementById('logOutput');
+            output.textContent = '';
+            document.getElementById('logModal').style.display = 'block';
+            try {
+                const res = await fetch(`/api/jobs/${jobId}`);
+                if (res.ok) {
+                    const job = await res.json();
+                    if (job.logs) {
+                        try { output.textContent = atob(job.logs); } catch (e) { output.textContent = job.logs; }
+                    }
+                }
+            } catch (e) {
+                output.textContent += `\nFailed to load existing logs: ${e.message}`;
+            }
+            logSource = new EventSource(`/api/jobs/${jobId}/logs/stream`);
+            logSource.addEventListener('logs', ev => {
+                output.textContent += ev.data.replace(/\\n/g, '\n');
+                output.scrollTop = output.scrollHeight;
+            });
+            logSource.addEventListener('done', ev => {
+                output.textContent += `\n[${ev.data}]`;
+                closeLogSource();
+            });
+            logSource.onerror = () => {
+                output.textContent += '\n[log stream closed]';
+                closeLogSource();
+            };
+        }
+
+        function closeLogSource() {
+            if (logSource) {
+                logSource.close();
+                logSource = null;
+            }
+        }
+
+        function closeLogViewer() {
+            closeLogSource();
+            const modal = document.getElementById('logModal');
+            if (modal) modal.style.display = 'none';
         }
 
         async function initMessaging() {

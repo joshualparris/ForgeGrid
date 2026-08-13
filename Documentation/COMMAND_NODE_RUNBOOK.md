@@ -58,6 +58,17 @@ Only add `-allow-push` on workers that are trusted to push:
 ./forgegrid -mode worker ... -allow-push
 ```
 
+Alternatively, write a persistent runner policy on each runner once:
+
+```bash
+./forgegrid -mode worker -write-worker-policy \
+  -allowed-repos "git@github.com:you/game.git" \
+  -labels "trusted,linux-build" \
+  -capabilities "go,node,codex,godot,github-pr"
+```
+
+The dashboard's Runner Policy Setup card generates this command.
+
 4. Confirm each worker appears online with the expected labels and capabilities.
 
 5. Dispatch a no-push job first. Confirm it runs, logs appear, and no Git branch is pushed.
@@ -72,6 +83,8 @@ Only add `-allow-push` on workers that are trusted to push:
 - GitHub credentials on that worker are scoped correctly
 
 8. For PR tests, set `repository.create_pr: true` and ensure `gh auth status` passes on the worker.
+
+9. For artifact tests, declare `artefacts: ["build/**"]`. Small files should appear as dashboard download links. Larger compressible files are uploaded as `.zip` packages when the compressed result fits the upload cap.
 
 ## Firewall Checks
 

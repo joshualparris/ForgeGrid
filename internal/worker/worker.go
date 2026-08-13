@@ -640,6 +640,8 @@ func (w *Worker) executeJob(job models.Job) {
 								Size:          a.Size,
 								SHA256:        a.SHA256,
 								ContentBase64: a.ContentBase64,
+								Packaged:      a.Packaged,
+								PackageName:   a.PackageName,
 							})
 						}
 						output = append(output, []byte(fmt.Sprintf("\n--- ARTIFACTS ---\nCollected %d artifact(s).\n", len(artifacts)))...)

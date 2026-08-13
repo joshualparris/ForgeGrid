@@ -54,6 +54,9 @@ func (c *Coordinator) persistArtifacts(jobID string, artifacts []models.Artifact
 				dir := filepath.Join(c.Store.Dir(), "artifacts", jobID)
 				if os.MkdirAll(dir, 0700) == nil {
 					name := fmt.Sprintf("%03d-%s", i, filepath.Base(clean))
+					if artifact.Packaged && artifact.PackageName != "" {
+						name = fmt.Sprintf("%03d-%s", i, filepath.Base(artifact.PackageName))
+					}
 					if os.WriteFile(filepath.Join(dir, name), b, 0600) == nil {
 						artifact.DownloadURL = fmt.Sprintf("/api/jobs/%s/artifacts/%d", jobID, i)
 					}

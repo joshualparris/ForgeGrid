@@ -62,13 +62,7 @@ var Profiles = map[string]Profile{
 		Subcommand:     []string{"-m", "unittest"},
 		ArgKeys:        []string{"module"},
 	},
-	"ShellScript": {
-		Name:           "ShellScript",
-		Executable:     "sh",
-		MaxTimeoutSecs: 300,
-		Subcommand:     []string{"-c"},
-		ArgKeys:        []string{"script"},
-	},
+
 	"AIAgent": {
 		Name:           "AIAgent",
 		Executable:     "antigravity",

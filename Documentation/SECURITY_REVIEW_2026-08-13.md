@@ -17,7 +17,7 @@
 
 - AI-agent profiles can modify files inside the cloned worktree. Keep them on trusted workers and review PRs before merging.
 - GitHub credentials live outside ForgeGrid and must be scoped per worker/repository.
-- Artifact collection currently records path, size, and SHA-256 metadata; it does not upload artifact bytes to the coordinator.
+- Artifact collection uploads small files and compressed packages when they fit the controller cap; very large or incompressible builds still need external storage or a future chunked transfer protocol.
 - Live log streaming is still polling/status-update based rather than a dedicated stream.
 - Dashboard Basic Auth is suitable for a trusted LAN but should not be exposed to the internet.
 - Physical Windows/Linux LAN verification is still required before unattended use.
