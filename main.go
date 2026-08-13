@@ -9,6 +9,8 @@ import (
 	"forgegrid/internal/agentbridge"
 	"forgegrid/internal/coordinator"
 	"forgegrid/internal/doctor"
+	"forgegrid/internal/runner"
+	"forgegrid/internal/session"
 	"forgegrid/internal/store"
 	"forgegrid/internal/worker"
 )
@@ -20,6 +22,12 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "doctor" {
 		os.Exit(doctor.Run(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "session" {
+		os.Exit(session.Run(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "runner" {
+		os.Exit(runner.Run(os.Args[2:]))
 	}
 	if len(os.Args) > 1 && os.Args[1] == "service" {
 		if len(os.Args) < 3 {

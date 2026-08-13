@@ -184,6 +184,14 @@ type ClientConfig struct {
 	Fingerprint string `json:"fingerprint"`
 }
 
+func SaveClientConfig(path string, cfg ClientConfig) error {
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	return writeSecureConfig(path, b)
+}
+
 func LoadClientConfig(path string) (*ClientConfig, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -254,12 +262,7 @@ func configureClientCmd(args []string) {
 	}
 
 	path := GetConfigPath()
-	b, err := json.Marshal(cfg)
-	if err != nil {
-		log.Fatalf("Failed to marshal config: %v", err)
-	}
-
-	if err := writeSecureConfig(path, b); err != nil {
+	if err := SaveClientConfig(path, cfg); err != nil {
 		log.Fatalf("Failed to save config: %v", err)
 	}
 
