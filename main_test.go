@@ -57,7 +57,12 @@ func TestIntegration(t *testing.T) {
 	client := &http.Client{Transport: tr}
 
 	// 1. Generate pairing code via API
-	resp, err := client.Post(serverURL+"/api/pairing/code", "application/json", nil)
+	req, _ := http.NewRequest("POST", serverURL+"/api/pairing/code", nil)
+	c.Store.Mu.RLock()
+	adminToken := c.Store.CoordinatorCfg.AdminToken
+	c.Store.Mu.RUnlock()
+	req.SetBasicAuth("admin", adminToken)
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("Failed to generate code: %v", err)
 	}
@@ -124,8 +129,8 @@ func TestIntegration(t *testing.T) {
 	wBadTLS.SetupClient(wBadTLS.Fingerprint) // Re-setup with bad fingerprint
 
 	// We do a manual HTTP request using the bad TLS client to prove rejection
-	req, _ := http.NewRequest("GET", wBadTLS.CoordinatorURL+"/api/coordinator/status", nil)
-	_, err = wBadTLS.Client.Do(req)
+	reqBad, _ := http.NewRequest("GET", wBadTLS.CoordinatorURL+"/api/coordinator/status", nil)
+	_, err = wBadTLS.Client.Do(reqBad)
 	if err == nil || !strings.Contains(err.Error(), "certificate fingerprint mismatch") {
 		t.Fatalf("Expected TLS fingerprint mismatch error, got: %v", err)
 	}
@@ -161,7 +166,10 @@ func TestIntegration(t *testing.T) {
 	// 7. Test-job assignment
 	jobReq := map[string]string{"worker_id": w1Restarted.WorkerID}
 	b, _ := json.Marshal(jobReq)
-	resp, err = client.Post(serverURL+"/api/jobs/test", "application/json", bytes.NewReader(b))
+	reqTest, _ := http.NewRequest("POST", serverURL+"/api/jobs/test", bytes.NewReader(b))
+	reqTest.Header.Set("Content-Type", "application/json")
+	reqTest.SetBasicAuth("admin", adminToken)
+	resp, err = client.Do(reqTest)
 	if err != nil {
 		t.Fatalf("Failed to post job: %v", err)
 	}
@@ -169,7 +177,7 @@ func TestIntegration(t *testing.T) {
 	json.NewDecoder(resp.Body).Decode(&jobRes)
 	resp.Body.Close()
 
-	if jobRes.Status != "pending" {
+	if jobRes.Status != "PENDING" {
 		t.Fatalf("Expected job to be pending, got %s", jobRes.Status)
 	}
 
@@ -183,7 +191,7 @@ func TestIntegration(t *testing.T) {
 	json.NewDecoder(resp.Body).Decode(&jobRes)
 	resp.Body.Close()
 
-	if jobRes.Status != "completed" {
+	if jobRes.Status != "COMPLETED" {
 		t.Fatalf("Expected job to be completed, got %s. Result: %s", jobRes.Status, jobRes.Result)
 	}
 	if jobRes.Result != "success" {

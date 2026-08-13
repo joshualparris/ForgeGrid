@@ -41,6 +41,65 @@ Once paired, the worker securely stores its tokens. For subsequent launches, you
 .\ForgeGrid.exe -mode worker
 ```
 
+For Git-backed development jobs, each worker must explicitly allow the repositories it is willing to clone and run. Pushing is a second opt-in:
+```powershell
+.\ForgeGrid.exe -mode worker -allowed-repos "https://github.com/you/game.git,https://github.com/you/app.git" -allow-push
+```
+
+Linux workers can use the same flags, or environment variables:
+```bash
+FORGEGRID_ALLOWED_REPOS="https://github.com/you/game.git" FORGEGRID_ALLOW_PUSH=true ./forgegrid -mode worker
+```
+
+Workers can also advertise labels and capabilities for safer scheduling:
+```bash
+./forgegrid -mode worker -labels "trusted,linux-build" -capabilities "go,node,codex,godot,github-pr"
+```
+
+To configure a runner once, generate a local worker policy file on that runner:
+```bash
+./forgegrid -mode worker -write-worker-policy -allowed-repos "git@github.com:you/game.git" -labels "trusted,linux-build" -capabilities "go,node,codex,godot,github-pr"
+```
+
+The dashboard also includes a runner policy helper that generates this command and the equivalent `worker_policy.json`.
+
+### 3. Dispatch Repo Jobs
+Submit a manifest to the coordinator from the command node. Git jobs require a pinned `base_commit`, run in an isolated worktree, and can optionally commit/push only when both the manifest and worker policy allow it.
+
+```yaml
+project: "TextGame"
+repository:
+  url: "https://github.com/you/TextGame.git"
+  base_commit: "0123456789abcdef0123456789abcdef01234567"
+  branch: "forgegrid/improve-parser"
+  create_pr: true
+  pr_title: "Improve parser diagnostics"
+  pr_body: "Automated ForgeGrid branch for review."
+tasks:
+  codex-improve-parser:
+    requirements:
+      os: "linux"
+      min_ram_gb: 8
+      labels: ["trusted"]
+      capabilities: ["codex"]
+    execution:
+      profile: "CodexExec"
+      parameters:
+        prompt: "Improve parser errors, add tests, and keep changes scoped."
+      timeout_seconds: 3600
+      max_retries: 1
+      changes:
+        commit: true
+        push: true
+        commit_message: "Improve parser diagnostics"
+```
+
+Available execution profiles include `GoTest`, `GoBuild`, `NodeBuild`, `NodeTest`, `NodeLint`, `PythonUnittest`, `GodotExport`, `AIAgent`, and `CodexExec`.
+
+Declared artefacts are collected after successful jobs. Small files are uploaded directly; larger compressible files are uploaded as zip packages when the compressed bundle fits the controller upload cap.
+
+For real multi-laptop validation, GitHub credentials, PR creation, rollback, and firewall troubleshooting, see [COMMAND_NODE_RUNBOOK.md](Documentation/COMMAND_NODE_RUNBOOK.md).
+
 ## Dashboard
 The coordinator exposes a web UI on port `8080` (e.g., `https://127.0.0.1:8080`). From the dashboard, you can view worker heartbeats, hardware capabilities, job status, and generate new one-time pairing codes.
 

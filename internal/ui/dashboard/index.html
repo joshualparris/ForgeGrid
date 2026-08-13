@@ -14,6 +14,11 @@
         th, td { text-align: left; padding: 10px; border-bottom: 1px solid #333; }
         .status-online { color: #00ff00; }
         .status-offline { color: #ff0000; }
+        input, textarea, select { background: #333; color: white; border: 1px solid #555; padding: 8px; border-radius: 4px; }
+        .field-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+        .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.72); padding: 32px; z-index: 10; }
+        .modal-content { background: #1e1e1e; border: 1px solid #444; border-radius: 8px; padding: 20px; height: calc(100vh - 96px); display: flex; flex-direction: column; }
+        pre { background: #101010; color: #d7ffd7; padding: 12px; border-radius: 6px; overflow: auto; white-space: pre-wrap; }
     </style>
 </head>
 <body>
@@ -27,6 +32,20 @@
     </div>
 
     <div class="card">
+        <h2>Wi-Fi Setup</h2>
+        <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: end;">
+            <label>AgentBridge Port<br><input id="sessionAgentPort" value="9091" style="width: 120px;"></label>
+            <button onclick="startWifiSession()">Start Wi-Fi Session</button>
+        </div>
+        <pre id="sessionOutput" style="display: none;"></pre>
+        <div style="margin-top: 14px; display: flex; gap: 10px; flex-wrap: wrap; align-items: end;">
+            <label>Repair AgentBridge Identity<br><input id="repairAgentName" placeholder="thinkpad-antigravity" style="width: 260px;"></label>
+            <button onclick="repairAgentBridge()" style="background: #775500;">Generate Fresh Token</button>
+        </div>
+        <pre id="repairOutput" style="display: none;"></pre>
+    </div>
+
+    <div class="card">
         <h2>Connected Workers</h2>
         <table>
             <thead>
@@ -34,6 +53,7 @@
                     <th>Node Name</th>
                     <th>OS</th>
                     <th>CPU / RAM</th>
+                    <th>Labels / Capabilities</th>
                     <th>Status</th>
                     <th>Actions</th>
                 </tr>
@@ -42,17 +62,48 @@
             </tbody>
         </table>
     </div>
+
+    <div class="card">
+        <h2>Runner Policy Setup</h2>
+        <div class="field-grid">
+            <label>Allowed Repositories<br><input id="policyRepos" style="width: 100%;" placeholder="git@github.com:you/game.git,git@github.com:you/app.git"></label>
+            <label>Labels<br><input id="policyLabels" style="width: 100%;" placeholder="trusted,linux-build"></label>
+            <label>Capabilities<br><input id="policyCaps" style="width: 100%;" placeholder="go,node,codex,godot,github-pr"></label>
+            <label>Allow Push<br><select id="policyPush" style="width: 100%;"><option value="false">No</option><option value="true">Yes</option></select></label>
+        </div>
+        <button onclick="generateRunnerPolicy()" style="margin-top: 12px; background: #555;">Generate Runner Policy Command</button>
+        <pre id="policyOutput" style="display: none;"></pre>
+    </div>
+    
+    <div class="card">
+        <h2>Submit Job Manifest</h2>
+        <div style="margin-bottom: 10px; display: flex; gap: 10px;">
+            <button onclick="loadTemplate('go-test')" style="background: #333; border: 1px solid #555; padding: 5px 10px;">Run Go Test Suite</button>
+            <button onclick="loadTemplate('godot-export')" style="background: #333; border: 1px solid #555; padding: 5px 10px;">Export Godot Game (Windows)</button>
+            <button onclick="loadTemplate('agent-task')" style="background: #333; border: 1px solid #555; padding: 5px 10px;">Agent: Implement Feature</button>
+            <button onclick="loadTemplate('push')" style="background: #ff4d4d; border: 1px solid #ff0000; font-weight: bold; padding: 5px 10px;">Push Changes</button>
+        </div>
+        <textarea id="manifestInput" rows="22" style="width: 100%; box-sizing: border-box; background: #333; color: white; border: 1px solid #555; padding: 10px; font-family: monospace;" oninput="checkPushWarning()"></textarea><br/>
+        <div id="pushWarning" style="display: none; color: #ffeb3b; background: rgba(255, 235, 59, 0.1); padding: 10px; border-left: 4px solid #ffeb3b; margin-top: 10px;">
+            <strong>WARNING:</strong> This manifest is configured to PUSH changes to the remote repository. Ensure you have authorization and that the remote branch is correct.
+        </div>
+        <button onclick="submitManifest()" style="margin-top: 10px; background: linear-gradient(135deg, #00b09b 0%, #96c93d 100%);">Submit Job Manifest</button>
+        <div id="manifestResult" style="margin-top: 10px; font-weight: bold;"></div>
+    </div>
     
     <div class="card">
         <h2>Recent Jobs</h2>
         <table>
             <thead>
                 <tr>
+                    <th>Date / Time</th>
                     <th>Job ID</th>
                     <th>Worker ID</th>
                     <th>Task</th>
                     <th>Status</th>
                     <th>Result</th>
+                    <th>Artifacts / PR</th>
+                    <th>Actions</th>
                 </tr>
             </thead>
             <tbody id="jobsTable">
@@ -60,17 +111,298 @@
         </table>
     </div>
 
+    <div class="card" id="messagingCard" style="display: none;">
+        <h2>Messaging</h2>
+        <div id="messagingUnavailable" style="display: none; color: #ff4d4d;">AgentBridge is not configured or unavailable.</div>
+        <div id="messagingContainer" style="display: flex; height: 500px; gap: 20px;">
+            <div style="flex: 1; border-right: 1px solid #333; padding-right: 20px; overflow-y: auto;">
+                <h3>Conversations</h3>
+                <ul id="conversationList" style="list-style: none; padding: 0;">
+                </ul>
+            </div>
+            <div style="flex: 3; display: flex; flex-direction: column;">
+                <h3 id="currentConversationTitle">Select a conversation</h3>
+                <div id="messageHistory" style="flex: 1; overflow-y: auto; background: #121212; padding: 10px; border-radius: 4px; margin-bottom: 10px; display: flex; flex-direction: column;">
+                </div>
+                <div style="display: flex; gap: 10px;">
+                    <select id="messageTypeSelect">
+                        <option value="chat">Chat</option>
+                        <option value="instruction">Instruction</option>
+                        <option value="system">System</option>
+                    </select>
+                    <input type="text" id="taskIdInput" placeholder="Task ID (optional)" style="flex: 1; background: #333; color: white; border: 1px solid #555; padding: 5px;">
+                    <input type="text" id="messageInput" placeholder="Type a message..." style="flex: 3; background: #333; color: white; border: 1px solid #555; padding: 5px;">
+                    <button id="sendBtn" onclick="sendMessage()">Send</button>
+                </div>
+                <div id="sendError" style="color: #ff4d4d; margin-top: 5px;"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="logModal">
+        <div class="modal-content">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h2 id="logTitle">Job Logs</h2>
+                <button onclick="closeLogViewer()" style="background: #555;">Close</button>
+            </div>
+            <pre id="logOutput" style="flex: 1;"></pre>
+        </div>
+    </div>
+
     <script>
+        let coordinatorIdentity = "";
+        let messagingAvailable = false;
+        let currentRecipient = null;
+        let agentNames = [];
+        let messagesStore = []; // Store raw messages
+        let logSource = null;
+        let latestAgentBridgeFingerprint = "";
+
+        function splitCSV(value) {
+            return value.split(',').map(v => v.trim()).filter(Boolean);
+        }
+
+        function shellQuote(value) {
+            return `"${value.replace(/"/g, '\\"')}"`;
+        }
+
+        function generateRunnerPolicy() {
+            const repos = splitCSV(document.getElementById('policyRepos').value);
+            const labels = splitCSV(document.getElementById('policyLabels').value);
+            const caps = splitCSV(document.getElementById('policyCaps').value);
+            const allowPush = document.getElementById('policyPush').value === 'true';
+            const pushFlag = allowPush ? ' -allow-push' : '';
+            const cmd = `./forgegrid -mode worker -write-worker-policy -allowed-repos ${shellQuote(repos.join(','))}${pushFlag} -labels ${shellQuote(labels.join(','))} -capabilities ${shellQuote(caps.join(','))}`;
+            const json = JSON.stringify({ allowed_repos: repos, allow_push: allowPush, labels, capabilities: caps }, null, 2);
+            const output = document.getElementById('policyOutput');
+            output.style.display = 'block';
+            output.textContent = `Run this once on the runner:\n${cmd}\n\nEquivalent worker_policy.json:\n${json}`;
+        }
+
+        function getTemplate(type) {
+            let push = 'false';
+            let commit = 'false';
+            if (type === 'push') { push = 'true'; commit = 'true'; }
+            else if (type === 'agent-task') { commit = 'true'; }
+
+            const baseTemplate = `project: "MyProject"
+repository:
+  url: "https://github.com/example/repo.git"
+  base_commit: "master"
+  branch: "forgegrid/agent-work"
+  create_pr: ${push}
+  pr_title: "ForgeGrid automated changes"
+  pr_body: "Automated development job from ForgeGrid."
+tasks:`;
+
+            if (type === 'go-test') {
+                return baseTemplate + `
+  test:
+    description: "Run Go Test Suite"
+    requirements:
+      os: "windows"
+      capabilities: ["go"]
+    execution:
+      profile: "GoTest"
+      parameters:
+        package: "./..."
+      timeout_seconds: 600
+      changes:
+        commit: false
+        push: false`;
+            } else if (type === 'godot-export') {
+                return baseTemplate + `
+  build:
+    description: "Export Godot project"
+    requirements:
+      os: "windows"
+      capabilities: ["godot"]
+    execution:
+      profile: "GodotExport"
+      parameters:
+        preset: "Windows Desktop"
+        export_path: "build/game.exe"
+      timeout_seconds: 1200
+      changes:
+        commit: ${commit}
+        push: ${push}
+        commit_message: "Automated build"
+    artefacts:
+      - "build/game.exe"`;
+            } else if (type === 'agent-task') {
+                return baseTemplate + `
+  build:
+    description: "Agent: Implement Feature"
+    requirements:
+      os: "windows"
+      capabilities: ["codex"]
+    execution:
+      profile: "CodexExec"
+      parameters:
+        prompt: "Write a fun ASCII game and save it to the workspace."
+      timeout_seconds: 1800
+      changes:
+        commit: true
+        push: false
+        commit_message: "Implement feature"`;
+            } else {
+                return baseTemplate + `
+  build:
+    description: "Generic task"
+    requirements:
+      os: "linux"
+    execution:
+      profile: "GoTest"
+      parameters:
+        package: "./..."
+      timeout_seconds: 600
+      changes:
+        commit: ${commit}
+        push: ${push}
+        commit_message: "Automated changes"`;
+            }
+        }
+
+        function loadTemplate(type) {
+            const input = document.getElementById('manifestInput');
+            input.value = getTemplate(type);
+            checkPushWarning();
+        }
+
+        function checkPushWarning() {
+            const yamlStr = document.getElementById('manifestInput').value;
+            const pushWarning = document.getElementById('pushWarning');
+            if (yamlStr.includes('push: true')) {
+                pushWarning.style.display = 'block';
+            } else {
+                pushWarning.style.display = 'none';
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const input = document.getElementById('manifestInput');
+            if (input) input.value = getTemplate('go-test');
+            checkPushWarning();
+        });
+
+        async function submitManifest() {
+            const yamlStr = document.getElementById('manifestInput').value;
+            const resDiv = document.getElementById('manifestResult');
+            
+            // Validate required fields
+            if (!yamlStr.match(/url:\s*['"]?[a-zA-Z0-9]/)) {
+                resDiv.style.color = '#ffeb3b';
+                resDiv.innerText = 'Validation Failed: repository.url is missing or empty.';
+                return;
+            }
+            if (!yamlStr.match(/base_commit:\s*['"]?[a-zA-Z0-9]/)) {
+                resDiv.style.color = '#ffeb3b';
+                resDiv.innerText = 'Validation Failed: repository.base_commit is missing or empty.';
+                return;
+            }
+            if (yamlStr.includes('push: true') && !confirm('This job can push changes to a remote Git repository. Continue only if the target branch and worker allowlist are correct.')) {
+                resDiv.style.color = '#ffeb3b';
+                resDiv.innerText = 'Submission cancelled before push-capable dispatch.';
+                return;
+            }
+
+            resDiv.style.color = 'white';
+            resDiv.innerText = 'Submitting...';
+            try {
+                const res = await fetch('/api/jobs/manifest', {
+                    method: 'POST',
+                    body: yamlStr
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    resDiv.style.color = '#00ff00';
+                    resDiv.innerText = 'Job Dispatched: ' + JSON.stringify(data);
+                    fetchJobs();
+                } else {
+                    const err = await res.json();
+                    resDiv.style.color = '#ff4d4d';
+                    resDiv.innerText = 'Failed: ' + err.message + (err.detail ? ' - ' + err.detail : '');
+                }
+            } catch (e) {
+                resDiv.style.color = '#ff4d4d';
+                resDiv.innerText = 'Error: ' + e.message;
+            }
+        }
+
         async function fetchStatus() {
             const res = await fetch('/api/coordinator/status');
             const data = await res.json();
             document.getElementById('coordIP').innerText = data.ip;
+            coordinatorIdentity = data.identity;
+            initMessaging();
         }
 
         async function generateCode() {
             const res = await fetch('/api/pairing/code', { method: 'POST' });
             const data = await res.json();
             document.getElementById('pairingCode').innerText = data.code;
+        }
+
+        async function startWifiSession() {
+            const port = encodeURIComponent(document.getElementById('sessionAgentPort').value || '9091');
+            const output = document.getElementById('sessionOutput');
+            output.style.display = 'block';
+            output.textContent = 'Generating session...';
+            const res = await fetch(`/api/session/start?agent_port=${port}`, { method: 'POST' });
+            if (!res.ok) {
+                output.textContent = `Failed to start session: ${await res.text()}`;
+                return;
+            }
+            const data = await res.json();
+            latestAgentBridgeFingerprint = data.agent_fingerprint || latestAgentBridgeFingerprint;
+            document.getElementById('pairingCode').innerText = data.pairing_code;
+            output.textContent =
+`Controller: ${data.controller_url}
+Controller fingerprint: ${data.controller_fingerprint}
+AgentBridge: ${data.agent_url}
+AgentBridge fingerprint: ${data.agent_fingerprint || '(unknown)'}
+Pairing code: ${data.pairing_code}
+
+Windows runner bootstrap:
+${data.windows_bootstrap}
+
+Reconnect existing runner:
+${data.reconnect_command}`;
+        }
+
+        async function repairAgentBridge() {
+            const agentName = document.getElementById('repairAgentName').value.trim();
+            const output = document.getElementById('repairOutput');
+            output.style.display = 'block';
+            if (!agentName) {
+                output.textContent = 'Enter an AgentBridge identity first.';
+                return;
+            }
+            if (!confirm(`Generate a fresh token for ${agentName}? The old token will stop working.`)) {
+                output.textContent = 'Repair cancelled.';
+                return;
+            }
+            const res = await fetch('/api/dashboard/messaging/repair', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ agent_name: agentName })
+            });
+            if (!res.ok) {
+                output.textContent = `Repair failed: ${await res.text()}`;
+                return;
+            }
+            const data = await res.json();
+            const agentURL = `https://${document.getElementById('coordIP').innerText}:9091`;
+            const fp = latestAgentBridgeFingerprint || '<AGENTBRIDGE_FINGERPRINT>';
+            output.textContent =
+`Fresh token for ${data.agent_name}:
+${data.token}
+
+Configure on that runner:
+${data.token} | .\\ForgeGrid.exe agent-bridge configure-client -name ${data.agent_name} -url ${agentURL} -fingerprint ${fp} -token-stdin
+
+Then run:
+.\\ForgeGrid.exe doctor -coordinator-url https://${document.getElementById('coordIP').innerText}:8080 -agent-url ${agentURL}`;
         }
 
         async function runTestJob(workerId) {
@@ -80,6 +412,39 @@
                 body: JSON.stringify({ worker_id: workerId })
             });
             fetchJobs();
+        }
+
+        async function disconnectWorker(workerId) {
+            if (confirm("Are you sure you want to disconnect this worker?")) {
+                await fetch('/api/workers/disconnect', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ worker_id: workerId })
+                });
+                fetchWorkers();
+            }
+        }
+
+        async function setWorkerPolicy(workerId, patch) {
+            await fetch('/api/workers/policy', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ worker_id: workerId, ...patch })
+            });
+            fetchWorkers();
+        }
+
+        function escapeHTML(str) {
+            if (!str) return '';
+            return str.toString().replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
+
+        function createEl(tag, text) {
+            const el = document.createElement(tag);
+            if (text !== undefined && text !== null) {
+                el.appendChild(document.createTextNode(text));
+            }
+            return el;
         }
 
         async function fetchWorkers() {
@@ -92,12 +457,16 @@
                     const statusClass = w.status === 'online' ? 'status-online' : 'status-offline';
                     tbody.innerHTML += `
                         <tr>
-                            <td>${w.node_name}</td>
-                            <td>${w.os}</td>
-                            <td>${w.cpu} / ${w.ram}GB</td>
-                            <td class="${statusClass}">${w.status}</td>
+                            <td>${escapeHTML(w.node_name)}</td>
+                            <td>${escapeHTML(w.os)}</td>
+                            <td>${escapeHTML(w.cpu_model || w.cpu)} / ${Math.round(w.total_ram / 1073741824)}GB</td>
+                            <td>${escapeHTML([...(w.labels || []), ...(w.capabilities || []).map(c => 'cap:' + c)].join(', ') || '-')}</td>
+                            <td class="${statusClass}">${escapeHTML(w.status)}${w.drain ? ' / drain' : ''}${w.disabled ? ' / disabled' : ''}</td>
                             <td>
-                                <button onclick="runTestJob('${w.id}')" ${w.status !== 'online' ? 'disabled' : ''}>Run Test Job</button>
+                                <button onclick="runTestJob('${escapeHTML(w.id)}')" ${w.status !== 'online' ? 'disabled' : ''}>Run Test Job</button>
+                                <button onclick="setWorkerPolicy('${escapeHTML(w.id)}', { drain: ${!w.drain} })" style="background: #555;">${w.drain ? 'Undrain' : 'Drain'}</button>
+                                <button onclick="setWorkerPolicy('${escapeHTML(w.id)}', { disabled: ${!w.disabled} })" style="background: #775500;">${w.disabled ? 'Enable' : 'Disable'}</button>
+                                <button onclick="disconnectWorker('${escapeHTML(w.id)}')" style="background: #ff4d4d;">Disconnect</button>
                             </td>
                         </tr>
                     `;
@@ -111,17 +480,374 @@
             const tbody = document.getElementById('jobsTable');
             tbody.innerHTML = '';
             if (jobs) {
+                const retryChildren = {};
                 jobs.forEach(j => {
+                    if (j.retry_of) {
+                        retryChildren[j.retry_of] = (retryChildren[j.retry_of] || 0) + 1;
+                    }
+                });
+                jobs.forEach(j => {
+                    let dateStr = '-';
+                    if (j.start_time) {
+                        const d = new Date(j.start_time);
+                        const day = String(d.getDate()).padStart(2, '0');
+                        const month = String(d.getMonth() + 1).padStart(2, '0');
+                        const year = d.getFullYear();
+                        const time = d.toLocaleTimeString();
+                        dateStr = `${day}/${month}/${year} ${time}`;
+                    }
+                    const artifactHTML = (j.artifacts || []).map(a => a.download_url ? `<a style="color:#4facfe;" href="${escapeHTML(a.download_url)}">${escapeHTML(a.path)} (${Math.round(a.size / 1024)}KB)</a>` : `${escapeHTML(a.path)} (${Math.round(a.size / 1024)}KB)`).join(', ');
+                    const prHTML = j.pr_url ? `<a style="color:#4facfe;" href="${escapeHTML(j.pr_url)}" target="_blank" rel="noopener">PR</a>` : '';
+                    const retryText = j.retry_of ? ` retry of ${j.retry_of}` : (j.max_retries ? ` retries ${j.retry_count || 0}/${j.max_retries}` : '');
+                    const childText = retryChildren[j.id] ? ` spawned ${retryChildren[j.id]} retry` : '';
+                    const logsHTML = `<button onclick="openLogViewer('${escapeHTML(j.id)}')" style="background:#333;border:1px solid #555;">Logs</button>`;
                     tbody.innerHTML += `
                         <tr>
-                            <td>${j.id}</td>
-                            <td>${j.worker_id}</td>
-                            <td>${j.task}</td>
-                            <td>${j.status}</td>
-                            <td>${j.result || '-'}</td>
+                            <td>${escapeHTML(dateStr)}</td>
+                            <td>${escapeHTML(j.id)}</td>
+                            <td>${escapeHTML(j.worker_id)}</td>
+                            <td>${escapeHTML(j.task)}</td>
+                            <td>${escapeHTML(j.status)}</td>
+                            <td>${escapeHTML((j.result || '-') + retryText + childText)} | ${logsHTML}</td>
+                            <td>${[artifactHTML, prHTML].filter(Boolean).join(' | ') || '-'}</td>
+                            <td><button onclick="deleteJob('${escapeHTML(j.id)}')" style="background: #ff4d4d;">Delete</button></td>
                         </tr>
                     `;
                 });
+            }
+        }
+
+        async function deleteJob(jobId) {
+            if (!confirm(`Are you sure you want to delete job ${jobId}?`)) return;
+            try {
+                const res = await fetch(`/api/jobs/${jobId}`, { method: 'DELETE' });
+                if (res.ok) {
+                    fetchJobs();
+                } else {
+                    const data = await res.json();
+                    alert(`Failed to delete: ${data.message}`);
+                }
+            } catch (e) {
+                alert(`Error deleting job: ${e.message}`);
+            }
+        }
+
+        async function openLogViewer(jobId) {
+            closeLogViewer();
+            document.getElementById('logTitle').textContent = `Job Logs: ${jobId}`;
+            const output = document.getElementById('logOutput');
+            output.textContent = '';
+            document.getElementById('logModal').style.display = 'block';
+            try {
+                const res = await fetch(`/api/jobs/${jobId}`);
+                if (res.ok) {
+                    const job = await res.json();
+                    if (job.logs) {
+                        try { output.textContent = atob(job.logs); } catch (e) { output.textContent = job.logs; }
+                    }
+                }
+            } catch (e) {
+                output.textContent += `\nFailed to load existing logs: ${e.message}`;
+            }
+            logSource = new EventSource(`/api/jobs/${jobId}/logs/stream`);
+            logSource.addEventListener('logs', ev => {
+                output.textContent += ev.data.replace(/\\n/g, '\n');
+                output.scrollTop = output.scrollHeight;
+            });
+            logSource.addEventListener('done', ev => {
+                output.textContent += `\n[${ev.data}]`;
+                closeLogSource();
+            });
+            logSource.onerror = () => {
+                output.textContent += '\n[log stream closed]';
+                closeLogSource();
+            };
+        }
+
+        function closeLogSource() {
+            if (logSource) {
+                logSource.close();
+                logSource = null;
+            }
+        }
+
+        function closeLogViewer() {
+            closeLogSource();
+            const modal = document.getElementById('logModal');
+            if (modal) modal.style.display = 'none';
+        }
+
+        async function initMessaging() {
+            try {
+                const res = await fetch('/api/dashboard/messaging/status');
+                if (res.ok) {
+                    const status = await res.json();
+                    if (status.available) {
+                        messagingAvailable = true;
+                        document.getElementById('messagingCard').style.display = 'block';
+                        document.getElementById('messagingContainer').style.display = 'flex';
+                        fetchAgents();
+                        fetchMessages();
+                        setInterval(fetchMessages, 3000);
+                        return;
+                    }
+                }
+            } catch (e) {}
+            document.getElementById('messagingCard').style.display = 'block';
+            document.getElementById('messagingUnavailable').style.display = 'block';
+            document.getElementById('messagingContainer').style.display = 'none';
+        }
+
+        async function fetchAgents() {
+            try {
+                const res = await fetch('/api/dashboard/messaging/agents');
+                if (res.ok) {
+                    agentNames = await res.json() || [];
+                }
+            } catch (e) {}
+        }
+
+        async function fetchMessages() {
+            if (!messagingAvailable) return;
+            try {
+                const res = await fetch('/api/dashboard/messages?limit=1000&include_outgoing=true&status=pending,acknowledged,completed,failed');
+                if (res.ok) {
+                    messagesStore = await res.json() || [];
+                    renderConversations();
+                    renderMessageHistory();
+                }
+            } catch (e) {}
+        }
+
+        function renderConversations() {
+            const list = document.getElementById('conversationList');
+            list.innerHTML = ''; 
+
+            const convos = new Set(['#all-agents', ...agentNames]);
+            messagesStore.forEach(m => {
+                convos.add(m.recipient === '#all-agents' ? '#all-agents' : (m.sender === coordinatorIdentity ? m.recipient : m.sender));
+            });
+
+            Array.from(convos).sort().forEach(c => {
+                const li = document.createElement('li');
+                li.style.padding = '8px';
+                li.style.cursor = 'pointer';
+                li.style.borderBottom = '1px solid #333';
+                if (c === currentRecipient) {
+                    li.style.backgroundColor = '#333';
+                }
+                
+                let unread = 0;
+                messagesStore.forEach(m => {
+                    const isIncoming = m.sender !== coordinatorIdentity;
+                    const isForConvo = m.recipient === '#all-agents' ? c === '#all-agents' : (m.sender === c || m.recipient === c);
+                    if (isForConvo && isIncoming && m.status === 'pending') {
+                        unread++;
+                    }
+                });
+
+                const nameSpan = createEl('span', c);
+                li.appendChild(nameSpan);
+
+                if (unread > 0) {
+                    const unreadBadge = createEl('span', ` (${unread})`);
+                    unreadBadge.style.color = '#ffeb3b';
+                    li.appendChild(unreadBadge);
+                }
+
+                li.onclick = () => {
+                    currentRecipient = c;
+                    document.getElementById('currentConversationTitle').textContent = c;
+                    renderConversations();
+                    renderMessageHistory();
+                };
+                list.appendChild(li);
+            });
+        }
+
+        async function loadDelivery(msgId, el) {
+            try {
+                const res = await fetch(`/api/dashboard/messages/${msgId}/delivery`);
+                if (res.ok) {
+                    const details = await res.json();
+                    el.innerHTML = '';
+                    if (details.receipts) {
+                        let total = 0, ack = 0, comp = 0, fail = 0;
+                        const ul = document.createElement('ul');
+                        ul.style.listStyle = 'none';
+                        ul.style.padding = '0';
+                        for (const [agent, receipt] of Object.entries(details.receipts)) {
+                            total++;
+                            if (receipt.status === 'acknowledged') ack++;
+                            if (receipt.status === 'completed') comp++;
+                            if (receipt.status === 'failed') fail++;
+                            const li = createEl('li', `${agent}: ${receipt.status}`);
+                            ul.appendChild(li);
+                        }
+                        el.appendChild(createEl('div', `${total} recipients, ${ack} acknowledged, ${comp} completed, ${fail} failed`));
+                        const detailBtn = document.createElement('button');
+                        detailBtn.textContent = 'Toggle Details';
+                        detailBtn.style.padding = '2px 5px';
+                        detailBtn.style.fontSize = '0.8em';
+                        detailBtn.style.marginTop = '5px';
+                        const detailContainer = document.createElement('div');
+                        detailContainer.style.display = 'none';
+                        detailContainer.appendChild(ul);
+                        detailBtn.onclick = () => {
+                            detailContainer.style.display = detailContainer.style.display === 'none' ? 'block' : 'none';
+                        };
+                        el.appendChild(detailBtn);
+                        el.appendChild(detailContainer);
+                    } else {
+                        el.appendChild(createEl('span', details.status));
+                    }
+                }
+            } catch (e) {}
+        }
+
+        async function acknowledgeMsg(id) {
+            await fetch(`/api/dashboard/messages/${id}/acknowledge`, { method: 'POST' });
+            fetchMessages();
+        }
+
+        function renderMessageHistory() {
+            const hist = document.getElementById('messageHistory');
+            hist.innerHTML = '';
+            
+            if (!currentRecipient) {
+                hist.appendChild(createEl('div', 'Select a conversation to view history.'));
+                return;
+            }
+
+            const convoMsgs = messagesStore.filter(m => {
+                if (currentRecipient === '#all-agents') return m.recipient === '#all-agents';
+                return (m.sender === currentRecipient && m.recipient !== '#all-agents') || (m.recipient === currentRecipient);
+            }).sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+            if (convoMsgs.length === 0) {
+                hist.appendChild(createEl('div', 'No messages yet.'));
+                return;
+            }
+
+            convoMsgs.forEach(m => {
+                const div = document.createElement('div');
+                div.style.padding = '10px';
+                div.style.marginBottom = '10px';
+                div.style.borderRadius = '5px';
+                div.style.maxWidth = '80%';
+                
+                const isOutgoing = m.sender === coordinatorIdentity;
+                
+                if (isOutgoing) {
+                    div.style.alignSelf = 'flex-end';
+                    div.style.backgroundColor = '#1976d2';
+                } else {
+                    div.style.alignSelf = 'flex-start';
+                    div.style.backgroundColor = '#333';
+                }
+
+                const header = document.createElement('div');
+                header.style.fontSize = '0.8em';
+                header.style.color = '#ccc';
+                header.style.marginBottom = '5px';
+                header.appendChild(createEl('span', `[${m.type}] ${m.sender} - ${new Date(m.created_at).toLocaleString()}`));
+                if (m.task_id) {
+                    header.appendChild(createEl('span', ` | Task: ${m.task_id}`));
+                }
+                div.appendChild(header);
+
+                const body = createEl('div', m.body);
+                body.style.whiteSpace = 'pre-wrap';
+                div.appendChild(body);
+
+                const footer = document.createElement('div');
+                footer.style.fontSize = '0.8em';
+                footer.style.color = '#aaa';
+                footer.style.marginTop = '5px';
+
+                if (isOutgoing) {
+                    if (m.recipient === '#all-agents') {
+                        const statusContainer = document.createElement('div');
+                        const loadBtn = document.createElement('button');
+                        loadBtn.textContent = 'Load Delivery Status';
+                        loadBtn.style.padding = '2px 5px';
+                        loadBtn.style.fontSize = '0.8em';
+                        loadBtn.onclick = () => loadDelivery(m.id, statusContainer);
+                        statusContainer.appendChild(loadBtn);
+                        footer.appendChild(statusContainer);
+                    } else {
+                        footer.appendChild(createEl('span', `Status: ${m.status}`));
+                    }
+                } else {
+                    footer.appendChild(createEl('span', `Status: ${m.status}`));
+                    if (m.status === 'pending') {
+                        const ackBtn = document.createElement('button');
+                        ackBtn.textContent = 'Acknowledge';
+                        ackBtn.style.marginLeft = '10px';
+                        ackBtn.style.padding = '2px 5px';
+                        ackBtn.style.fontSize = '0.8em';
+                        ackBtn.onclick = () => acknowledgeMsg(m.id);
+                        footer.appendChild(ackBtn);
+                    }
+                }
+                
+                if (m.result) {
+                    const resDiv = createEl('div', `Result: ${JSON.stringify(m.result)}`);
+                    resDiv.style.marginTop = '5px';
+                    resDiv.style.color = '#4facfe';
+                    footer.appendChild(resDiv);
+                }
+
+                div.appendChild(footer);
+                hist.appendChild(div);
+            });
+            hist.scrollTop = hist.scrollHeight;
+        }
+
+        let currentIdempotencyKey = '';
+        let lastMessageState = '';
+
+        async function sendMessage() {
+            if (!currentRecipient) return;
+            const type = document.getElementById('messageTypeSelect').value;
+            const taskId = document.getElementById('taskIdInput').value;
+            const body = document.getElementById('messageInput').value;
+            const errorDiv = document.getElementById('sendError');
+            
+            errorDiv.textContent = '';
+            
+            if (!body) return;
+
+            const currentState = JSON.stringify({recipient: currentRecipient, task_id: taskId, type: type, body: body});
+            if (currentState !== lastMessageState || !currentIdempotencyKey) {
+                currentIdempotencyKey = 'ui-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+                lastMessageState = currentState;
+            }
+            
+            try {
+                const res = await fetch('/api/dashboard/messages', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        recipient: currentRecipient,
+                        task_id: taskId,
+                        type: type,
+                        body: body,
+                        idempotency_key: currentIdempotencyKey
+                    })
+                });
+
+                if (res.ok) {
+                    document.getElementById('messageInput').value = '';
+                    currentIdempotencyKey = '';
+                    lastMessageState = '';
+                    fetchMessages();
+                } else {
+                    const txt = await res.text();
+                    errorDiv.textContent = `Send failed: ${res.status} ${txt}`;
+                }
+            } catch (e) {
+                errorDiv.textContent = `Send failed: ${e.message}`;
             }
         }
 

@@ -1,23 +1,28 @@
 package coordinator
 
 import (
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"time"
 
+	"forgegrid/internal/models"
 	"forgegrid/internal/network"
 	"forgegrid/internal/store"
 	"forgegrid/internal/ui"
 )
 
 type Coordinator struct {
-	Store       *store.Store
-	IP          string
-	Insecure    bool
-	Fingerprint string
-	Listener    net.Listener
+	Store            *store.Store
+	IP               string
+	Insecure         bool
+	Fingerprint      string
+	Listener         net.Listener
+	MessagingGateway MessagingGateway
 }
 
 func getOutboundIP() string {
@@ -41,10 +46,19 @@ func New(s *store.Store, insecure bool) *Coordinator {
 func (c *Coordinator) Start(port string) error {
 	mux := http.NewServeMux()
 
-	// Ensure identity and TLS cert
+	// Ensure identity, AdminToken and TLS cert
 	c.Store.Mu.Lock()
 	if c.Store.CoordinatorCfg.Identity == "" {
 		c.Store.CoordinatorCfg.Identity = fmt.Sprintf("ForgeGrid-%d", time.Now().UnixNano()) // fallback if rand fails later
+		c.Store.Save()
+	}
+	if c.Store.CoordinatorCfg.AdminToken == "" {
+		b := make([]byte, 32)
+		if _, err := rand.Read(b); err != nil {
+			c.Store.Mu.Unlock()
+			return fmt.Errorf("failed to generate secure admin token: %w", err)
+		}
+		c.Store.CoordinatorCfg.AdminToken = hex.EncodeToString(b)
 		c.Store.Save()
 	}
 
@@ -66,21 +80,60 @@ func (c *Coordinator) Start(port string) error {
 		}
 		c.Fingerprint = fp
 	}
+	adminToken := c.Store.CoordinatorCfg.AdminToken
 	c.Store.Mu.Unlock()
 
-	mux.HandleFunc("/api/coordinator/start", c.handleStart)
-	mux.HandleFunc("/api/coordinator/status", c.handleStatus)
-	mux.HandleFunc("/api/pairing/code", c.handleGenerateCode)
+	if c.MessagingGateway == nil {
+		gw, err := NewLiveMessagingGateway()
+		if err == nil {
+			c.MessagingGateway = gw
+		}
+		// If err != nil, c.MessagingGateway remains nil (Messaging unavailable)
+	}
+
+	adminAuth := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			user, pass, ok := r.BasicAuth()
+			if !ok || user != "admin" || pass != adminToken {
+				w.Header().Set("WWW-Authenticate", `Basic realm="ForgeGrid Dashboard"`)
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+			next.ServeHTTP(w, r)
+		}
+	}
+
+	mux.HandleFunc("/api/coordinator/start", adminAuth(c.handleStart))
+	mux.HandleFunc("/api/coordinator/status", adminAuth(c.handleStatus))
+	mux.HandleFunc("/api/session/start", adminAuth(c.handleSessionStart))
+	mux.HandleFunc("/api/pairing/code", adminAuth(c.handleGenerateCode))
+
+	// Messaging API
+	mux.HandleFunc("/api/dashboard/messaging/status", adminAuth(c.handleMessagingStatus))
+	mux.HandleFunc("/api/dashboard/messaging/agents", adminAuth(c.handleMessagingAgents))
+	mux.HandleFunc("/api/dashboard/messaging/repair", adminAuth(c.handleMessagingRepair))
+	mux.HandleFunc("/api/dashboard/messages", adminAuth(c.handleMessages))
+	mux.HandleFunc("/api/dashboard/messages/", adminAuth(c.handleMessageDeliveryOrAck))
+
 	mux.HandleFunc("/api/workers/pair", c.handlePair)
 	mux.HandleFunc("/api/workers/heartbeat", c.handleHeartbeat)
-	mux.HandleFunc("/api/workers", c.handleListWorkers)
-	mux.HandleFunc("/api/jobs/test", c.handleTestJob)
+	mux.HandleFunc("/api/workers/disconnect", adminAuth(c.handleDisconnectWorker))
+	mux.HandleFunc("/api/workers/policy", adminAuth(c.handleWorkerPolicy))
+	mux.HandleFunc("/api/workers", c.handleListWorkers) // Dashboard uses this, but let's let workers use it too or add auth inside handler
+	mux.HandleFunc("/api/jobs/test", adminAuth(c.handleTestJob))
 	mux.HandleFunc("/api/jobs", c.handleListJobs)
 	mux.HandleFunc("/api/jobs/", c.handleJobAction)
-	mux.HandleFunc("/api/jobs/manifest", c.handleManifest)
+	mux.HandleFunc("/api/jobs/manifest", adminAuth(c.handleManifest))
 
 	// Serve UI
-	mux.Handle("/", http.FileServer(http.FS(ui.DashboardFS)))
+	dashboardFS, err := fs.Sub(ui.DashboardFS, "dashboard")
+	if err != nil {
+		return fmt.Errorf("failed to prepare dashboard filesystem: %w", err)
+	}
+	dashboardHandler := http.FileServer(http.FS(dashboardFS))
+	mux.Handle("/", http.HandlerFunc(adminAuth(func(w http.ResponseWriter, r *http.Request) {
+		dashboardHandler.ServeHTTP(w, r)
+	})))
 
 	var addr string
 	if c.Listener != nil {
@@ -100,12 +153,19 @@ func (c *Coordinator) Start(port string) error {
 	if !c.Insecure {
 		fmt.Printf("TLS Fingerprint: %s\n", c.Fingerprint)
 	}
+	fmt.Printf("Admin Password (Dashboard): %s\n", adminToken)
 
 	ui.OpenBrowser(uiURL)
 
 	if c.Listener != nil {
 		if c.Insecure {
-			return http.Serve(c.Listener, mux)
+			server := &http.Server{
+				Handler:      mux,
+				ReadTimeout:  15 * time.Second,
+				WriteTimeout: 15 * time.Second,
+				IdleTimeout:  60 * time.Second,
+			}
+			return server.Serve(c.Listener)
 		}
 		cert, err := tls.X509KeyPair(c.Store.CoordinatorCfg.CertPEM, c.Store.CoordinatorCfg.KeyPEM)
 		if err != nil {
@@ -116,12 +176,22 @@ func (c *Coordinator) Start(port string) error {
 			TLSConfig: &tls.Config{
 				Certificates: []tls.Certificate{cert},
 			},
+			ReadTimeout:  15 * time.Second,
+			WriteTimeout: 15 * time.Second,
+			IdleTimeout:  60 * time.Second,
 		}
 		return server.ServeTLS(c.Listener, "", "")
 	}
 
 	if c.Insecure {
-		return http.ListenAndServe(addr, mux)
+		server := &http.Server{
+			Addr:         addr,
+			Handler:      mux,
+			ReadTimeout:  15 * time.Second,
+			WriteTimeout: 15 * time.Second,
+			IdleTimeout:  60 * time.Second,
+		}
+		return server.ListenAndServe()
 	}
 
 	// Create tls cert from PEM
@@ -136,6 +206,9 @@ func (c *Coordinator) Start(port string) error {
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{cert},
 		},
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
 
 	return server.ListenAndServeTLS("", "")
@@ -150,6 +223,9 @@ func (c *Coordinator) checkWorkerStatus() {
 			if w.Status == "online" && time.Since(w.LastSeen) > 15*time.Second {
 				w.Status = "offline"
 				changed = true
+				if c.requeueWorkerJobsLocked(w.ID) {
+					changed = true
+				}
 			}
 		}
 		if changed {
@@ -157,4 +233,40 @@ func (c *Coordinator) checkWorkerStatus() {
 		}
 		c.Store.Mu.Unlock()
 	}
+}
+
+func (c *Coordinator) requeueWorkerJobsLocked(workerID string) bool {
+	changed := false
+	for _, job := range c.Store.Jobs {
+		if job.WorkerID != workerID {
+			continue
+		}
+		if job.Status != models.StatusClaimed && job.Status != models.StatusRunning {
+			continue
+		}
+		job.Status = models.StatusFailed
+		job.Result = "worker offline"
+		now := time.Now()
+		job.EndTime = &now
+		changed = true
+		if job.RetryCount >= job.MaxRetries {
+			continue
+		}
+		retry := *job
+		retry.ID = "job-" + cryptoRandomHex(16)
+		retry.AttemptID = ""
+		retry.Status = models.StatusPending
+		retry.StartTime = nil
+		retry.EndTime = nil
+		retry.Result = ""
+		retry.Logs = nil
+		retry.LogSeq = 0
+		retry.Artifacts = nil
+		retry.PushedBranch = ""
+		retry.PRURL = ""
+		retry.RetryOf = job.ID
+		retry.RetryCount = job.RetryCount + 1
+		c.Store.Jobs[retry.ID] = &retry
+	}
+	return changed
 }

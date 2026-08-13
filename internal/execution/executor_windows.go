@@ -1,60 +1,86 @@
-//go:build windows
-// +build windows
-
 package execution
 
 import (
-	"context"
+	"fmt"
 	"os/exec"
+	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
-func setupCmd(cmd *exec.Cmd) {
-	// Handled post-start
+var (
+	jobObjectLimitKillOnJobClose = uint32(0x2000)
+	modntdll                     = windows.NewLazySystemDLL("ntdll.dll")
+	procNtResumeProcess          = modntdll.NewProc("NtResumeProcess")
+)
+
+func configureOSProcess(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CreationFlags: windows.CREATE_SUSPENDED,
+	}
 }
 
-func manageProcess(ctx context.Context, cmd *exec.Cmd) func() {
-	job, err := windows.CreateJobObject(nil, nil)
+func startProcess(cmd *exec.Cmd) (func(), error) {
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("failed to start process suspended: %w", err)
+	}
+
+	jobHandle, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
-		return func() {}
+		terminateProcess(cmd)
+		return nil, fmt.Errorf("failed to create job object: %w", err)
 	}
 
 	info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{
 		BasicLimitInformation: windows.JOBOBJECT_BASIC_LIMIT_INFORMATION{
-			LimitFlags: windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+			LimitFlags: jobObjectLimitKillOnJobClose,
 		},
 	}
-	windows.SetInformationJobObject(
-		job,
+
+	_, err = windows.SetInformationJobObject(
+		jobHandle,
 		windows.JobObjectExtendedLimitInformation,
 		uintptr(unsafe.Pointer(&info)),
 		uint32(unsafe.Sizeof(info)),
 	)
-
-	if cmd.Process != nil {
-		handle, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(cmd.Process.Pid))
-		if err == nil {
-			windows.AssignProcessToJobObject(job, handle)
-			windows.CloseHandle(handle)
-		}
+	if err != nil {
+		terminateProcess(cmd)
+		windows.CloseHandle(jobHandle)
+		return nil, fmt.Errorf("failed to set job object limits: %w", err)
 	}
 
-	done := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			// Closing the handle terminates all processes in the job object
-			// because of JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-			windows.CloseHandle(job)
-		case <-done:
-			// Job completed normally, close handle to release resources
-			windows.CloseHandle(job)
-		}
-	}()
-
-	return func() {
-		close(done)
+	processHandle, err := windows.OpenProcess(windows.PROCESS_ALL_ACCESS, false, uint32(cmd.Process.Pid))
+	if err != nil {
+		terminateProcess(cmd)
+		windows.CloseHandle(jobHandle)
+		return nil, fmt.Errorf("failed to open process handle: %w", err)
 	}
+	defer windows.CloseHandle(processHandle)
+
+	err = windows.AssignProcessToJobObject(jobHandle, processHandle)
+	if err != nil {
+		terminateProcess(cmd)
+		windows.CloseHandle(jobHandle)
+		return nil, fmt.Errorf("failed to assign process to job object: %w", err)
+	}
+
+	r1, _, err := procNtResumeProcess.Call(uintptr(processHandle))
+	if r1 != 0 {
+		terminateProcess(cmd)
+		windows.CloseHandle(jobHandle)
+		return nil, fmt.Errorf("NtResumeProcess failed with status %x", r1)
+	}
+
+	cleanup := func() {
+		windows.CloseHandle(jobHandle)
+	}
+	return cleanup, nil
+}
+
+func terminateProcess(cmd *exec.Cmd) {
+	if cmd.Process == nil {
+		return
+	}
+	_ = cmd.Process.Kill()
 }

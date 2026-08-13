@@ -29,6 +29,10 @@ func NewStore(dir string) (*Store, error) {
 	return s, nil
 }
 
+func (s *Store) Dir() string {
+	return s.dir
+}
+
 func (s *Store) load() {
 	s.Mu.Lock()
 	defer s.Mu.Unlock()
@@ -54,7 +58,7 @@ func (s *Store) Save() error {
 		}
 		// Atomic save
 		tmp := filepath.Join(s.dir, name+".tmp")
-		if err := os.WriteFile(tmp, b, 0644); err != nil {
+		if err := os.WriteFile(tmp, b, 0600); err != nil {
 			return err
 		}
 		return os.Rename(tmp, filepath.Join(s.dir, name))
@@ -70,4 +74,16 @@ func (s *Store) Save() error {
 		return err
 	}
 	return nil
+}
+
+func (s *Store) DeleteJob(id string) error {
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
+
+	if _, exists := s.Jobs[id]; !exists {
+		return nil
+	}
+
+	delete(s.Jobs, id)
+	return s.Save()
 }
