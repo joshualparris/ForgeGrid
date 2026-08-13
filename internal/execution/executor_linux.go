@@ -1,35 +1,24 @@
-//go:build linux || darwin
-// +build linux darwin
-
 package execution
 
 import (
-	"context"
 	"os/exec"
 	"syscall"
 )
 
-func setupCmd(cmd *exec.Cmd) {
-	if cmd.SysProcAttr == nil {
-		cmd.SysProcAttr = &syscall.SysProcAttr{}
+func configureOSProcess(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true,
 	}
-	cmd.SysProcAttr.Setpgid = true
 }
 
-func manageProcess(ctx context.Context, cmd *exec.Cmd) func() {
-	done := make(chan struct{})
+func startProcess(cmd *exec.Cmd) (func(), error) {
+	err := cmd.Start()
+	return nil, err
+}
 
-	go func() {
-		select {
-		case <-ctx.Done():
-			if cmd.Process != nil {
-				syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-			}
-		case <-done:
-		}
-	}()
-
-	return func() {
-		close(done)
+func terminateProcess(cmd *exec.Cmd) {
+	if cmd.Process == nil {
+		return
 	}
+	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 }

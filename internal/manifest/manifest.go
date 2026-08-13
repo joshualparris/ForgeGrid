@@ -9,8 +9,18 @@ import (
 )
 
 type Manifest struct {
-	Project string          `yaml:"project"`
-	Tasks   map[string]Task `yaml:"tasks"`
+	Project    string          `yaml:"project"`
+	Repository Repository      `yaml:"repository"`
+	Tasks      map[string]Task `yaml:"tasks"`
+}
+
+type Repository struct {
+	URL        string `yaml:"url"`
+	BaseCommit string `yaml:"base_commit"`
+	Branch     string `yaml:"branch"`
+	CreatePR   bool   `yaml:"create_pr"`
+	PRTitle    string `yaml:"pr_title"`
+	PRBody     string `yaml:"pr_body"`
 }
 
 type Task struct {
@@ -21,16 +31,25 @@ type Task struct {
 }
 
 type Requirements struct {
-	MinRAMGB int    `yaml:"min_ram_gb"`
-	OS       string `yaml:"os"`
-	MinCores int    `yaml:"min_cores"`
+	MinRAMGB     int      `yaml:"min_ram_gb"`
+	OS           string   `yaml:"os"`
+	MinCores     int      `yaml:"min_cores"`
+	Labels       []string `yaml:"labels"`
+	Capabilities []string `yaml:"capabilities"`
 }
 
 type Execution struct {
 	Profile        string            `yaml:"profile"`
-	Args           []string          `yaml:"args"`
-	Env            map[string]string `yaml:"env"`
+	Parameters     map[string]string `yaml:"parameters"`
 	TimeoutSeconds int               `yaml:"timeout_seconds"`
+	Changes        Changes           `yaml:"changes"`
+	MaxRetries     int               `yaml:"max_retries"`
+}
+
+type Changes struct {
+	Commit        bool   `yaml:"commit"`
+	Push          bool   `yaml:"push"`
+	CommitMessage string `yaml:"commit_message"`
 }
 
 func Parse(r io.Reader) (*Manifest, error) {
@@ -52,6 +71,15 @@ func Parse(r io.Reader) (*Manifest, error) {
 	for name, task := range m.Tasks {
 		if strings.TrimSpace(task.Execution.Profile) == "" {
 			return nil, fmt.Errorf("task '%s' must define an execution profile", name)
+		}
+		if task.Execution.Changes.Push && !task.Execution.Changes.Commit {
+			return nil, fmt.Errorf("task '%s' cannot push changes unless commit is true", name)
+		}
+		if task.Execution.Changes.CommitMessage != "" && !task.Execution.Changes.Commit {
+			return nil, fmt.Errorf("task '%s' defines a commit message but commit is false", name)
+		}
+		if task.Execution.MaxRetries < 0 || task.Execution.MaxRetries > 3 {
+			return nil, fmt.Errorf("task '%s' max_retries must be between 0 and 3", name)
 		}
 	}
 

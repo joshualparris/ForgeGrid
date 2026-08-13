@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"forgegrid/internal/network"
@@ -95,12 +96,54 @@ func (c *Client) SendMessage(recipient, taskID string, msgType MessageType, body
 	return &out, nil
 }
 
-func (c *Client) GetInbox() ([]AgentMessage, error) {
+func (c *Client) GetInbox(limit, offset int, includeOutgoing bool, statuses ...MessageStatus) ([]AgentMessage, error) {
 	var out []AgentMessage
-	if err := c.doReq(http.MethodGet, "/api/v1/agent-messages/inbox", nil, &out); err != nil {
+
+	path := "/api/v1/agent-messages/inbox?"
+	if limit > 0 {
+		path += fmt.Sprintf("limit=%d&", limit)
+	}
+	if offset > 0 {
+		path += fmt.Sprintf("offset=%d&", offset)
+	}
+	if includeOutgoing {
+		path += "include_outgoing=true&"
+	}
+	if len(statuses) > 0 {
+		var stStrs []string
+		for _, st := range statuses {
+			stStrs = append(stStrs, string(st))
+		}
+		path += "status=" + strings.Join(stStrs, ",") + "&"
+	}
+	path = strings.TrimSuffix(path, "&")
+	path = strings.TrimSuffix(path, "?")
+
+	if err := c.doReq(http.MethodGet, path, nil, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+func (c *Client) GetAgents() ([]string, error) {
+	var out []string
+	if err := c.doReq(http.MethodGet, "/api/v1/agent-messages/agents", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) Status() error {
+	var out map[string]string
+	return c.doReq(http.MethodGet, "/api/v1/agent-status", nil, &out)
+}
+
+func (c *Client) GetDeliveryStatus(id string) (*AgentMessage, error) {
+	var out AgentMessage
+	if err := c.doReq(http.MethodGet, "/api/v1/agent-messages/"+id+"/delivery", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 func (c *Client) Acknowledge(id string) (*AgentMessage, error) {

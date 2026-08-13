@@ -14,10 +14,9 @@ tasks:
     requirements:
       os: "linux"
     execution:
-      profile: "go"
-      args: ["build", "./..."]
-      env:
-        GOOS: "linux"
+      profile: "GoTest"
+      parameters:
+        package: "./..."
       timeout_seconds: 300
     artefacts:
       - "bin/forgegrid"
@@ -36,11 +35,11 @@ tasks:
 		t.Fatalf("Expected 'build' task to be parsed")
 	}
 
-	if task.Execution.Profile != "go" {
-		t.Errorf("Expected profile 'go', got '%s'", task.Execution.Profile)
+	if task.Execution.Profile != "GoTest" {
+		t.Errorf("Expected profile 'GoTest', got '%s'", task.Execution.Profile)
 	}
-	if len(task.Execution.Args) != 2 {
-		t.Errorf("Expected 2 args, got %d", len(task.Execution.Args))
+	if len(task.Execution.Parameters) != 1 {
+		t.Errorf("Expected 1 parameter, got %d", len(task.Execution.Parameters))
 	}
 }
 
@@ -51,13 +50,33 @@ tasks:
   build:
     description: "Build the project"
     execution:
-      args: ["build", "./..."]
+      parameters:
+        foo: "bar"
 `
 	_, err := Parse(strings.NewReader(yamlData))
 	if err == nil {
 		t.Fatalf("Expected error for missing execution profile, got nil")
 	}
 	if !strings.Contains(err.Error(), "must define an execution profile") {
+		t.Errorf("Unexpected error message: %v", err)
+	}
+}
+
+func TestParseRejectsPushWithoutCommit(t *testing.T) {
+	yamlData := `
+project: "ForgeGrid"
+tasks:
+  build:
+    execution:
+      profile: "GoTest"
+      changes:
+        push: true
+`
+	_, err := Parse(strings.NewReader(yamlData))
+	if err == nil {
+		t.Fatalf("Expected error for push without commit, got nil")
+	}
+	if !strings.Contains(err.Error(), "cannot push changes unless commit is true") {
 		t.Errorf("Unexpected error message: %v", err)
 	}
 }
