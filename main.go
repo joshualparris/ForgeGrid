@@ -8,6 +8,7 @@ import (
 
 	"forgegrid/internal/agentbridge"
 	"forgegrid/internal/coordinator"
+	"forgegrid/internal/doctor"
 	"forgegrid/internal/store"
 	"forgegrid/internal/worker"
 )
@@ -15,6 +16,20 @@ import (
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "agent-bridge" {
 		agentbridge.RunCLI(os.Args[2:])
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "doctor" {
+		os.Exit(doctor.Run(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "service" {
+		if len(os.Args) < 3 {
+			fmt.Println("Usage: forgegrid service <install|uninstall|start|stop|status> [worker options for install]")
+			os.Exit(1)
+		}
+		if err := worker.ControlService(os.Args[2], os.Args[3:]); err != nil {
+			fmt.Printf("Service command failed: %v\n", err)
+			os.Exit(1)
+		}
 		return
 	}
 
@@ -32,7 +47,64 @@ func main() {
 	capabilities := flag.String("capabilities", "", "comma-separated worker capabilities, e.g. godot,codex,github-pr")
 	writePolicy := flag.Bool("write-worker-policy", false, "write worker policy from -allowed-repos, -allow-push, -labels, and -capabilities, then exit")
 
+	installService := flag.Bool("install-service", false, "install as a Windows service")
+	startService := flag.Bool("start-service", false, "start the Windows service")
+	stopService := flag.Bool("stop-service", false, "stop the Windows service")
+	uninstallService := flag.Bool("uninstall-service", false, "uninstall the Windows service")
+	serviceStatus := flag.Bool("service-status", false, "query the Windows service status")
+	healthCheck := flag.Bool("health-check", false, "run diagnostics on the worker environment")
+
 	flag.Parse()
+
+	if *healthCheck {
+		coordURL := *coordIP
+		if coordURL == "" {
+			coordURL = "https://127.0.0.1:8080"
+		} else if !strings.HasPrefix(coordURL, "http") {
+			coordURL = "https://" + coordURL + ":8080"
+		}
+		if err := worker.RunHealthCheck(coordURL, *fingerprint); err != nil {
+			fmt.Printf("Health check failed: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
+	if *installService {
+		if err := worker.ControlService("install", os.Args[2:]); err != nil {
+			fmt.Printf("Failed to install service: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	if *uninstallService {
+		if err := worker.ControlService("uninstall", nil); err != nil {
+			fmt.Printf("Failed to uninstall service: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	if *startService {
+		if err := worker.ControlService("start", nil); err != nil {
+			fmt.Printf("Failed to start service: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	if *stopService {
+		if err := worker.ControlService("stop", nil); err != nil {
+			fmt.Printf("Failed to stop service: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	if *serviceStatus {
+		if err := worker.ControlService("status", nil); err != nil {
+			fmt.Printf("Failed to query service status: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 
 	if *mode == "" {
 		fmt.Println("Usage: forgegrid -mode <coordinator|worker> [options]")
@@ -110,10 +182,17 @@ func main() {
 				os.Exit(1)
 			}
 		}
-		w.Start()
 
-		// Block forever
-		select {}
+		runFunc := func() {
+			w.Start()
+			// Block forever
+			select {}
+		}
+
+		if err := worker.RunService(runFunc); err != nil {
+			fmt.Printf("Worker service error: %v\n", err)
+			os.Exit(1)
+		}
 	} else {
 		fmt.Println("Unknown mode:", *mode)
 		os.Exit(1)

@@ -64,8 +64,16 @@ func getWorkerCredsPath() string {
 	return filepath.Join(getWorkerDataDir(), "worker_creds.json")
 }
 
+func WorkerCredsPath() string {
+	return getWorkerCredsPath()
+}
+
 func getWorkerPolicyPath() string {
 	return filepath.Join(getWorkerDataDir(), "worker_policy.json")
+}
+
+func WorkerPolicyPath() string {
+	return getWorkerPolicyPath()
 }
 
 func getWorkerDataDir() string {
@@ -90,6 +98,10 @@ func getWorkerDataDir() string {
 		name = "forgegrid"
 	}
 	return filepath.Join(dir, name)
+}
+
+func WorkerDataDir() string {
+	return getWorkerDataDir()
 }
 
 func ResetCredentials() error {
