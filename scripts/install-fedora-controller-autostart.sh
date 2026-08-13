@@ -52,7 +52,7 @@ cat >"$APPLICATIONS/forgegrid-controller.desktop" <<DESKTOP_FILE
 Type=Application
 Name=Start ForgeGrid Controller
 Comment=Start ForgeGrid coordinator and AgentBridge relay
-Exec=$ROOT/scripts/start-controller.sh
+Exec=/usr/bin/env bash "$ROOT/scripts/start-controller.sh"
 Terminal=true
 Categories=Development;
 DESKTOP_FILE
@@ -77,4 +77,3 @@ echo "  $APPLICATIONS/forgegrid-controller.desktop"
 if [ -d "$DESKTOP" ]; then
   echo "  $DESKTOP/forgegrid-controller.desktop"
 fi
-
