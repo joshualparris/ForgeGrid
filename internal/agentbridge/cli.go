@@ -378,21 +378,16 @@ func completeCmd(args []string) {
 	fs := flag.NewFlagSet("complete", flag.ExitOnError)
 	id := fs.String("message-id", "", "Message ID")
 	resFile := fs.String("result-file", "", "Result JSON file")
+	resStdin := fs.Bool("result-stdin", false, "Read result JSON from standard input")
 	client := getClient(fs)
 
 	if *id == "" {
 		log.Fatal("--message-id required")
 	}
 
-	var res json.RawMessage
-	if *resFile != "" {
-		b, err := os.ReadFile(*resFile)
-		if err != nil {
-			log.Fatalf("Read error: %v", err)
-		}
-		res = json.RawMessage(b)
-	} else {
-		res = json.RawMessage(`{"status":"ok"}`)
+	res, err := readResultJSON(*resFile, *resStdin, json.RawMessage(`{"status":"ok"}`))
+	if err != nil {
+		log.Fatalf("Read error: %v", err)
 	}
 
 	msg, err := client.Complete(*id, res)
@@ -406,21 +401,16 @@ func failCmd(args []string) {
 	fs := flag.NewFlagSet("fail", flag.ExitOnError)
 	id := fs.String("message-id", "", "Message ID")
 	resFile := fs.String("result-file", "", "Result JSON file")
+	resStdin := fs.Bool("result-stdin", false, "Read result JSON from standard input")
 	client := getClient(fs)
 
 	if *id == "" {
 		log.Fatal("--message-id required")
 	}
 
-	var res json.RawMessage
-	if *resFile != "" {
-		b, err := os.ReadFile(*resFile)
-		if err != nil {
-			log.Fatalf("Read error: %v", err)
-		}
-		res = json.RawMessage(b)
-	} else {
-		res = json.RawMessage(`{"status":"failed"}`)
+	res, err := readResultJSON(*resFile, *resStdin, json.RawMessage(`{"status":"failed"}`))
+	if err != nil {
+		log.Fatalf("Read error: %v", err)
 	}
 
 	msg, err := client.Fail(*id, res)
@@ -428,4 +418,29 @@ func failCmd(args []string) {
 		log.Fatalf("Fail error: %v", err)
 	}
 	fmt.Printf("Message %s failed.\n", msg.ID)
+}
+
+func readResultJSON(resultFile string, resultStdin bool, fallback json.RawMessage) (json.RawMessage, error) {
+	if resultFile != "" && resultStdin {
+		return nil, fmt.Errorf("--result-file and --result-stdin cannot be used together")
+	}
+	if resultFile != "" {
+		b, err := os.ReadFile(resultFile)
+		if err != nil {
+			return nil, err
+		}
+		return json.RawMessage(b), nil
+	}
+	if resultStdin {
+		b, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return nil, err
+		}
+		b = []byte(strings.TrimSpace(string(b)))
+		if len(b) == 0 {
+			return nil, fmt.Errorf("stdin result cannot be empty")
+		}
+		return json.RawMessage(b), nil
+	}
+	return fallback, nil
 }
