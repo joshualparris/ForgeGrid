@@ -105,11 +105,13 @@ func (c *Coordinator) Start(port string) error {
 
 	mux.HandleFunc("/api/coordinator/start", adminAuth(c.handleStart))
 	mux.HandleFunc("/api/coordinator/status", adminAuth(c.handleStatus))
+	mux.HandleFunc("/api/session/start", adminAuth(c.handleSessionStart))
 	mux.HandleFunc("/api/pairing/code", adminAuth(c.handleGenerateCode))
 
 	// Messaging API
 	mux.HandleFunc("/api/dashboard/messaging/status", adminAuth(c.handleMessagingStatus))
 	mux.HandleFunc("/api/dashboard/messaging/agents", adminAuth(c.handleMessagingAgents))
+	mux.HandleFunc("/api/dashboard/messaging/repair", adminAuth(c.handleMessagingRepair))
 	mux.HandleFunc("/api/dashboard/messages", adminAuth(c.handleMessages))
 	mux.HandleFunc("/api/dashboard/messages/", adminAuth(c.handleMessageDeliveryOrAck))
 

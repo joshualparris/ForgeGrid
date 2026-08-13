@@ -17,6 +17,7 @@ import (
 	"forgegrid/internal/director"
 	"forgegrid/internal/manifest"
 	"forgegrid/internal/models"
+	"forgegrid/internal/network"
 )
 
 func writeError(w http.ResponseWriter, status int, code, message, detail string) {
@@ -105,6 +106,64 @@ func (c *Coordinator) handleGenerateCode(w http.ResponseWriter, r *http.Request)
 	c.Store.Save()
 	c.Store.Mu.Unlock()
 	json.NewEncoder(w).Encode(map[string]string{"code": code})
+}
+
+func (c *Coordinator) handleSessionStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", "")
+		return
+	}
+	code := generatePairingCode()
+	c.Store.Mu.Lock()
+	c.Store.CoordinatorCfg.PairingCode = code
+	c.Store.CoordinatorCfg.PairingExpiry = time.Now().Add(5 * time.Minute)
+	c.Store.CoordinatorCfg.PairingFailures = 0
+	c.Store.Save()
+	c.Store.Mu.Unlock()
+
+	agentPort := r.URL.Query().Get("agent_port")
+	if agentPort == "" {
+		agentPort = "9091"
+	}
+	scheme := "https"
+	if c.Insecure {
+		scheme = "http"
+	}
+	controllerURL := fmt.Sprintf("%s://%s", scheme, r.Host)
+	if strings.HasPrefix(r.Host, "127.0.0.1") || strings.HasPrefix(r.Host, "localhost") {
+		controllerURL = fmt.Sprintf("%s://%s:8080", scheme, c.IP)
+	}
+	agentURL := fmt.Sprintf("https://%s:%s", c.IP, agentPort)
+	agentFP := localAgentBridgeFingerprint()
+	bootstrap := fmt.Sprintf(".\\ForgeGrid.exe runner bootstrap -name \"RUNNER_NAME\" -controller %s -code %s -fingerprint %s -agent-url %s -agent-fingerprint %s", controllerURL, code, c.Fingerprint, agentURL, agentFP)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"controller_url":          controllerURL,
+		"controller_fingerprint":  c.Fingerprint,
+		"agent_url":               agentURL,
+		"agent_fingerprint":       agentFP,
+		"pairing_code":            code,
+		"windows_bootstrap":       bootstrap,
+		"reconnect_command":       ".\\ForgeGrid.exe -mode worker",
+		"pairing_expires_seconds": "300",
+	})
+}
+
+func localAgentBridgeFingerprint() string {
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		return ""
+	}
+	b, err := os.ReadFile(filepath.Join(home, ".local", "share", "forgegrid", "agentbridge", "cert.pem"))
+	if err != nil {
+		return ""
+	}
+	fp, err := network.FingerprintFromPEM(b)
+	if err != nil {
+		return ""
+	}
+	return fp
 }
 
 func (c *Coordinator) handlePair(w http.ResponseWriter, r *http.Request) {
@@ -413,6 +472,20 @@ func (c *Coordinator) handleJobAction(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodGet {
 		json.NewEncoder(w).Encode(job)
+		return
+	}
+
+	if r.Method == http.MethodDelete {
+		c.Store.Mu.Unlock() // Unlock before calling DeleteJob which takes the lock
+		err := c.Store.DeleteJob(jobID)
+		c.Store.Mu.Lock() // Relock for the defer to unlock
+
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to delete job", err.Error())
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
 		return
 	}
 

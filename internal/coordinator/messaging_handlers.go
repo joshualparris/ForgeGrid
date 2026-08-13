@@ -41,6 +41,41 @@ func isSafeOrigin(r *http.Request) bool {
 	return true
 }
 
+func (c *Coordinator) handleMessagingRepair(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !isSafeOrigin(r) {
+		http.Error(w, "Cross-Origin forbidden", http.StatusForbidden)
+		return
+	}
+	var req struct {
+		AgentName string `json:"agent_name"`
+	}
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+	req.AgentName = strings.TrimSpace(req.AgentName)
+	if req.AgentName == "" || len(req.AgentName) > 100 || strings.ContainsAny(req.AgentName, " \t\r\n:/\\") {
+		http.Error(w, "invalid agent name", http.StatusBadRequest)
+		return
+	}
+	token, err := agentbridge.RegisterAgentWithNewToken(req.AgentName)
+	if err != nil {
+		http.Error(w, sanitizeError(err), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"agent_name": req.AgentName,
+		"token":      token,
+	})
+}
+
 func sanitizeError(err error) string {
 	if err == nil {
 		return ""

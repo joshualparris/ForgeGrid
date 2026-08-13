@@ -1,9 +1,6 @@
 package agentbridge
 
 import (
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -154,21 +151,8 @@ func registerCmd(args []string) {
 		log.Fatal("Agent name required")
 	}
 
-	store, err := NewStore()
+	secret, err := RegisterAgentWithNewToken(*name)
 	if err != nil {
-		log.Fatalf("Store error: %v", err)
-	}
-
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		log.Fatalf("Failed to generate token: %v", err)
-	}
-	secret := hex.EncodeToString(b)
-
-	hash := sha256.Sum256([]byte(secret))
-	hashStr := hex.EncodeToString(hash[:])
-
-	if err := store.RegisterAgent(*name, hashStr); err != nil {
 		log.Fatalf("Register error: %v", err)
 	}
 

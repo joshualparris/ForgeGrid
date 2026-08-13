@@ -94,15 +94,16 @@ func (s *Server) authenticate(r *http.Request) (string, bool) {
 	}
 	agentName, secret := parts[0], parts[1]
 
-	agent, ok := s.store.GetAgent(agentName)
-	if !ok {
-		return fail()
-	}
-
 	hash := sha256.Sum256([]byte(secret))
 	hashStr := hex.EncodeToString(hash[:])
 
-	if subtle.ConstantTimeCompare([]byte(agent.TokenHash), []byte(hashStr)) != 1 {
+	agent, ok := s.store.GetAgent(agentName)
+	if !ok || subtle.ConstantTimeCompare([]byte(agent.TokenHash), []byte(hashStr)) != 1 {
+		if err := s.store.Reload(); err == nil {
+			agent, ok = s.store.GetAgent(agentName)
+		}
+	}
+	if !ok || subtle.ConstantTimeCompare([]byte(agent.TokenHash), []byte(hashStr)) != 1 {
 		return fail()
 	}
 

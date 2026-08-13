@@ -60,6 +60,32 @@ func (s *Store) load() error {
 	return nil
 }
 
+func (s *Store) Reload() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	agents := make(map[string]AgentRegistration)
+	messages := make(map[string]AgentMessage)
+
+	agentsPath := filepath.Join(s.dataDir, "agents.json")
+	if b, err := os.ReadFile(agentsPath); err == nil {
+		if err := json.Unmarshal(b, &agents); err != nil {
+			return fmt.Errorf("corrupt agents.json: %w", err)
+		}
+	}
+
+	msgsPath := filepath.Join(s.dataDir, "messages.json")
+	if b, err := os.ReadFile(msgsPath); err == nil {
+		if err := json.Unmarshal(b, &messages); err != nil {
+			return fmt.Errorf("corrupt messages.json: %w", err)
+		}
+	}
+
+	s.agents = agents
+	s.messages = messages
+	return nil
+}
+
 func (s *Store) save() error {
 	// Save agents
 	agB, err := json.MarshalIndent(s.agents, "", "  ")

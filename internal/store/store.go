@@ -75,3 +75,15 @@ func (s *Store) Save() error {
 	}
 	return nil
 }
+
+func (s *Store) DeleteJob(id string) error {
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
+
+	if _, exists := s.Jobs[id]; !exists {
+		return nil
+	}
+
+	delete(s.Jobs, id)
+	return s.Save()
+}

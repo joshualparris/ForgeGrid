@@ -32,6 +32,20 @@
     </div>
 
     <div class="card">
+        <h2>Wi-Fi Setup</h2>
+        <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: end;">
+            <label>AgentBridge Port<br><input id="sessionAgentPort" value="9091" style="width: 120px;"></label>
+            <button onclick="startWifiSession()">Start Wi-Fi Session</button>
+        </div>
+        <pre id="sessionOutput" style="display: none;"></pre>
+        <div style="margin-top: 14px; display: flex; gap: 10px; flex-wrap: wrap; align-items: end;">
+            <label>Repair AgentBridge Identity<br><input id="repairAgentName" placeholder="thinkpad-antigravity" style="width: 260px;"></label>
+            <button onclick="repairAgentBridge()" style="background: #775500;">Generate Fresh Token</button>
+        </div>
+        <pre id="repairOutput" style="display: none;"></pre>
+    </div>
+
+    <div class="card">
         <h2>Connected Workers</h2>
         <table>
             <thead>
@@ -87,6 +101,7 @@
                     <th>Status</th>
                     <th>Result</th>
                     <th>Artifacts / PR</th>
+                    <th>Actions</th>
                 </tr>
             </thead>
             <tbody id="jobsTable">
@@ -139,6 +154,7 @@
         let agentNames = [];
         let messagesStore = []; // Store raw messages
         let logSource = null;
+        let latestAgentBridgeFingerprint = "";
 
         function splitCSV(value) {
             return value.split(',').map(v => v.trim()).filter(Boolean);
@@ -276,6 +292,68 @@ tasks:
             document.getElementById('pairingCode').innerText = data.code;
         }
 
+        async function startWifiSession() {
+            const port = encodeURIComponent(document.getElementById('sessionAgentPort').value || '9091');
+            const output = document.getElementById('sessionOutput');
+            output.style.display = 'block';
+            output.textContent = 'Generating session...';
+            const res = await fetch(`/api/session/start?agent_port=${port}`, { method: 'POST' });
+            if (!res.ok) {
+                output.textContent = `Failed to start session: ${await res.text()}`;
+                return;
+            }
+            const data = await res.json();
+            latestAgentBridgeFingerprint = data.agent_fingerprint || latestAgentBridgeFingerprint;
+            document.getElementById('pairingCode').innerText = data.pairing_code;
+            output.textContent =
+`Controller: ${data.controller_url}
+Controller fingerprint: ${data.controller_fingerprint}
+AgentBridge: ${data.agent_url}
+AgentBridge fingerprint: ${data.agent_fingerprint || '(unknown)'}
+Pairing code: ${data.pairing_code}
+
+Windows runner bootstrap:
+${data.windows_bootstrap}
+
+Reconnect existing runner:
+${data.reconnect_command}`;
+        }
+
+        async function repairAgentBridge() {
+            const agentName = document.getElementById('repairAgentName').value.trim();
+            const output = document.getElementById('repairOutput');
+            output.style.display = 'block';
+            if (!agentName) {
+                output.textContent = 'Enter an AgentBridge identity first.';
+                return;
+            }
+            if (!confirm(`Generate a fresh token for ${agentName}? The old token will stop working.`)) {
+                output.textContent = 'Repair cancelled.';
+                return;
+            }
+            const res = await fetch('/api/dashboard/messaging/repair', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ agent_name: agentName })
+            });
+            if (!res.ok) {
+                output.textContent = `Repair failed: ${await res.text()}`;
+                return;
+            }
+            const data = await res.json();
+            const agentURL = `https://${document.getElementById('coordIP').innerText}:9091`;
+            const fp = latestAgentBridgeFingerprint || '<AGENTBRIDGE_FINGERPRINT>';
+            output.textContent =
+`Fresh token for ${data.agent_name}:
+${data.token}
+
+Configure on that runner:
+${data.token} | .\\ForgeGrid.exe agent-bridge configure-client -name ${data.agent_name} -url ${agentURL} -fingerprint ${fp} -token-stdin
+
+Then run:
+.\\ForgeGrid.exe doctor -coordinator-url https://${document.getElementById('coordIP').innerText}:8080 -agent-url ${agentURL}`;
+        }
+
         async function runTestJob(workerId) {
             await fetch('/api/jobs/test', {
                 method: 'POST',
@@ -371,9 +449,25 @@ tasks:
                             <td>${escapeHTML(j.status)}</td>
                             <td>${escapeHTML((j.result || '-') + retryText + childText)} | ${logsHTML}</td>
                             <td>${[artifactHTML, prHTML].filter(Boolean).join(' | ') || '-'}</td>
+                            <td><button onclick="deleteJob('${escapeHTML(j.id)}')" style="background: #ff4d4d;">Delete</button></td>
                         </tr>
                     `;
                 });
+            }
+        }
+
+        async function deleteJob(jobId) {
+            if (!confirm(`Are you sure you want to delete job ${jobId}?`)) return;
+            try {
+                const res = await fetch(`/api/jobs/${jobId}`, { method: 'DELETE' });
+                if (res.ok) {
+                    fetchJobs();
+                } else {
+                    const data = await res.json();
+                    alert(`Failed to delete: ${data.message}`);
+                }
+            } catch (e) {
+                alert(`Error deleting job: ${e.message}`);
             }
         }
 
