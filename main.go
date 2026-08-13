@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"forgegrid/internal/agentbridge"
 	"forgegrid/internal/coordinator"
@@ -25,6 +26,11 @@ func main() {
 	insecure := flag.Bool("insecure", false, "Disable TLS (DEVELOPMENT ONLY)")
 	fingerprint := flag.String("fingerprint", "", "TLS certificate fingerprint of the coordinator (worker mode)")
 	resetWorker := flag.Bool("reset-worker", false, "Reset saved worker credentials")
+	allowedRepos := flag.String("allowed-repos", "", "comma-separated repository URLs this worker may clone/fetch for git jobs")
+	allowPush := flag.Bool("allow-push", false, "allow this worker to push committed job changes to git remotes")
+	labels := flag.String("labels", "", "comma-separated worker labels, e.g. godot,low-power,windows-build")
+	capabilities := flag.String("capabilities", "", "comma-separated worker capabilities, e.g. godot,codex,github-pr")
+	writePolicy := flag.Bool("write-worker-policy", false, "write worker policy from -allowed-repos, -allow-push, -labels, and -capabilities, then exit")
 
 	flag.Parse()
 
@@ -58,6 +64,20 @@ func main() {
 			os.Exit(1)
 		}
 	} else if *mode == "worker" {
+		if *writePolicy {
+			if err := worker.WritePolicy(worker.Policy{
+				AllowedRepos: splitCSV(*allowedRepos),
+				AllowPush:    *allowPush,
+				Labels:       splitCSV(*labels),
+				Capabilities: splitCSV(*capabilities),
+			}); err != nil {
+				fmt.Printf("Failed to write worker policy: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("Worker policy written successfully.")
+			os.Exit(0)
+		}
+
 		if *resetWorker {
 			err := worker.ResetCredentials()
 			if err != nil {
@@ -69,6 +89,8 @@ func main() {
 		}
 
 		w := worker.New(*nodeName, "./forgegrid-workspace", *insecure)
+		w.SetGitPolicy(*allowedRepos, *allowPush)
+		w.SetLabelsAndCapabilities(*labels, *capabilities)
 
 		err := w.LoadCreds()
 		if err == nil {
@@ -96,4 +118,15 @@ func main() {
 		fmt.Println("Unknown mode:", *mode)
 		os.Exit(1)
 	}
+}
+
+func splitCSV(raw string) []string {
+	var vals []string
+	for _, v := range strings.Split(raw, ",") {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			vals = append(vals, v)
+		}
+	}
+	return vals
 }

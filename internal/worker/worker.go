@@ -36,8 +36,12 @@ type Worker struct {
 	Insecure       bool
 	Fingerprint    string
 
-	mu         sync.Mutex
-	activeJobs map[string]context.CancelFunc
+	mu           sync.Mutex
+	activeJobs   map[string]context.CancelFunc
+	allowedRepos map[string]bool
+	allowPush    bool
+	Labels       []string
+	Capabilities []string
 }
 
 type WorkerCredentials struct {
@@ -49,7 +53,22 @@ type WorkerCredentials struct {
 	Insecure       bool   `json:"insecure"`
 }
 
+type Policy struct {
+	AllowedRepos []string `json:"allowed_repos"`
+	AllowPush    bool     `json:"allow_push"`
+	Labels       []string `json:"labels"`
+	Capabilities []string `json:"capabilities"`
+}
+
 func getWorkerCredsPath() string {
+	return filepath.Join(getWorkerDataDir(), "worker_creds.json")
+}
+
+func getWorkerPolicyPath() string {
+	return filepath.Join(getWorkerDataDir(), "worker_policy.json")
+}
+
+func getWorkerDataDir() string {
 	var dir string
 	if runtime.GOOS == "windows" {
 		dir = os.Getenv("LOCALAPPDATA")
@@ -70,7 +89,7 @@ func getWorkerCredsPath() string {
 	if runtime.GOOS == "linux" {
 		name = "forgegrid"
 	}
-	return filepath.Join(dir, name, "worker_creds.json")
+	return filepath.Join(dir, name)
 }
 
 func ResetCredentials() error {
@@ -83,12 +102,101 @@ func ResetCredentials() error {
 }
 
 func New(nodeName, workspace string, insecure bool) *Worker {
-	return &Worker{
-		NodeName:   nodeName,
-		Workspace:  workspace,
-		Insecure:   insecure,
-		activeJobs: make(map[string]context.CancelFunc),
+	w := &Worker{
+		NodeName:     nodeName,
+		Workspace:    workspace,
+		Insecure:     insecure,
+		activeJobs:   make(map[string]context.CancelFunc),
+		allowedRepos: parseRepoAllowlist(os.Getenv("FORGEGRID_ALLOWED_REPOS")),
+		allowPush:    os.Getenv("FORGEGRID_ALLOW_PUSH") == "true",
+		Labels:       parseCSV(os.Getenv("FORGEGRID_LABELS")),
+		Capabilities: parseCSV(os.Getenv("FORGEGRID_CAPABILITIES")),
 	}
+	w.LoadPolicy()
+	if envRepos := strings.TrimSpace(os.Getenv("FORGEGRID_ALLOWED_REPOS")); envRepos != "" {
+		w.allowedRepos = parseRepoAllowlist(envRepos)
+	}
+	if os.Getenv("FORGEGRID_ALLOW_PUSH") == "true" {
+		w.allowPush = true
+	}
+	if labels := strings.TrimSpace(os.Getenv("FORGEGRID_LABELS")); labels != "" {
+		w.Labels = parseCSV(labels)
+	}
+	if capabilities := strings.TrimSpace(os.Getenv("FORGEGRID_CAPABILITIES")); capabilities != "" {
+		w.Capabilities = parseCSV(capabilities)
+	}
+	return w
+}
+
+func parseCSV(raw string) []string {
+	var vals []string
+	for _, repo := range strings.Split(raw, ",") {
+		repo = strings.TrimSpace(repo)
+		if repo != "" {
+			vals = append(vals, repo)
+		}
+	}
+	return vals
+}
+
+func parseRepoAllowlist(raw string) map[string]bool {
+	allowed := make(map[string]bool)
+	for _, repo := range parseCSV(raw) {
+		allowed[repo] = true
+	}
+	return allowed
+}
+
+func (w *Worker) SetGitPolicy(allowedRepos string, allowPush bool) {
+	if strings.TrimSpace(allowedRepos) != "" {
+		w.allowedRepos = parseRepoAllowlist(allowedRepos)
+	}
+	if allowPush {
+		w.allowPush = true
+	}
+}
+
+func (w *Worker) SetLabelsAndCapabilities(labels, capabilities string) {
+	if strings.TrimSpace(labels) != "" {
+		w.Labels = parseCSV(labels)
+	}
+	if strings.TrimSpace(capabilities) != "" {
+		w.Capabilities = parseCSV(capabilities)
+	}
+}
+
+func (w *Worker) LoadPolicy() error {
+	b, err := os.ReadFile(getWorkerPolicyPath())
+	if err != nil {
+		return err
+	}
+	var p Policy
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	w.allowedRepos = make(map[string]bool)
+	for _, repo := range p.AllowedRepos {
+		repo = strings.TrimSpace(repo)
+		if repo != "" {
+			w.allowedRepos[repo] = true
+		}
+	}
+	w.allowPush = p.AllowPush
+	w.Labels = append([]string{}, p.Labels...)
+	w.Capabilities = append([]string{}, p.Capabilities...)
+	return nil
+}
+
+func WritePolicy(p Policy) error {
+	dir := getWorkerDataDir()
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(getWorkerPolicyPath(), b, 0600)
 }
 
 func (w *Worker) LoadCreds() error {
@@ -132,6 +240,8 @@ func (w *Worker) getHardwareInfo() (models.WorkerDTO, error) {
 	info.NodeName = w.NodeName
 	info.OS = runtime.GOOS
 	info.Architecture = runtime.GOARCH
+	info.Labels = append([]string{}, w.Labels...)
+	info.Capabilities = append([]string{}, w.Capabilities...)
 
 	if h, err := host.Info(); err == nil {
 		info.OSVersion = h.PlatformVersion
@@ -198,6 +308,8 @@ func (w *Worker) Pair(ip, code, fingerprint string) error {
 		"total_ram":           hw.TotalRAM,
 		"available_ram":       hw.AvailableRAM,
 		"free_workspace_disk": hw.FreeWorkspaceDisk,
+		"labels":              hw.Labels,
+		"capabilities":        hw.Capabilities,
 	}
 	body, _ := json.Marshal(reqBody)
 
@@ -279,6 +391,8 @@ func (w *Worker) sendHeartbeat() {
 		"worker_id":           w.WorkerID,
 		"available_ram":       avail,
 		"free_workspace_disk": free,
+		"labels":              w.Labels,
+		"capabilities":        w.Capabilities,
 	}
 	body, _ := json.Marshal(reqBody)
 
@@ -385,12 +499,19 @@ func (w *Worker) claimJob(jobID string) (string, bool) {
 }
 
 func (w *Worker) updateJobStatus(jobID, attemptID string, status models.JobStatus, result string, logs []byte, seq int) {
+	w.updateJobStatusWithMetadata(jobID, attemptID, status, result, logs, seq, nil, "", "")
+}
+
+func (w *Worker) updateJobStatusWithMetadata(jobID, attemptID string, status models.JobStatus, result string, logs []byte, seq int, artifacts []models.Artifact, pushedBranch, prURL string) {
 	reqBody := map[string]interface{}{
-		"attempt_id": attemptID,
-		"status":     status,
-		"result":     result,
-		"logs":       logs,
-		"log_seq":    seq,
+		"attempt_id":    attemptID,
+		"status":        status,
+		"result":        result,
+		"logs":          logs,
+		"log_seq":       seq,
+		"artifacts":     artifacts,
+		"pushed_branch": pushedBranch,
+		"pr_url":        prURL,
 	}
 	body, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequest("POST", fmt.Sprintf("%s/api/jobs/%s", w.CoordinatorURL, jobID), bytes.NewReader(body))
@@ -445,15 +566,28 @@ func (w *Worker) executeJob(job models.Job) {
 		var gm *gitworkspace.Manager
 		var mainRepoDir string
 		var branchName string
-		
+
 		var output []byte
+		var artifacts []models.Artifact
+		var pushedBranch string
+		var prURL string
 		finalResult := "success"
 		finalStatus := models.StatusCompleted
 
 		if job.RepositoryURL != "" {
-			allowed := []string{"https://github.com/joshualparris/TextGame.git"} // Hardcoded allowlist for prototype safety
-			gm = gitworkspace.NewManager(w.Workspace, allowed)
-			
+			if !w.allowedRepos[job.RepositoryURL] {
+				w.updateJobStatus(job.ID, job.AttemptID, models.StatusFailed, "repository not allowed", []byte("Repository is not in this worker's allowlist. Start the worker with -allowed-repos or FORGEGRID_ALLOWED_REPOS.\n"), logSeq)
+				return
+			}
+			if job.PushChanges && !w.allowPush {
+				w.updateJobStatus(job.ID, job.AttemptID, models.StatusFailed, "push not allowed", []byte("Job requested push_changes, but this worker was not started with -allow-push or FORGEGRID_ALLOW_PUSH=true.\n"), logSeq)
+				return
+			}
+			gm = gitworkspace.NewManager(w.Workspace, gitworkspace.Options{
+				AllowedRepos: w.allowedRepos,
+				AllowPush:    w.allowPush,
+			})
+
 			branchName = job.BranchName
 			if branchName == "" {
 				branchName = "forgegrid-" + job.ID
@@ -466,16 +600,63 @@ func (w *Worker) executeJob(job models.Job) {
 			}
 			workDir = wd
 			mainRepoDir = filepath.Join(w.Workspace, strings.TrimSuffix(filepath.Base(job.RepositoryURL), ".git"))
-			
+
 			// Setup cleanup and reporting
 			defer func() {
+				// Attempt push if successful and requested
+				if finalStatus == models.StatusCompleted && job.CommitChanges {
+					commitMsg := job.CommitMessage
+					if commitMsg == "" {
+						commitMsg = "Automated commit by ForgeGrid worker"
+					}
+					commitResult, pushErr := gm.CommitAndMaybePush(workDir, job.RepositoryURL, commitMsg, job.PushChanges)
+					output = append(output, []byte("\n--- GIT CHANGES ---\n"+commitResult+"\n")...)
+					if pushErr != nil {
+						output = append(output, []byte(fmt.Sprintf("\n--- GIT CHANGE FAILED ---\n%v", pushErr))...)
+						finalStatus = models.StatusFailed
+						finalResult = "git change failed"
+					} else if job.PushChanges {
+						pushedBranch = branchName
+						if job.CreatePR {
+							createdPR, prErr := gm.CreatePullRequest(workDir, job.PRTitle, job.PRBody)
+							if prErr != nil {
+								output = append(output, []byte(fmt.Sprintf("\n--- PR CREATION FAILED ---\n%v", prErr))...)
+							} else {
+								prURL = createdPR
+								output = append(output, []byte("\n--- PULL REQUEST CREATED ---\n"+createdPR+"\n")...)
+							}
+						}
+					}
+				}
+
+				if finalStatus == models.StatusCompleted && len(job.Artefacts) > 0 {
+					collected, artErr := gm.CollectArtifacts(workDir, job.Artefacts)
+					if artErr != nil {
+						output = append(output, []byte(fmt.Sprintf("\n--- ARTIFACT COLLECTION FAILED ---\n%v\n", artErr))...)
+					} else {
+						for _, a := range collected {
+							artifacts = append(artifacts, models.Artifact{
+								Path:          a.Path,
+								Size:          a.Size,
+								SHA256:        a.SHA256,
+								ContentBase64: a.ContentBase64,
+							})
+						}
+						output = append(output, []byte(fmt.Sprintf("\n--- ARTIFACTS ---\nCollected %d artifact(s).\n", len(artifacts)))...)
+					}
+				}
+
 				diff, diffErr := gm.ProduceDiff(workDir)
 				if diffErr == nil {
 					output = append(output, []byte("\n--- WORKSPACE STATUS ---\n"+diff)...)
 				}
-				gm.CleanupWorktree(mainRepoDir, workDir, branchName)
+				if finalStatus == models.StatusCompleted && job.CommitChanges && !job.PushChanges {
+					output = append(output, []byte(fmt.Sprintf("\n--- WORKTREE RETAINED ---\nLocal commit kept at %s on branch %s because push is disabled for this job.\n", workDir, branchName))...)
+				} else if err := gm.CleanupWorktree(mainRepoDir, workDir, branchName); err != nil {
+					output = append(output, []byte(fmt.Sprintf("\n--- CLEANUP FAILED ---\n%v\n", err))...)
+				}
 				// Need to push output again since we appended
-				w.updateJobStatus(job.ID, job.AttemptID, finalStatus, finalResult, output, logSeq+1)
+				w.updateJobStatusWithMetadata(job.ID, job.AttemptID, finalStatus, finalResult, output, logSeq+1, artifacts, pushedBranch, prURL)
 			}()
 		} else {
 			workDir, err = execution.SecureWorkspacePath(w.Workspace, ".")
@@ -496,7 +677,7 @@ func (w *Worker) executeJob(job models.Job) {
 
 		executor := execution.NewExecutor()
 		output, err = executor.Execute(execCtx, profile, job.Parameters, workDir)
-		
+
 		if err != nil {
 			if execCtx.Err() == context.DeadlineExceeded {
 				finalResult = "timeout"

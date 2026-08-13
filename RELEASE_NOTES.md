@@ -11,6 +11,13 @@ ForgeGrid has undergone a massive security and stability refactor.
 - Sensitive credentials omitted from all HTTP/API endpoints and UI.
 - Secure, one-time, expiry-driven pairing codes.
 - Windows & Linux native builds with verification scripts.
+- Configurable worker-side Git repository allowlists for repo-backed jobs.
+- Optional manifest-driven commit/push flow guarded by worker `-allow-push` policy.
+- Development profiles for Go, Node, Python, Godot, Antigravity-style agents, and Codex CLI execution.
+- Worker labels/capabilities and load-aware scheduling.
+- Artifact metadata collection for declared artefact paths.
+- Offline-worker retry/requeue foundation.
+- Optional GitHub PR creation after successful push when `gh` is authenticated on the worker.
 
 ## Tested
 - Full automated test suite encompassing TLS connections, rate limiting, expiry, token separation, hardware stats mock, and job verification checks (`TEST_RESULTS.txt`).
@@ -21,9 +28,8 @@ ForgeGrid has undergone a massive security and stability refactor.
 - Physical Windows worker testing (requires manual user execution over LAN).
 
 ## Not Implemented
-- Godot integration.
-- Git repository syncing.
-- AI Agent dispatch logic.
+- General remote shell access.
+- Mirror-mode file syncing.
 - Complex multi-stage job manifests.
 
 ## Security Limitations

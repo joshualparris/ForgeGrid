@@ -34,12 +34,61 @@ var Profiles = map[string]Profile{
 		Subcommand:     []string{"run", "build"},
 		ArgKeys:        []string{}, // No additional args
 	},
+	"NodeTest": {
+		Name:           "NodeTest",
+		Executable:     "npm",
+		MaxTimeoutSecs: 600,
+		Subcommand:     []string{"test"},
+		ArgKeys:        []string{},
+	},
+	"NodeLint": {
+		Name:           "NodeLint",
+		Executable:     "npm",
+		MaxTimeoutSecs: 600,
+		Subcommand:     []string{"run", "lint"},
+		ArgKeys:        []string{},
+	},
+	"GoBuild": {
+		Name:           "GoBuild",
+		Executable:     "go",
+		MaxTimeoutSecs: 600,
+		Subcommand:     []string{"build"},
+		ArgKeys:        []string{"package"},
+	},
 	"PythonUnittest": {
 		Name:           "PythonUnittest",
 		Executable:     "python",
 		MaxTimeoutSecs: 300,
 		Subcommand:     []string{"-m", "unittest"},
 		ArgKeys:        []string{"module"},
+	},
+	"ShellScript": {
+		Name:           "ShellScript",
+		Executable:     "sh",
+		MaxTimeoutSecs: 300,
+		Subcommand:     []string{"-c"},
+		ArgKeys:        []string{"script"},
+	},
+	"AIAgent": {
+		Name:           "AIAgent",
+		Executable:     "antigravity",
+		MaxTimeoutSecs: 3600, // 1 hour max for agent tasks
+		Subcommand:     []string{"--task"},
+		ArgKeys:        []string{"task"},
+	},
+	"GodotExport": {
+		Name:           "GodotExport",
+		Executable:     "godot",
+		MaxTimeoutSecs: 1800,
+		Subcommand:     []string{"--headless", "--export-release"},
+		ArgKeys:        []string{"preset", "export_path"},
+	},
+	"CodexExec": {
+		Name:           "CodexExec",
+		Executable:     "codex",
+		MaxTimeoutSecs: 3600,
+		Subcommand:     []string{"exec", "--sandbox", "workspace-write"},
+		ArgKeys:        []string{"prompt"},
 	},
 }
 

@@ -1,9 +1,7 @@
 package coordinator
 
 import (
-	"encoding/json"
 	"forgegrid/internal/agentbridge"
-	"os"
 )
 
 type MessagingGateway interface {
@@ -12,32 +10,33 @@ type MessagingGateway interface {
 	GetAgents() ([]string, error)
 	GetDeliveryStatus(id string) (*agentbridge.AgentMessage, error)
 	Acknowledge(id string) (*agentbridge.AgentMessage, error)
+	Status() (string, bool, error) // Returns (identity, available, error)
 }
 
 type LiveMessagingGateway struct {
-	client *agentbridge.Client
+	client   *agentbridge.Client
+	identity string
 }
 
 func NewLiveMessagingGateway() (*LiveMessagingGateway, error) {
 	path := agentbridge.GetConfigPath()
-	b, err := os.ReadFile(path)
+	cfg, err := agentbridge.LoadClientConfig(path)
 	if err != nil {
 		return nil, err
 	}
-	var cfg struct {
-		BaseURL     string `json:"url"`
-		Identity    string `json:"identity"`
-		Token       string `json:"token"`
-		Fingerprint string `json:"fingerprint"`
-	}
-	if err := json.Unmarshal(b, &cfg); err != nil {
-		return nil, err
-	}
-	client, err := agentbridge.NewClient(cfg.BaseURL, cfg.Identity, cfg.Token, cfg.Fingerprint, false)
+	client, err := agentbridge.NewClient(cfg.URL, cfg.Name, cfg.Token, cfg.Fingerprint, false)
 	if err != nil {
 		return nil, err
 	}
-	return &LiveMessagingGateway{client: client}, nil
+	return &LiveMessagingGateway{client: client, identity: cfg.Name}, nil
+}
+
+func (g *LiveMessagingGateway) Status() (string, bool, error) {
+	err := g.client.Status()
+	if err != nil {
+		return "", false, err
+	}
+	return g.identity, true, nil
 }
 
 func (g *LiveMessagingGateway) SendMessage(recipient, taskID string, msgType agentbridge.MessageType, body string, ttl int, idempotencyKey string) (*agentbridge.AgentMessage, error) {

@@ -17,6 +17,12 @@ coordinator_pid.txt
 worker_pid.txt
 coordinator_log.txt
 worker_log.txt
+*.pid
+*-push.yaml
+no-push.yaml
+commit-only.yaml
+push.yaml
+forgegrid-workspace/
 test_output.txt
 *.test
 *.tmp

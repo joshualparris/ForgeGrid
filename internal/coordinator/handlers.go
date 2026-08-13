@@ -3,10 +3,13 @@ package coordinator
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -36,6 +39,31 @@ func cryptoRandomHex(n int) string {
 	b := make([]byte, n)
 	rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+func (c *Coordinator) persistArtifacts(jobID string, artifacts []models.Artifact) []models.Artifact {
+	stored := make([]models.Artifact, 0, len(artifacts))
+	for i, artifact := range artifacts {
+		clean := filepath.Clean(artifact.Path)
+		if filepath.IsAbs(clean) || strings.HasPrefix(clean, "..") {
+			continue
+		}
+		if artifact.ContentBase64 != "" {
+			b, err := base64.StdEncoding.DecodeString(artifact.ContentBase64)
+			if err == nil && int64(len(b)) == artifact.Size && len(b) <= 10*1024*1024 {
+				dir := filepath.Join(c.Store.Dir(), "artifacts", jobID)
+				if os.MkdirAll(dir, 0700) == nil {
+					name := fmt.Sprintf("%03d-%s", i, filepath.Base(clean))
+					if os.WriteFile(filepath.Join(dir, name), b, 0600) == nil {
+						artifact.DownloadURL = fmt.Sprintf("/api/jobs/%s/artifacts/%d", jobID, i)
+					}
+				}
+			}
+		}
+		artifact.ContentBase64 = ""
+		stored = append(stored, artifact)
+	}
+	return stored
 }
 
 func generatePairingCode() string {
@@ -80,17 +108,19 @@ func (c *Coordinator) handlePair(w http.ResponseWriter, r *http.Request) {
 	// Limit request size to prevent oversized request attacks
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	var req struct {
-		Code              string `json:"code"`
-		NodeName          string `json:"node_name"`
-		OS                string `json:"os"`
-		OSVersion         string `json:"os_version"`
-		CPUModel          string `json:"cpu_model"`
-		Architecture      string `json:"architecture"`
-		PhysicalCores     int    `json:"physical_cores"`
-		LogicalProcessors int    `json:"logical_processors"`
-		TotalRAM          uint64 `json:"total_ram"`
-		AvailableRAM      uint64 `json:"available_ram"`
-		FreeWorkspaceDisk uint64 `json:"free_workspace_disk"`
+		Code              string   `json:"code"`
+		NodeName          string   `json:"node_name"`
+		OS                string   `json:"os"`
+		OSVersion         string   `json:"os_version"`
+		CPUModel          string   `json:"cpu_model"`
+		Architecture      string   `json:"architecture"`
+		PhysicalCores     int      `json:"physical_cores"`
+		LogicalProcessors int      `json:"logical_processors"`
+		TotalRAM          uint64   `json:"total_ram"`
+		AvailableRAM      uint64   `json:"available_ram"`
+		FreeWorkspaceDisk uint64   `json:"free_workspace_disk"`
+		Labels            []string `json:"labels"`
+		Capabilities      []string `json:"capabilities"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Malformed JSON", err.Error())
@@ -137,6 +167,8 @@ func (c *Coordinator) handlePair(w http.ResponseWriter, r *http.Request) {
 		TotalRAM:          req.TotalRAM,
 		AvailableRAM:      req.AvailableRAM,
 		FreeWorkspaceDisk: req.FreeWorkspaceDisk,
+		Labels:            append([]string{}, req.Labels...),
+		Capabilities:      append([]string{}, req.Capabilities...),
 		TokenHash:         hashToken(token),
 		LastSeen:          time.Now(),
 		Status:            "online",
@@ -152,9 +184,11 @@ func (c *Coordinator) handlePair(w http.ResponseWriter, r *http.Request) {
 func (c *Coordinator) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	var req struct {
-		WorkerID     string `json:"worker_id"`
-		AvailableRAM uint64 `json:"available_ram"`
-		FreeDisk     uint64 `json:"free_workspace_disk"`
+		WorkerID     string   `json:"worker_id"`
+		AvailableRAM uint64   `json:"available_ram"`
+		FreeDisk     uint64   `json:"free_workspace_disk"`
+		Labels       []string `json:"labels"`
+		Capabilities []string `json:"capabilities"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Malformed JSON", "")
@@ -175,6 +209,12 @@ func (c *Coordinator) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 
 	worker.AvailableRAM = req.AvailableRAM
 	worker.FreeWorkspaceDisk = req.FreeDisk
+	if req.Labels != nil {
+		worker.Labels = append([]string{}, req.Labels...)
+	}
+	if req.Capabilities != nil {
+		worker.Capabilities = append([]string{}, req.Capabilities...)
+	}
 	worker.LastSeen = time.Now()
 	worker.Status = "online"
 	c.Store.Save()
@@ -224,6 +264,39 @@ func (c *Coordinator) handleDisconnectWorker(w http.ResponseWriter, r *http.Requ
 	} else {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "Worker not found", "")
 	}
+}
+
+func (c *Coordinator) handleWorkerPolicy(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", "")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 2048)
+	var req struct {
+		WorkerID string `json:"worker_id"`
+		Drain    *bool  `json:"drain"`
+		Disabled *bool  `json:"disabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Malformed JSON", "")
+		return
+	}
+
+	c.Store.Mu.Lock()
+	defer c.Store.Mu.Unlock()
+	worker, ok := c.Store.Workers[req.WorkerID]
+	if !ok {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "Worker not found", "")
+		return
+	}
+	if req.Drain != nil {
+		worker.Drain = *req.Drain
+	}
+	if req.Disabled != nil {
+		worker.Disabled = *req.Disabled
+	}
+	c.Store.Save()
+	json.NewEncoder(w).Encode(worker.ToDTO())
 }
 
 func (c *Coordinator) handleTestJob(w http.ResponseWriter, r *http.Request) {
@@ -304,6 +377,28 @@ func (c *Coordinator) handleJobAction(w http.ResponseWriter, r *http.Request) {
 	}
 	jobID := parts[3]
 
+	if r.Method == http.MethodGet && len(parts) == 6 && parts[4] == "artifacts" {
+		idx := parts[5]
+		c.Store.Mu.RLock()
+		job, ok := c.Store.Jobs[jobID]
+		c.Store.Mu.RUnlock()
+		if !ok || job == nil {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", "Job not found", "")
+			return
+		}
+		matches, _ := filepath.Glob(filepath.Join(c.Store.Dir(), "artifacts", jobID, idx+"-*"))
+		if len(matches) == 0 {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", "Artifact not found", "")
+			return
+		}
+		http.ServeFile(w, r, matches[0])
+		return
+	}
+	if r.Method == http.MethodGet && len(parts) == 6 && parts[4] == "logs" && parts[5] == "stream" {
+		c.streamJobLogs(w, r, jobID)
+		return
+	}
+
 	c.Store.Mu.Lock()
 	defer c.Store.Mu.Unlock()
 
@@ -362,11 +457,14 @@ func (c *Coordinator) handleJobAction(w http.ResponseWriter, r *http.Request) {
 		}
 
 		var req struct {
-			AttemptID string           `json:"attempt_id"`
-			Status    models.JobStatus `json:"status"`
-			Result    string           `json:"result"`
-			Logs      []byte           `json:"logs"`
-			LogSeq    int              `json:"log_seq"`
+			AttemptID    string            `json:"attempt_id"`
+			Status       models.JobStatus  `json:"status"`
+			Result       string            `json:"result"`
+			Logs         []byte            `json:"logs"`
+			LogSeq       int               `json:"log_seq"`
+			Artifacts    []models.Artifact `json:"artifacts"`
+			PushedBranch string            `json:"pushed_branch"`
+			PRURL        string            `json:"pr_url"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Malformed JSON", "")
@@ -405,6 +503,15 @@ func (c *Coordinator) handleJobAction(w http.ResponseWriter, r *http.Request) {
 			} else {
 				job.Result = req.Result
 			}
+			if req.Artifacts != nil {
+				job.Artifacts = c.persistArtifacts(job.ID, req.Artifacts)
+			}
+			if req.PushedBranch != "" {
+				job.PushedBranch = req.PushedBranch
+			}
+			if req.PRURL != "" {
+				job.PRURL = req.PRURL
+			}
 		}
 
 		// Byte-bounded sequence-numbered logs
@@ -423,6 +530,49 @@ func (c *Coordinator) handleJobAction(w http.ResponseWriter, r *http.Request) {
 		}
 		c.Store.Save()
 		json.NewEncoder(w).Encode(job)
+	}
+}
+
+func (c *Coordinator) streamJobLogs(w http.ResponseWriter, r *http.Request, jobID string) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "STREAM_UNSUPPORTED", "Streaming unsupported", "")
+		return
+	}
+	offset := 0
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+			c.Store.Mu.RLock()
+			job := c.Store.Jobs[jobID]
+			if job == nil {
+				c.Store.Mu.RUnlock()
+				fmt.Fprintf(w, "event: error\ndata: job not found\n\n")
+				flusher.Flush()
+				return
+			}
+			logs := append([]byte{}, job.Logs...)
+			status := job.Status
+			c.Store.Mu.RUnlock()
+			if offset < len(logs) {
+				chunk := strings.ReplaceAll(string(logs[offset:]), "\n", "\\n")
+				fmt.Fprintf(w, "event: logs\ndata: %s\n\n", chunk)
+				offset = len(logs)
+				flusher.Flush()
+			}
+			if status == models.StatusCompleted || status == models.StatusFailed || status == models.StatusCancelled {
+				fmt.Fprintf(w, "event: done\ndata: %s\n\n", status)
+				flusher.Flush()
+				return
+			}
+		}
 	}
 }
 

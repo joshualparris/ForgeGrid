@@ -93,3 +93,54 @@ tasks:
 		t.Fatalf("Expected error for no worker, got nil")
 	}
 }
+
+func TestDirectorDispatchRequiresLabelsAndCapabilities(t *testing.T) {
+	s, err := store.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+
+	s.Mu.Lock()
+	s.Workers["basic"] = &models.WorkerState{
+		ID:                "basic",
+		OS:                "linux",
+		Status:            "online",
+		AvailableRAM:      16 * 1024 * 1024 * 1024,
+		LogicalProcessors: 8,
+	}
+	s.Workers["godot"] = &models.WorkerState{
+		ID:                "godot",
+		OS:                "linux",
+		Status:            "online",
+		AvailableRAM:      8 * 1024 * 1024 * 1024,
+		LogicalProcessors: 4,
+		Labels:            []string{"windows-build"},
+		Capabilities:      []string{"godot"},
+	}
+	s.Mu.Unlock()
+
+	m, err := manifest.Parse(strings.NewReader(`
+project: "Game"
+tasks:
+  export:
+    requirements:
+      os: "linux"
+      labels: ["windows-build"]
+      capabilities: ["godot"]
+    execution:
+      profile: "GodotExport"
+`))
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	if err := New(s).SubmitManifest(m); err != nil {
+		t.Fatalf("dispatch failed: %v", err)
+	}
+
+	for _, j := range s.Jobs {
+		if j.WorkerID != "godot" {
+			t.Fatalf("expected godot worker, got %s", j.WorkerID)
+		}
+	}
+}

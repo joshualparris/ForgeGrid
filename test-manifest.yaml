@@ -1,9 +1,20 @@
 project: "Harmless-Test"
+repository:
+  url: "https://github.com/joshualparris/TextGame.git"
+  base_commit: "0123456789abcdef0123456789abcdef01234567"
+  branch: "forgegrid/harmless-test"
+  create_pr: false
 tasks:
   test_task:
     requirements:
       os: "windows"
+      labels: ["trusted"]
+      capabilities: ["python"]
     execution:
       profile: "PythonUnittest"
       parameters:
         module: ""
+      max_retries: 1
+      changes:
+        commit: false
+        push: false

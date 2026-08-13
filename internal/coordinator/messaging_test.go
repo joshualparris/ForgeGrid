@@ -1,10 +1,15 @@
 package coordinator
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"forgegrid/internal/agentbridge"
 	"forgegrid/internal/store"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,8 +21,10 @@ type fakeGateway struct {
 }
 
 func (f *fakeGateway) SendMessage(recipient, taskID string, msgType agentbridge.MessageType, body string, ttl int, idempotencyKey string) (*agentbridge.AgentMessage, error) {
-	if len(body) > 16384 {
-		return nil, nil // test should reject before here
+	for _, m := range f.messages {
+		if m.IdempotencyKey == idempotencyKey {
+			return &m, nil // Idempotency retry
+		}
 	}
 	msg := agentbridge.AgentMessage{
 		ID:             "msg-123",
@@ -64,6 +71,10 @@ func (f *fakeGateway) Acknowledge(id string) (*agentbridge.AgentMessage, error) 
 	return nil, nil
 }
 
+func (f *fakeGateway) Status() (string, bool, error) {
+	return "coordinator-agent", true, nil
+}
+
 func setupTestCoordinator(t *testing.T) (*Coordinator, *fakeGateway) {
 	s, _ := store.NewStore(t.TempDir())
 	s.CoordinatorCfg.AdminToken = "testtoken"
@@ -81,38 +92,103 @@ func setupTestCoordinator(t *testing.T) (*Coordinator, *fakeGateway) {
 	return c, gw
 }
 
-func TestMessaging_RequireAdminAuth(t *testing.T) {
-	c, _ := setupTestCoordinator(t)
+func TestMessaging_ConfigLoading(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agentclient.json")
 
-	req := httptest.NewRequest("GET", "/api/dashboard/messaging/status", nil)
-	w := httptest.NewRecorder()
+	// Valid config
+	os.WriteFile(path, []byte(`{"name":"testagent","token":"sec","url":"http://127.0.0.1","fingerprint":"fp"}`), 0600)
+	cfg, err := agentbridge.LoadClientConfig(path)
+	if err != nil || cfg.Name != "testagent" {
+		t.Fatalf("Expected successful load: %v", err)
+	}
 
-	// Direct call to handler (bypassing mux auth for a second, wait, we need to test the mux)
-	// We can't easily test auth without the mux. Let's just create a router.
+	// Missing field
+	os.WriteFile(path, []byte(`{"name":"","token":"sec","url":"http://127.0.0.1","fingerprint":"fp"}`), 0600)
+	_, err = agentbridge.LoadClientConfig(path)
+	if err == nil {
+		t.Fatalf("Expected error for missing name")
+	}
 
-	adminAuth := func(next http.HandlerFunc) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			user, pass, ok := r.BasicAuth()
-			if !ok || user != "admin" || pass != c.Store.CoordinatorCfg.AdminToken {
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-				return
-			}
-			next.ServeHTTP(w, r)
+	// Malformed JSON
+	os.WriteFile(path, []byte(`{"name":"testagent"`), 0600)
+	_, err = agentbridge.LoadClientConfig(path)
+	if err == nil {
+		t.Fatalf("Expected error for malformed json")
+	}
+}
+
+func TestMessaging_LiveIntegration(t *testing.T) {
+	s, _ := store.NewStore(t.TempDir())
+
+	oldHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", oldHome)
+	os.Setenv("HOME", t.TempDir())
+
+	abStore, _ := agentbridge.NewStore()
+	tokenHash := sha256.Sum256([]byte("secret"))
+	abStore.RegisterAgent("coord-agent", hex.EncodeToString(tokenHash[:]))
+	abServer := agentbridge.NewServer(abStore)
+
+	mux := http.NewServeMux()
+	abServer.RegisterRoutes(mux)
+	ts := httptest.NewTLSServer(mux)
+	defer ts.Close()
+	fpBytes := sha256.Sum256(ts.Certificate().Raw)
+	fingerprint := hex.EncodeToString(fpBytes[:])
+
+	// Write agentclient.json to the expected path
+	cfgPath := agentbridge.GetConfigPath()
+	os.MkdirAll(filepath.Dir(cfgPath), 0700)
+	os.WriteFile(cfgPath, []byte(`{"name":"coord-agent","token":"secret","url":"`+ts.URL+`","fingerprint":"`+fingerprint+`"}`), 0600)
+
+	c := New(s, true)
+	c.IP = "127.0.0.1"
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen failed: %v", err)
+	}
+	c.Listener = ln
+
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Start("0") // Initialize MessagingGateway via Start
+	}()
+	defer func() {
+		ln.Close()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("coordinator server did not stop after listener close")
+		}
+	}()
+
+	deadline := time.After(2 * time.Second)
+	for c.MessagingGateway == nil {
+		select {
+		case err := <-done:
+			t.Fatalf("Start exited before gateway initialization: %v", err)
+		case <-deadline:
+			t.Fatalf("Gateway not initialized before timeout")
+		default:
+			time.Sleep(10 * time.Millisecond)
 		}
 	}
 
-	handler := adminAuth(c.handleMessagingStatus)
-	handler.ServeHTTP(w, req)
+	if c.MessagingGateway == nil {
+		t.Fatalf("Gateway not initialized")
+	}
 
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("Expected 401, got %d", w.Code)
+	id, available, err := c.MessagingGateway.Status()
+	if err != nil || !available || id != "coord-agent" {
+		t.Fatalf("Status failed: %v, available=%v, id=%s", err, available, id)
 	}
 }
 
 func TestMessaging_SenderIdentityServerSide(t *testing.T) {
 	c, gw := setupTestCoordinator(t)
 
-	reqBody := `{"recipient": "agent-1", "type": "chat", "body": "hello", "idempotency_key": "123", "sender": "hacker"}`
+	reqBody := `{"recipient": "agent-1", "type": "chat", "body": "hello", "idempotency_key": "123"}`
 	req := httptest.NewRequest("POST", "/api/dashboard/messages", strings.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Origin", "http://example.com")
@@ -125,13 +201,41 @@ func TestMessaging_SenderIdentityServerSide(t *testing.T) {
 		t.Fatalf("Expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	if len(gw.messages) != 1 {
-		t.Fatalf("Expected 1 message")
-	}
-
 	// Ensure sender is "coordinator" (enforced by the gateway, browser input ignored)
 	if gw.messages[0].Sender != "coordinator" {
 		t.Errorf("Sender should be forced to coordinator identity, got %s", gw.messages[0].Sender)
+	}
+}
+
+func TestMessaging_Idempotency(t *testing.T) {
+	c, gw := setupTestCoordinator(t)
+
+	reqBody := `{"recipient": "agent-1", "type": "chat", "body": "hello", "idempotency_key": "abc"}`
+
+	// First send
+	req1 := httptest.NewRequest("POST", "/api/dashboard/messages", strings.NewReader(reqBody))
+	req1.Header.Set("Content-Type", "application/json")
+	req1.Header.Set("Origin", "http://example.com")
+	req1.Host = "example.com"
+
+	w1 := httptest.NewRecorder()
+	c.handleMessages(w1, req1)
+
+	if len(gw.messages) != 1 {
+		t.Fatalf("Expected 1 message, got %d", len(gw.messages))
+	}
+
+	// Retry
+	req2 := httptest.NewRequest("POST", "/api/dashboard/messages", strings.NewReader(reqBody))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("Origin", "http://example.com")
+	req2.Host = "example.com"
+
+	w2 := httptest.NewRecorder()
+	c.handleMessages(w2, req2)
+
+	if len(gw.messages) != 1 {
+		t.Fatalf("Expected exactly 1 message after retry, got %d", len(gw.messages))
 	}
 }
 
@@ -139,23 +243,55 @@ func TestMessaging_SameOriginProtection(t *testing.T) {
 	c, _ := setupTestCoordinator(t)
 
 	reqBody := `{"recipient": "agent-1", "type": "chat", "body": "hello", "idempotency_key": "123"}`
+
+	// Exact match
 	req := httptest.NewRequest("POST", "/api/dashboard/messages", strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://example.com")
+	req.Host = "example.com"
+	w := httptest.NewRecorder()
+	c.handleMessages(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected 200, got %d", w.Code)
+	}
+
+	// Cross-origin
+	req = httptest.NewRequest("POST", "/api/dashboard/messages", strings.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Origin", "http://evil.com")
 	req.Host = "example.com"
-
-	w := httptest.NewRecorder()
+	w = httptest.NewRecorder()
 	c.handleMessages(w, req)
-
 	if w.Code != http.StatusForbidden {
 		t.Errorf("Expected 403 Forbidden for cross-origin, got %d", w.Code)
+	}
+
+	// Missing origin and sec-fetch-site
+	req = httptest.NewRequest("POST", "/api/dashboard/messages", strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Host = "example.com"
+	w = httptest.NewRecorder()
+	c.handleMessages(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("Expected 403 Forbidden for missing origin headers, got %d", w.Code)
+	}
+
+	// Host suffix trick
+	req = httptest.NewRequest("POST", "/api/dashboard/messages", strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://anotherexample.com")
+	req.Host = "example.com"
+	w = httptest.NewRecorder()
+	c.handleMessages(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("Expected 403 Forbidden for host suffix trick, got %d", w.Code)
 	}
 }
 
 func TestMessaging_OversizedMessageRejected(t *testing.T) {
 	c, _ := setupTestCoordinator(t)
 
-	largeBody := strings.Repeat("a", 20000)
+	largeBody := strings.Repeat("a", 16385)
 	reqBody := `{"recipient": "agent-1", "type": "chat", "body": "` + largeBody + `", "idempotency_key": "123"}`
 	req := httptest.NewRequest("POST", "/api/dashboard/messages", strings.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
@@ -165,8 +301,71 @@ func TestMessaging_OversizedMessageRejected(t *testing.T) {
 	w := httptest.NewRecorder()
 	c.handleMessages(w, req)
 
-	if w.Code != http.StatusBadRequest && w.Code != http.StatusRequestEntityTooLarge {
-		t.Errorf("Expected error for oversized body, got %d", w.Code)
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("Expected 413 for oversized body, got %d", w.Code)
+	}
+}
+
+func TestMessaging_JSONValidation(t *testing.T) {
+	c, _ := setupTestCoordinator(t)
+
+	// Trailing JSON
+	reqBody := `{"recipient": "agent-1", "type": "chat", "body": "hello", "idempotency_key": "123"}{}`
+	req := httptest.NewRequest("POST", "/api/dashboard/messages", strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://example.com")
+	req.Host = "example.com"
+	w := httptest.NewRecorder()
+	c.handleMessages(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 for trailing JSON, got %d", w.Code)
+	}
+
+	// Unknown fields
+	reqBody = `{"recipient": "agent-1", "type": "chat", "body": "hello", "idempotency_key": "123", "unknown": "x"}`
+	req = httptest.NewRequest("POST", "/api/dashboard/messages", strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://example.com")
+	req.Host = "example.com"
+	w = httptest.NewRecorder()
+	c.handleMessages(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 for unknown fields, got %d", w.Code)
+	}
+
+	// Empty body
+	req = httptest.NewRequest("POST", "/api/dashboard/messages", strings.NewReader(""))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://example.com")
+	req.Host = "example.com"
+	w = httptest.NewRecorder()
+	c.handleMessages(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 for empty body, got %d", w.Code)
+	}
+
+	// Application/JSON with charset
+	reqBody = `{"recipient": "agent-1", "type": "chat", "body": "hello", "idempotency_key": "123"}`
+	req = httptest.NewRequest("POST", "/api/dashboard/messages", strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	req.Header.Set("Origin", "http://example.com")
+	req.Host = "example.com"
+	w = httptest.NewRecorder()
+	c.handleMessages(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected 200 for application/json with charset, got %d", w.Code)
+	}
+
+	// Missing Task ID for Instruction
+	reqBody = `{"recipient": "agent-1", "type": "instruction", "body": "do", "idempotency_key": "123"}`
+	req = httptest.NewRequest("POST", "/api/dashboard/messages", strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://example.com")
+	req.Host = "example.com"
+	w = httptest.NewRecorder()
+	c.handleMessages(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 for missing task ID on instruction, got %d", w.Code)
 	}
 }
 

@@ -34,6 +34,7 @@
                     <th>Node Name</th>
                     <th>OS</th>
                     <th>CPU / RAM</th>
+                    <th>Labels / Capabilities</th>
                     <th>Status</th>
                     <th>Actions</th>
                 </tr>
@@ -41,6 +42,21 @@
             <tbody id="workersTable">
             </tbody>
         </table>
+    </div>
+    
+    <div class="card">
+        <h2>Submit Job Manifest</h2>
+        <div style="margin-bottom: 10px; display: flex; gap: 10px;">
+            <button onclick="loadTemplate('no-push')" style="background: #333; border: 1px solid #555;">No Push</button>
+            <button onclick="loadTemplate('commit-only')" style="background: #333; border: 1px solid #555;">Commit Only</button>
+            <button onclick="loadTemplate('push')" style="background: #ff4d4d; border: 1px solid #ff0000; font-weight: bold;">Push Changes</button>
+        </div>
+        <textarea id="manifestInput" rows="18" style="width: 100%; box-sizing: border-box; background: #333; color: white; border: 1px solid #555; padding: 10px; font-family: monospace;" oninput="checkPushWarning()"></textarea><br/>
+        <div id="pushWarning" style="display: none; color: #ffeb3b; background: rgba(255, 235, 59, 0.1); padding: 10px; border-left: 4px solid #ffeb3b; margin-top: 10px;">
+            <strong>WARNING:</strong> This manifest is configured to PUSH changes to the remote repository. Ensure you have authorization and that the remote branch is correct.
+        </div>
+        <button onclick="submitManifest()" style="margin-top: 10px; background: linear-gradient(135deg, #00b09b 0%, #96c93d 100%);">Submit Job Manifest</button>
+        <div id="manifestResult" style="margin-top: 10px; font-weight: bold;"></div>
     </div>
     
     <div class="card">
@@ -53,6 +69,7 @@
                     <th>Task</th>
                     <th>Status</th>
                     <th>Result</th>
+                    <th>Artifacts / PR</th>
                 </tr>
             </thead>
             <tbody id="jobsTable">
@@ -95,6 +112,107 @@
         let agentNames = [];
         let messagesStore = []; // Store raw messages
 
+        function getTemplate(commit, push) {
+            return `project: "MyProject"
+repository:
+  url: "https://github.com/example/repo.git"
+  base_commit: "0123456789abcdef0123456789abcdef01234567"
+  branch: "forgegrid/agent-work"
+  create_pr: ${push}
+  pr_title: "ForgeGrid automated changes"
+  pr_body: "Automated development job from ForgeGrid."
+tasks:
+  build:
+    description: "Export project"
+    requirements:
+      os: "linux"
+      min_ram_gb: 4
+      min_cores: 2
+      labels: ["trusted"]
+      capabilities: ["godot"]
+    execution:
+      profile: "GodotExport"
+      parameters:
+        preset: "Linux/X11"
+        export_path: "build/game.x86_64"
+      timeout_seconds: 600
+      max_retries: 1
+      changes:
+        commit: ${commit}
+        push: ${push}
+        commit_message: "Automated build"
+    artefacts:
+      - "build/game.x86_64"`;
+        }
+
+        function loadTemplate(type) {
+            const input = document.getElementById('manifestInput');
+            if (type === 'no-push') input.value = getTemplate('false', 'false');
+            else if (type === 'commit-only') input.value = getTemplate('true', 'false');
+            else if (type === 'push') input.value = getTemplate('true', 'true');
+            checkPushWarning();
+        }
+
+        function checkPushWarning() {
+            const yamlStr = document.getElementById('manifestInput').value;
+            const pushWarning = document.getElementById('pushWarning');
+            if (yamlStr.includes('push: true')) {
+                pushWarning.style.display = 'block';
+            } else {
+                pushWarning.style.display = 'none';
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const input = document.getElementById('manifestInput');
+            if (input) input.value = getTemplate('false', 'false');
+            checkPushWarning();
+        });
+
+        async function submitManifest() {
+            const yamlStr = document.getElementById('manifestInput').value;
+            const resDiv = document.getElementById('manifestResult');
+            
+            // Validate required fields
+            if (!yamlStr.match(/url:\s*['"]?[a-zA-Z0-9]/)) {
+                resDiv.style.color = '#ffeb3b';
+                resDiv.innerText = 'Validation Failed: repository.url is missing or empty.';
+                return;
+            }
+            if (!yamlStr.match(/base_commit:\s*['"]?[a-zA-Z0-9]/)) {
+                resDiv.style.color = '#ffeb3b';
+                resDiv.innerText = 'Validation Failed: repository.base_commit is missing or empty.';
+                return;
+            }
+            if (yamlStr.includes('push: true') && !confirm('This job can push changes to a remote Git repository. Continue only if the target branch and worker allowlist are correct.')) {
+                resDiv.style.color = '#ffeb3b';
+                resDiv.innerText = 'Submission cancelled before push-capable dispatch.';
+                return;
+            }
+
+            resDiv.style.color = 'white';
+            resDiv.innerText = 'Submitting...';
+            try {
+                const res = await fetch('/api/jobs/manifest', {
+                    method: 'POST',
+                    body: yamlStr
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    resDiv.style.color = '#00ff00';
+                    resDiv.innerText = 'Job Dispatched: ' + JSON.stringify(data);
+                    fetchJobs();
+                } else {
+                    const err = await res.json();
+                    resDiv.style.color = '#ff4d4d';
+                    resDiv.innerText = 'Failed: ' + err.message + (err.detail ? ' - ' + err.detail : '');
+                }
+            } catch (e) {
+                resDiv.style.color = '#ff4d4d';
+                resDiv.innerText = 'Error: ' + e.message;
+            }
+        }
+
         async function fetchStatus() {
             const res = await fetch('/api/coordinator/status');
             const data = await res.json();
@@ -129,6 +247,15 @@
             }
         }
 
+        async function setWorkerPolicy(workerId, patch) {
+            await fetch('/api/workers/policy', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ worker_id: workerId, ...patch })
+            });
+            fetchWorkers();
+        }
+
         function escapeHTML(str) {
             if (!str) return '';
             return str.toString().replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -155,9 +282,12 @@
                             <td>${escapeHTML(w.node_name)}</td>
                             <td>${escapeHTML(w.os)}</td>
                             <td>${escapeHTML(w.cpu_model || w.cpu)} / ${Math.round(w.total_ram / 1073741824)}GB</td>
-                            <td class="${statusClass}">${escapeHTML(w.status)}</td>
+                            <td>${escapeHTML([...(w.labels || []), ...(w.capabilities || []).map(c => 'cap:' + c)].join(', ') || '-')}</td>
+                            <td class="${statusClass}">${escapeHTML(w.status)}${w.drain ? ' / drain' : ''}${w.disabled ? ' / disabled' : ''}</td>
                             <td>
                                 <button onclick="runTestJob('${escapeHTML(w.id)}')" ${w.status !== 'online' ? 'disabled' : ''}>Run Test Job</button>
+                                <button onclick="setWorkerPolicy('${escapeHTML(w.id)}', { drain: ${!w.drain} })" style="background: #555;">${w.drain ? 'Undrain' : 'Drain'}</button>
+                                <button onclick="setWorkerPolicy('${escapeHTML(w.id)}', { disabled: ${!w.disabled} })" style="background: #775500;">${w.disabled ? 'Enable' : 'Disable'}</button>
                                 <button onclick="disconnectWorker('${escapeHTML(w.id)}')" style="background: #ff4d4d;">Disconnect</button>
                             </td>
                         </tr>
@@ -173,13 +303,18 @@
             tbody.innerHTML = '';
             if (jobs) {
                 jobs.forEach(j => {
+                    const artifactHTML = (j.artifacts || []).map(a => a.download_url ? `<a style="color:#4facfe;" href="${escapeHTML(a.download_url)}">${escapeHTML(a.path)} (${Math.round(a.size / 1024)}KB)</a>` : `${escapeHTML(a.path)} (${Math.round(a.size / 1024)}KB)`).join(', ');
+                    const prHTML = j.pr_url ? `<a style="color:#4facfe;" href="${escapeHTML(j.pr_url)}" target="_blank" rel="noopener">PR</a>` : '';
+                    const retryText = j.retry_of ? ` retry of ${j.retry_of}` : (j.max_retries ? ` retries ${j.retry_count || 0}/${j.max_retries}` : '');
+                    const logsHTML = `<a style="color:#4facfe;" href="/api/jobs/${escapeHTML(j.id)}/logs/stream" target="_blank" rel="noopener">logs</a>`;
                     tbody.innerHTML += `
                         <tr>
                             <td>${escapeHTML(j.id)}</td>
                             <td>${escapeHTML(j.worker_id)}</td>
                             <td>${escapeHTML(j.task)}</td>
                             <td>${escapeHTML(j.status)}</td>
-                            <td>${escapeHTML(j.result || '-')}</td>
+                            <td>${escapeHTML((j.result || '-') + retryText)} | ${logsHTML}</td>
+                            <td>${[artifactHTML, prHTML].filter(Boolean).join(' | ') || '-'}</td>
                         </tr>
                     `;
                 });
@@ -413,6 +548,9 @@
             hist.scrollTop = hist.scrollHeight;
         }
 
+        let currentIdempotencyKey = '';
+        let lastMessageState = '';
+
         async function sendMessage() {
             if (!currentRecipient) return;
             const type = document.getElementById('messageTypeSelect').value;
@@ -424,7 +562,11 @@
             
             if (!body) return;
 
-            const idemp = 'ui-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+            const currentState = JSON.stringify({recipient: currentRecipient, task_id: taskId, type: type, body: body});
+            if (currentState !== lastMessageState || !currentIdempotencyKey) {
+                currentIdempotencyKey = 'ui-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+                lastMessageState = currentState;
+            }
             
             try {
                 const res = await fetch('/api/dashboard/messages', {
@@ -435,12 +577,14 @@
                         task_id: taskId,
                         type: type,
                         body: body,
-                        idempotency_key: idemp
+                        idempotency_key: currentIdempotencyKey
                     })
                 });
 
                 if (res.ok) {
                     document.getElementById('messageInput').value = '';
+                    currentIdempotencyKey = '';
+                    lastMessageState = '';
                     fetchMessages();
                 } else {
                     const txt = await res.text();

@@ -133,6 +133,11 @@ func (c *Client) GetAgents() ([]string, error) {
 	return out, nil
 }
 
+func (c *Client) Status() error {
+	var out map[string]string
+	return c.doReq(http.MethodGet, "/api/v1/agent-status", nil, &out)
+}
+
 func (c *Client) GetDeliveryStatus(id string) (*AgentMessage, error) {
 	var out AgentMessage
 	if err := c.doReq(http.MethodGet, "/api/v1/agent-messages/"+id+"/delivery", nil, &out); err != nil {

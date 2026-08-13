@@ -61,3 +61,22 @@ tasks:
 		t.Errorf("Unexpected error message: %v", err)
 	}
 }
+
+func TestParseRejectsPushWithoutCommit(t *testing.T) {
+	yamlData := `
+project: "ForgeGrid"
+tasks:
+  build:
+    execution:
+      profile: "GoTest"
+      changes:
+        push: true
+`
+	_, err := Parse(strings.NewReader(yamlData))
+	if err == nil {
+		t.Fatalf("Expected error for push without commit, got nil")
+	}
+	if !strings.Contains(err.Error(), "cannot push changes unless commit is true") {
+		t.Errorf("Unexpected error message: %v", err)
+	}
+}

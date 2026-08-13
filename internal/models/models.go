@@ -16,9 +16,13 @@ type WorkerState struct {
 	TotalRAM          uint64    `json:"total_ram"`
 	AvailableRAM      uint64    `json:"available_ram"`
 	FreeWorkspaceDisk uint64    `json:"free_workspace_disk"`
+	Labels            []string  `json:"labels,omitempty"`
+	Capabilities      []string  `json:"capabilities,omitempty"`
 	LastSeen          time.Time `json:"last_seen"`
 	TokenHash         string    `json:"token_hash"`
 	Status            string    `json:"status"` // online, offline
+	Drain             bool      `json:"drain,omitempty"`
+	Disabled          bool      `json:"disabled,omitempty"`
 }
 
 type JobStatus string
@@ -49,13 +53,37 @@ type Job struct {
 	Profile        string            `json:"profile,omitempty"`
 	Parameters     map[string]string `json:"parameters,omitempty"`
 	TimeoutSeconds int               `json:"timeout_seconds,omitempty"`
+	Artefacts      []string          `json:"artefacts,omitempty"`
+	Artifacts      []Artifact        `json:"artifacts,omitempty"`
+	RequiredLabels []string          `json:"required_labels,omitempty"`
+	RequiredCaps   []string          `json:"required_capabilities,omitempty"`
+	MaxRetries     int               `json:"max_retries,omitempty"`
+	RetryCount     int               `json:"retry_count,omitempty"`
+	RetryOf        string            `json:"retry_of,omitempty"`
 
 	// Git Workspace Info
 	RepositoryURL string `json:"repository_url,omitempty"`
 	BaseCommit    string `json:"base_commit,omitempty"`
 	BranchName    string `json:"branch_name,omitempty"`
+	CommitChanges bool   `json:"commit_changes,omitempty"`
+	PushChanges   bool   `json:"push_changes,omitempty"`
+	CommitMessage string `json:"commit_message,omitempty"`
+	CreatePR      bool   `json:"create_pr,omitempty"`
+	PRTitle       string `json:"pr_title,omitempty"`
+	PRBody        string `json:"pr_body,omitempty"`
+
+	PushedBranch string `json:"pushed_branch,omitempty"`
+	PRURL        string `json:"pr_url,omitempty"`
 
 	Challenge string `json:"challenge,omitempty"` // For test task
+}
+
+type Artifact struct {
+	Path          string `json:"path"`
+	Size          int64  `json:"size"`
+	SHA256        string `json:"sha256"`
+	DownloadURL   string `json:"download_url,omitempty"`
+	ContentBase64 string `json:"content_base64,omitempty"`
 }
 
 type CoordinatorState struct {
@@ -82,8 +110,12 @@ type WorkerDTO struct {
 	TotalRAM          uint64    `json:"total_ram"`
 	AvailableRAM      uint64    `json:"available_ram"`
 	FreeWorkspaceDisk uint64    `json:"free_workspace_disk"`
+	Labels            []string  `json:"labels,omitempty"`
+	Capabilities      []string  `json:"capabilities,omitempty"`
 	LastSeen          time.Time `json:"last_seen"`
 	Status            string    `json:"status"`
+	Drain             bool      `json:"drain,omitempty"`
+	Disabled          bool      `json:"disabled,omitempty"`
 }
 
 type ErrorResponse struct {
@@ -105,7 +137,11 @@ func (w *WorkerState) ToDTO() WorkerDTO {
 		TotalRAM:          w.TotalRAM,
 		AvailableRAM:      w.AvailableRAM,
 		FreeWorkspaceDisk: w.FreeWorkspaceDisk,
+		Labels:            append([]string{}, w.Labels...),
+		Capabilities:      append([]string{}, w.Capabilities...),
 		LastSeen:          w.LastSeen,
 		Status:            w.Status,
+		Drain:             w.Drain,
+		Disabled:          w.Disabled,
 	}
 }

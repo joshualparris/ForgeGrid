@@ -29,6 +29,10 @@ func NewStore(dir string) (*Store, error) {
 	return s, nil
 }
 
+func (s *Store) Dir() string {
+	return s.dir
+}
+
 func (s *Store) load() {
 	s.Mu.Lock()
 	defer s.Mu.Unlock()

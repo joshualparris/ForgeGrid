@@ -184,6 +184,20 @@ type ClientConfig struct {
 	Fingerprint string `json:"fingerprint"`
 }
 
+func LoadClientConfig(path string) (*ClientConfig, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var cfg ClientConfig
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse config: %w", err)
+	}
+	if cfg.Name == "" || cfg.Token == "" || cfg.URL == "" || cfg.Fingerprint == "" {
+		return nil, fmt.Errorf("missing required fields in agentbridge config")
+	}
+	return &cfg, nil
+}
 func GetConfigPath() string {
 	if runtime.GOOS == "windows" {
 		localAppData := os.Getenv("LOCALAPPDATA")
