@@ -78,11 +78,12 @@
     <div class="card">
         <h2>Submit Job Manifest</h2>
         <div style="margin-bottom: 10px; display: flex; gap: 10px;">
-            <button onclick="loadTemplate('no-push')" style="background: #333; border: 1px solid #555;">No Push</button>
-            <button onclick="loadTemplate('commit-only')" style="background: #333; border: 1px solid #555;">Commit Only</button>
-            <button onclick="loadTemplate('push')" style="background: #ff4d4d; border: 1px solid #ff0000; font-weight: bold;">Push Changes</button>
+            <button onclick="loadTemplate('go-test')" style="background: #333; border: 1px solid #555; padding: 5px 10px;">Run Go Test Suite</button>
+            <button onclick="loadTemplate('godot-export')" style="background: #333; border: 1px solid #555; padding: 5px 10px;">Export Godot Game (Windows)</button>
+            <button onclick="loadTemplate('agent-task')" style="background: #333; border: 1px solid #555; padding: 5px 10px;">Agent: Implement Feature</button>
+            <button onclick="loadTemplate('push')" style="background: #ff4d4d; border: 1px solid #ff0000; font-weight: bold; padding: 5px 10px;">Push Changes</button>
         </div>
-        <textarea id="manifestInput" rows="18" style="width: 100%; box-sizing: border-box; background: #333; color: white; border: 1px solid #555; padding: 10px; font-family: monospace;" oninput="checkPushWarning()"></textarea><br/>
+        <textarea id="manifestInput" rows="22" style="width: 100%; box-sizing: border-box; background: #333; color: white; border: 1px solid #555; padding: 10px; font-family: monospace;" oninput="checkPushWarning()"></textarea><br/>
         <div id="pushWarning" style="display: none; color: #ffeb3b; background: rgba(255, 235, 59, 0.1); padding: 10px; border-left: 4px solid #ffeb3b; margin-top: 10px;">
             <strong>WARNING:</strong> This manifest is configured to PUSH changes to the remote repository. Ensure you have authorization and that the remote branch is correct.
         </div>
@@ -95,6 +96,7 @@
         <table>
             <thead>
                 <tr>
+                    <th>Date / Time</th>
                     <th>Job ID</th>
                     <th>Worker ID</th>
                     <th>Task</th>
@@ -177,44 +179,93 @@
             output.textContent = `Run this once on the runner:\n${cmd}\n\nEquivalent worker_policy.json:\n${json}`;
         }
 
-        function getTemplate(commit, push) {
-            return `project: "MyProject"
+        function getTemplate(type) {
+            let push = 'false';
+            let commit = 'false';
+            if (type === 'push') { push = 'true'; commit = 'true'; }
+            else if (type === 'agent-task') { commit = 'true'; }
+
+            const baseTemplate = `project: "MyProject"
 repository:
   url: "https://github.com/example/repo.git"
-  base_commit: "0123456789abcdef0123456789abcdef01234567"
+  base_commit: "master"
   branch: "forgegrid/agent-work"
   create_pr: ${push}
   pr_title: "ForgeGrid automated changes"
   pr_body: "Automated development job from ForgeGrid."
-tasks:
-  build:
-    description: "Export project"
+tasks:`;
+
+            if (type === 'go-test') {
+                return baseTemplate + `
+  test:
+    description: "Run Go Test Suite"
     requirements:
-      os: "linux"
-      min_ram_gb: 4
-      min_cores: 2
-      labels: ["trusted"]
+      os: "windows"
+      capabilities: ["go"]
+    execution:
+      profile: "GoTest"
+      parameters:
+        package: "./..."
+      timeout_seconds: 600
+      changes:
+        commit: false
+        push: false`;
+            } else if (type === 'godot-export') {
+                return baseTemplate + `
+  build:
+    description: "Export Godot project"
+    requirements:
+      os: "windows"
       capabilities: ["godot"]
     execution:
       profile: "GodotExport"
       parameters:
-        preset: "Linux/X11"
-        export_path: "build/game.x86_64"
-      timeout_seconds: 600
-      max_retries: 1
+        preset: "Windows Desktop"
+        export_path: "build/game.exe"
+      timeout_seconds: 1200
       changes:
         commit: ${commit}
         push: ${push}
         commit_message: "Automated build"
     artefacts:
-      - "build/game.x86_64"`;
+      - "build/game.exe"`;
+            } else if (type === 'agent-task') {
+                return baseTemplate + `
+  build:
+    description: "Agent: Implement Feature"
+    requirements:
+      os: "windows"
+      capabilities: ["codex"]
+    execution:
+      profile: "CodexExec"
+      parameters:
+        prompt: "Write a fun ASCII game and save it to the workspace."
+      timeout_seconds: 1800
+      changes:
+        commit: true
+        push: false
+        commit_message: "Implement feature"`;
+            } else {
+                return baseTemplate + `
+  build:
+    description: "Generic task"
+    requirements:
+      os: "linux"
+    execution:
+      profile: "GoTest"
+      parameters:
+        package: "./..."
+      timeout_seconds: 600
+      changes:
+        commit: ${commit}
+        push: ${push}
+        commit_message: "Automated changes"`;
+            }
         }
 
         function loadTemplate(type) {
             const input = document.getElementById('manifestInput');
-            if (type === 'no-push') input.value = getTemplate('false', 'false');
-            else if (type === 'commit-only') input.value = getTemplate('true', 'false');
-            else if (type === 'push') input.value = getTemplate('true', 'true');
+            input.value = getTemplate(type);
             checkPushWarning();
         }
 
@@ -230,7 +281,7 @@ tasks:
 
         document.addEventListener('DOMContentLoaded', () => {
             const input = document.getElementById('manifestInput');
-            if (input) input.value = getTemplate('false', 'false');
+            if (input) input.value = getTemplate('go-test');
             checkPushWarning();
         });
 
@@ -436,6 +487,15 @@ Then run:
                     }
                 });
                 jobs.forEach(j => {
+                    let dateStr = '-';
+                    if (j.start_time) {
+                        const d = new Date(j.start_time);
+                        const day = String(d.getDate()).padStart(2, '0');
+                        const month = String(d.getMonth() + 1).padStart(2, '0');
+                        const year = d.getFullYear();
+                        const time = d.toLocaleTimeString();
+                        dateStr = `${day}/${month}/${year} ${time}`;
+                    }
                     const artifactHTML = (j.artifacts || []).map(a => a.download_url ? `<a style="color:#4facfe;" href="${escapeHTML(a.download_url)}">${escapeHTML(a.path)} (${Math.round(a.size / 1024)}KB)</a>` : `${escapeHTML(a.path)} (${Math.round(a.size / 1024)}KB)`).join(', ');
                     const prHTML = j.pr_url ? `<a style="color:#4facfe;" href="${escapeHTML(j.pr_url)}" target="_blank" rel="noopener">PR</a>` : '';
                     const retryText = j.retry_of ? ` retry of ${j.retry_of}` : (j.max_retries ? ` retries ${j.retry_count || 0}/${j.max_retries}` : '');
@@ -443,6 +503,7 @@ Then run:
                     const logsHTML = `<button onclick="openLogViewer('${escapeHTML(j.id)}')" style="background:#333;border:1px solid #555;">Logs</button>`;
                     tbody.innerHTML += `
                         <tr>
+                            <td>${escapeHTML(dateStr)}</td>
                             <td>${escapeHTML(j.id)}</td>
                             <td>${escapeHTML(j.worker_id)}</td>
                             <td>${escapeHTML(j.task)}</td>

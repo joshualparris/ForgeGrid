@@ -1,0 +1,19 @@
+project: "ThinkPad-ASCII-Game"
+repository:
+  url: "https://github.com/octocat/Hello-World.git"
+  base_commit: "master"
+  branch: "agent-work-ascii-game"
+tasks:
+  build:
+    description: "Use Antigravity to build an ASCII game"
+    requirements:
+      os: "windows"
+    execution:
+      profile: "AIAgent"
+      parameters:
+        task: "Write a fun, interactive ASCII game in Go or Python and save it to the workspace. Do not wait for user input if possible, just write the script."
+      timeout_seconds: 1200
+      changes:
+        commit: true
+        push: false
+        commit_message: "Automated ASCII game generation"

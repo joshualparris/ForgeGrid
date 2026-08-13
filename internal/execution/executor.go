@@ -32,11 +32,14 @@ func (e *DefaultExecutor) Execute(ctx context.Context, profile Profile, params m
 	// We do not accept environment variables from the coordinator.
 	cmdEnv := []string{}
 	allowed := map[string]bool{
-		"HOME":   true,
-		"USER":   true,
-		"TMPDIR": true,
-		"TEMP":   true,
-		"TMP":    true,
+		"HOME":            true,
+		"USER":            true,
+		"TMPDIR":          true,
+		"TEMP":            true,
+		"TMP":             true,
+		"PATH":            true,
+		"SystemRoot":      true,
+		"LD_LIBRARY_PATH": true,
 	}
 	for _, envStr := range os.Environ() {
 		parts := strings.SplitN(envStr, "=", 2)
