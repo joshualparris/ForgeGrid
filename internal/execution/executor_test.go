@@ -44,7 +44,7 @@ func main() { time.Sleep(10 * time.Second) }`
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	out, err := executor.Execute(ctx, profile, map[string]string{}, tmpDir)
+	out, err := executor.Execute(ctx, profile, map[string]string{}, nil, tmpDir)
 
 	if err == nil || !strings.Contains(err.Error(), "cancelled") {
 		t.Errorf("expected cancellation error, got %v", err)

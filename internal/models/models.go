@@ -52,6 +52,7 @@ type Job struct {
 	// Structured Execution
 	Profile        string            `json:"profile,omitempty"`
 	Parameters     map[string]string `json:"parameters,omitempty"`
+	Tools          []string          `json:"tools,omitempty"`
 	TimeoutSeconds int               `json:"timeout_seconds,omitempty"`
 	Artefacts      []string          `json:"artefacts,omitempty"`
 	Artifacts      []Artifact        `json:"artifacts,omitempty"`
@@ -60,6 +61,10 @@ type Job struct {
 	MaxRetries     int               `json:"max_retries,omitempty"`
 	RetryCount     int               `json:"retry_count,omitempty"`
 	RetryOf        string            `json:"retry_of,omitempty"`
+	
+	// Multi-stage Orchestration
+	Stages       []JobStage `json:"stages,omitempty"`
+	CurrentStage int        `json:"current_stage,omitempty"`
 
 	// Git Workspace Info
 	RepositoryURL string `json:"repository_url,omitempty"`
@@ -76,6 +81,16 @@ type Job struct {
 	PRURL        string `json:"pr_url,omitempty"`
 
 	Challenge string `json:"challenge,omitempty"` // For test task
+}
+
+type JobStage struct {
+	Name           string            `json:"name"`
+	Profile        string            `json:"profile"`
+	Parameters     map[string]string `json:"parameters,omitempty"`
+	Tools          []string          `json:"tools,omitempty"`
+	TimeoutSeconds int               `json:"timeout_seconds,omitempty"`
+	Status         JobStatus         `json:"status"` // PENDING, RUNNING, COMPLETED, FAILED
+	Result         string            `json:"result,omitempty"`
 }
 
 type Artifact struct {

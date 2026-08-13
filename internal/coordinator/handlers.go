@@ -500,6 +500,31 @@ func (c *Coordinator) handleJobAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		if len(parts) == 5 && parts[4] == "retry" {
+			if job.Status != models.StatusFailed {
+				writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Only failed jobs can be retried", "")
+				return
+			}
+			retry := *job
+			retry.ID = "job-" + cryptoRandomHex(16)
+			retry.AttemptID = ""
+			retry.Status = models.StatusPending
+			retry.StartTime = nil
+			retry.EndTime = nil
+			retry.Result = ""
+			retry.Logs = nil
+			retry.LogSeq = 0
+			retry.Artifacts = nil
+			retry.PushedBranch = ""
+			retry.PRURL = ""
+			retry.RetryOf = job.ID
+			retry.RetryCount = job.RetryCount + 1
+			c.Store.Jobs[retry.ID] = &retry
+			c.Store.Save()
+			json.NewEncoder(w).Encode(&retry)
+			return
+		}
+
 		if len(parts) == 5 && parts[4] == "claim" {
 			// Worker claiming the job
 			token := r.Header.Get("Authorization")
@@ -541,6 +566,8 @@ func (c *Coordinator) handleJobAction(w http.ResponseWriter, r *http.Request) {
 			Artifacts    []models.Artifact `json:"artifacts"`
 			PushedBranch string            `json:"pushed_branch"`
 			PRURL        string            `json:"pr_url"`
+			Stages       []models.JobStage `json:"stages"`
+			CurrentStage *int              `json:"current_stage"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Malformed JSON", "")
@@ -557,6 +584,13 @@ func (c *Coordinator) handleJobAction(w http.ResponseWriter, r *http.Request) {
 		if job.Status == models.StatusCancelled || job.Status == models.StatusCompleted || job.Status == models.StatusFailed {
 			writeError(w, http.StatusConflict, "CONFLICT", "Job is already in terminal state", "")
 			return
+		}
+
+		if req.Stages != nil {
+			job.Stages = req.Stages
+		}
+		if req.CurrentStage != nil {
+			job.CurrentStage = *req.CurrentStage
 		}
 
 		// Handle valid transitions

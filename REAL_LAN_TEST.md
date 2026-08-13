@@ -78,3 +78,6 @@ For a worker to actually push changes to the remote repository, it must have bee
 - **Fix:** Ensure the worker environment's `PATH` contains the exact tools required by the manifest execution profiles, and verify that dependencies like `python3` or `godot` are statically accessible without relying on environment variables filtered out by ForgeGrid's restricted execution sandbox.
 - **Git Push & PR Policy:** Because execution failed with a non-zero exit code, the Git manager correctly aborted the commit and push phase. This validates the backend safety policy: broken jobs will *not* push half-finished or errored workspaces to the origin.
 - To successfully generate a PR, execution must complete with `exit code 0`, at which point the worker executes `gh pr create` based on the host credentials.
+
+## 7. BootstrapEnvironment Test
+A manifest configured to use the `BootstrapEnvironment` execution profile. It requests missing capabilities (e.g., `tools: [godot]`) and triggers `winget install` on the worker, proving environment auto-healing.

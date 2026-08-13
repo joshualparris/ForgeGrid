@@ -51,9 +51,10 @@ func main() {
 	resetWorker := flag.Bool("reset-worker", false, "Reset saved worker credentials")
 	allowedRepos := flag.String("allowed-repos", "", "comma-separated repository URLs this worker may clone/fetch for git jobs")
 	allowPush := flag.Bool("allow-push", false, "allow this worker to push committed job changes to git remotes")
+	allowBootstrap := flag.Bool("allow-bootstrap", false, "allow this worker to bootstrap environment tools like go, node, godot")
 	labels := flag.String("labels", "", "comma-separated worker labels, e.g. godot,low-power,windows-build")
 	capabilities := flag.String("capabilities", "", "comma-separated worker capabilities, e.g. godot,codex,github-pr")
-	writePolicy := flag.Bool("write-worker-policy", false, "write worker policy from -allowed-repos, -allow-push, -labels, and -capabilities, then exit")
+	writePolicy := flag.Bool("write-worker-policy", false, "write worker policy from flags, then exit")
 
 	installService := flag.Bool("install-service", false, "install as a Windows service")
 	startService := flag.Bool("start-service", false, "start the Windows service")
@@ -146,10 +147,11 @@ func main() {
 	} else if *mode == "worker" {
 		if *writePolicy {
 			if err := worker.WritePolicy(worker.Policy{
-				AllowedRepos: splitCSV(*allowedRepos),
-				AllowPush:    *allowPush,
-				Labels:       splitCSV(*labels),
-				Capabilities: splitCSV(*capabilities),
+				AllowedRepos:   splitCSV(*allowedRepos),
+				AllowPush:      *allowPush,
+				AllowBootstrap: *allowBootstrap,
+				Labels:         splitCSV(*labels),
+				Capabilities:   splitCSV(*capabilities),
 			}); err != nil {
 				fmt.Printf("Failed to write worker policy: %v\n", err)
 				os.Exit(1)

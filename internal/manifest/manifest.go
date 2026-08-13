@@ -26,7 +26,8 @@ type Repository struct {
 type Task struct {
 	Description  string       `yaml:"description"`
 	Requirements Requirements `yaml:"requirements"`
-	Execution    Execution    `yaml:"execution"`
+	Execution    Execution    `yaml:"execution,omitempty"`
+	Stages       []Execution  `yaml:"stages,omitempty"`
 	Artefacts    []string     `yaml:"artefacts"`
 }
 
@@ -39,11 +40,13 @@ type Requirements struct {
 }
 
 type Execution struct {
+	Name           string            `yaml:"name,omitempty"`
 	Profile        string            `yaml:"profile"`
 	Parameters     map[string]string `yaml:"parameters"`
+	Tools          []string          `yaml:"tools,omitempty"`
 	TimeoutSeconds int               `yaml:"timeout_seconds"`
-	Changes        Changes           `yaml:"changes"`
-	MaxRetries     int               `yaml:"max_retries"`
+	Changes        Changes           `yaml:"changes,omitempty"`
+	MaxRetries     int               `yaml:"max_retries,omitempty"`
 }
 
 type Changes struct {
@@ -69,18 +72,32 @@ func Parse(r io.Reader) (*Manifest, error) {
 	}
 
 	for name, task := range m.Tasks {
-		if strings.TrimSpace(task.Execution.Profile) == "" {
-			return nil, fmt.Errorf("task '%s' must define an execution profile", name)
+		if len(task.Stages) == 0 {
+			if strings.TrimSpace(task.Execution.Profile) == "" {
+				return nil, fmt.Errorf("task '%s' must define an execution profile or stages", name)
+			}
+			task.Execution.Name = "Execution"
+			task.Stages = []Execution{task.Execution}
 		}
-		if task.Execution.Changes.Push && !task.Execution.Changes.Commit {
-			return nil, fmt.Errorf("task '%s' cannot push changes unless commit is true", name)
+
+		for i, stage := range task.Stages {
+			if strings.TrimSpace(stage.Profile) == "" {
+				return nil, fmt.Errorf("task '%s' stage %d must define an execution profile", name, i)
+			}
+			if stage.Changes.Push && !stage.Changes.Commit {
+				return nil, fmt.Errorf("task '%s' stage %d cannot push changes unless commit is true", name, i)
+			}
+			if stage.Changes.CommitMessage != "" && !stage.Changes.Commit {
+				return nil, fmt.Errorf("task '%s' stage %d defines a commit message but commit is false", name, i)
+			}
+			if stage.MaxRetries < 0 || stage.MaxRetries > 3 {
+				return nil, fmt.Errorf("task '%s' stage %d max_retries must be between 0 and 3", name, i)
+			}
+			if stage.Name == "" {
+				task.Stages[i].Name = fmt.Sprintf("Stage %d", i+1)
+			}
 		}
-		if task.Execution.Changes.CommitMessage != "" && !task.Execution.Changes.Commit {
-			return nil, fmt.Errorf("task '%s' defines a commit message but commit is false", name)
-		}
-		if task.Execution.MaxRetries < 0 || task.Execution.MaxRetries > 3 {
-			return nil, fmt.Errorf("task '%s' max_retries must be between 0 and 3", name)
-		}
+		m.Tasks[name] = task
 	}
 
 	return &m, nil

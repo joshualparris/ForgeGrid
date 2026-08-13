@@ -15,6 +15,15 @@ type Profile struct {
 	MaxTimeoutSecs int
 	Subcommand     []string
 	ArgKeys        []string // which keys from parameters are allowed as positional arguments
+	AcceptsTools   bool     // if true, passes the tools slice as positional args
+}
+
+var ApprovedBootstrapTools = map[string]string{
+	"go":     "GoLang.Go",
+	"node":   "OpenJS.NodeJS",
+	"python": "Python.Python.3.11",
+	"godot":  "GodotEngine.GodotEngine",
+	"gh":     "GitHub.cli",
 }
 
 var pinnedExecutables = make(map[string]string)
@@ -84,6 +93,14 @@ var Profiles = map[string]Profile{
 		Subcommand:     []string{"exec", "--sandbox", "workspace-write"},
 		ArgKeys:        []string{"prompt"},
 	},
+	"BootstrapEnvironment": {
+		Name:           "BootstrapEnvironment",
+		Executable:     "winget",
+		MaxTimeoutSecs: 3600,
+		Subcommand:     []string{"install", "--accept-package-agreements", "--accept-source-agreements", "-e"},
+		ArgKeys:        []string{},
+		AcceptsTools:   true,
+	},
 }
 
 func init() {
@@ -109,7 +126,11 @@ func GetProfile(name string) (Profile, error) {
 	return p, nil
 }
 
-func BuildArgs(p Profile, params map[string]string) ([]string, error) {
+func BuildArgs(p Profile, params map[string]string, tools []string) ([]string, error) {
+	if p.Name == "BootstrapEnvironment" && runtime.GOOS != "windows" {
+		return nil, fmt.Errorf("BootstrapEnvironment is currently unsupported on non-Windows environments")
+	}
+
 	args := append([]string{}, p.Subcommand...)
 	for _, key := range p.ArgKeys {
 		if val, ok := params[key]; ok && val != "" {
@@ -117,6 +138,22 @@ func BuildArgs(p Profile, params map[string]string) ([]string, error) {
 				return nil, fmt.Errorf("parameter %s cannot start with a hyphen to prevent flag injection", key)
 			}
 			args = append(args, val)
+		}
+	}
+	if p.AcceptsTools {
+		for _, tool := range tools {
+			if strings.HasPrefix(tool, "-") {
+				return nil, fmt.Errorf("tool %s cannot start with a hyphen", tool)
+			}
+			if p.Name == "BootstrapEnvironment" {
+				if pkg, ok := ApprovedBootstrapTools[tool]; ok {
+					args = append(args, pkg)
+				} else {
+					return nil, fmt.Errorf("tool %s is not an approved bootstrap package", tool)
+				}
+			} else {
+				args = append(args, tool)
+			}
 		}
 	}
 	return args, nil

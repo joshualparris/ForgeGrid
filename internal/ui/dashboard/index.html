@@ -55,6 +55,9 @@
                     <th>CPU / RAM</th>
                     <th>Labels / Capabilities</th>
                     <th>Status</th>
+                    <th>Last Seen</th>
+                    <th>Current Job</th>
+                    <th>Recent Messages</th>
                     <th>Actions</th>
                 </tr>
             </thead>
@@ -82,6 +85,7 @@
             <button onclick="loadTemplate('godot-export')" style="background: #333; border: 1px solid #555; padding: 5px 10px;">Export Godot Game (Windows)</button>
             <button onclick="loadTemplate('agent-task')" style="background: #333; border: 1px solid #555; padding: 5px 10px;">Agent: Implement Feature</button>
             <button onclick="loadTemplate('push')" style="background: #ff4d4d; border: 1px solid #ff0000; font-weight: bold; padding: 5px 10px;">Push Changes</button>
+            <button onclick="loadTemplate('pipeline')" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); border: none; font-weight: bold; padding: 5px 10px; color: white;">Agent: Build + Test + Push</button>
         </div>
         <textarea id="manifestInput" rows="22" style="width: 100%; box-sizing: border-box; background: #333; color: white; border: 1px solid #555; padding: 10px; font-family: monospace;" oninput="checkPushWarning()"></textarea><br/>
         <div id="pushWarning" style="display: none; color: #ffeb3b; background: rgba(255, 235, 59, 0.1); padding: 10px; border-left: 4px solid #ffeb3b; margin-top: 10px;">
@@ -155,6 +159,7 @@
         let currentRecipient = null;
         let agentNames = [];
         let messagesStore = []; // Store raw messages
+        let jobsStore = [];
         let logSource = null;
         let latestAgentBridgeFingerprint = "";
 
@@ -245,6 +250,40 @@ tasks:`;
         commit: true
         push: false
         commit_message: "Implement feature"`;
+            } else if (type === 'pipeline') {
+                return baseTemplate + `
+  pipeline:
+    description: "Agent: Build + Test + Push"
+    requirements:
+      os: "windows"
+      capabilities: ["codex", "go"]
+    stages:
+      - name: "Agent"
+        profile: "CodexExec"
+        parameters:
+          prompt: "Write a new feature and save it."
+        timeout_seconds: 1800
+        changes:
+          commit: true
+          push: false
+          commit_message: "Implement feature"
+      - name: "Tests"
+        profile: "GoTest"
+        parameters:
+          package: "./..."
+        timeout_seconds: 600
+        changes:
+          commit: false
+          push: false
+      - name: "Push"
+        profile: "GoTest"
+        parameters:
+          package: "."
+        timeout_seconds: 60
+        changes:
+          commit: true
+          push: true
+          commit_message: "Tests passed, pushing"`;
             } else {
                 return baseTemplate + `
   build:
@@ -454,16 +493,40 @@ Then run:
             tbody.innerHTML = '';
             if (workers) {
                 workers.forEach(w => {
-                    const statusClass = w.status === 'online' ? 'status-online' : 'status-offline';
+                    const lastSeen = new Date(w.last_seen);
+                    const now = new Date();
+                    const diffSec = (now - lastSeen) / 1000;
+                    const isOffline = diffSec > 60;
+                    
+                    const statusClass = (w.status === 'online' && !isOffline) ? 'status-online' : 'status-offline';
+                    const statusText = isOffline ? 'OFFLINE (stale)' : w.status;
+                    
+                    let currentJob = '-';
+                    if (jobsStore) {
+                        const job = jobsStore.find(j => j.worker_id === w.id && (j.status === 'RUNNING' || j.status === 'CLAIMED' || j.status === 'PENDING'));
+                        if (job) currentJob = `${job.id} (${job.status})`;
+                    }
+                    
+                    let msgsHTML = '-';
+                    if (messagesStore) {
+                        const msgs = messagesStore.filter(m => m.sender === w.node_name || m.recipient === w.node_name).slice(-5);
+                        if (msgs.length > 0) {
+                            msgsHTML = msgs.map(m => `<div style="margin-bottom: 2px;"><small style="color: #aaa;">[${new Date(m.timestamp).toLocaleTimeString()}] ${m.sender === w.node_name ? 'To ' + m.recipient : 'From ' + m.sender}:</small> ${escapeHTML(m.action)}</div>`).join('');
+                        }
+                    }
+
                     tbody.innerHTML += `
                         <tr>
                             <td>${escapeHTML(w.node_name)}</td>
                             <td>${escapeHTML(w.os)}</td>
                             <td>${escapeHTML(w.cpu_model || w.cpu)} / ${Math.round(w.total_ram / 1073741824)}GB</td>
                             <td>${escapeHTML([...(w.labels || []), ...(w.capabilities || []).map(c => 'cap:' + c)].join(', ') || '-')}</td>
-                            <td class="${statusClass}">${escapeHTML(w.status)}${w.drain ? ' / drain' : ''}${w.disabled ? ' / disabled' : ''}</td>
+                            <td class="${statusClass}"><strong>${escapeHTML(statusText)}</strong>${w.drain ? ' / drain' : ''}${w.disabled ? ' / disabled' : ''}</td>
+                            <td>${lastSeen.toLocaleTimeString()}</td>
+                            <td>${escapeHTML(currentJob)}</td>
+                            <td style="max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${msgsHTML}</td>
                             <td>
-                                <button onclick="runTestJob('${escapeHTML(w.id)}')" ${w.status !== 'online' ? 'disabled' : ''}>Run Test Job</button>
+                                <button onclick="runTestJob('${escapeHTML(w.id)}')" ${w.status !== 'online' ? 'disabled' : ''}>Run Test</button>
                                 <button onclick="setWorkerPolicy('${escapeHTML(w.id)}', { drain: ${!w.drain} })" style="background: #555;">${w.drain ? 'Undrain' : 'Drain'}</button>
                                 <button onclick="setWorkerPolicy('${escapeHTML(w.id)}', { disabled: ${!w.disabled} })" style="background: #775500;">${w.disabled ? 'Enable' : 'Disable'}</button>
                                 <button onclick="disconnectWorker('${escapeHTML(w.id)}')" style="background: #ff4d4d;">Disconnect</button>
@@ -477,6 +540,7 @@ Then run:
         async function fetchJobs() {
             const res = await fetch('/api/jobs');
             const jobs = await res.json();
+            jobsStore = jobs || [];
             const tbody = document.getElementById('jobsTable');
             tbody.innerHTML = '';
             if (jobs) {
@@ -501,14 +565,30 @@ Then run:
                     const retryText = j.retry_of ? ` retry of ${j.retry_of}` : (j.max_retries ? ` retries ${j.retry_count || 0}/${j.max_retries}` : '');
                     const childText = retryChildren[j.id] ? ` spawned ${retryChildren[j.id]} retry` : '';
                     const logsHTML = `<button onclick="openLogViewer('${escapeHTML(j.id)}')" style="background:#333;border:1px solid #555;">Logs</button>`;
+                    const retryHTML = j.status === 'FAILED' ? `<button onclick="retryJob('${escapeHTML(j.id)}')" style="background:#555;border:1px solid #777;margin-left:4px;">Retry</button>` : '';
+                    let stagesHTML = '';
+                    if (j.stages && j.stages.length > 0) {
+                        stagesHTML = '<div style="font-size:0.8em; margin-top:4px;">';
+                        j.stages.forEach((s, idx) => {
+                            let icon = '⬜';
+                            if (s.status === 'COMPLETED') icon = '✅';
+                            else if (s.status === 'RUNNING') icon = '⏳';
+                            else if (s.status === 'FAILED') icon = '❌';
+                            stagesHTML += `${icon} ${escapeHTML(s.name || s.profile)} `;
+                        });
+                        stagesHTML += '</div>';
+                    }
+
+                    const statusDisplay = escapeHTML(j.status) + stagesHTML;
+                    
                     tbody.innerHTML += `
                         <tr>
                             <td>${escapeHTML(dateStr)}</td>
                             <td>${escapeHTML(j.id)}</td>
                             <td>${escapeHTML(j.worker_id)}</td>
                             <td>${escapeHTML(j.task)}</td>
-                            <td>${escapeHTML(j.status)}</td>
-                            <td>${escapeHTML((j.result || '-') + retryText + childText)} | ${logsHTML}</td>
+                            <td>${statusDisplay}</td>
+                            <td>${escapeHTML((j.result || '-') + retryText + childText)} | ${logsHTML}${retryHTML}</td>
                             <td>${[artifactHTML, prHTML].filter(Boolean).join(' | ') || '-'}</td>
                             <td><button onclick="deleteJob('${escapeHTML(j.id)}')" style="background: #ff4d4d;">Delete</button></td>
                         </tr>
@@ -529,6 +609,17 @@ Then run:
                 }
             } catch (e) {
                 alert(`Error deleting job: ${e.message}`);
+            }
+        }
+
+        async function retryJob(jobId) {
+            if (!confirm(`Are you sure you want to manually retry job ${jobId}?`)) return;
+            const res = await fetch(`/api/jobs/${jobId}/retry`, { method: 'POST' });
+            if (res.ok) {
+                fetchJobs();
+            } else {
+                const err = await res.json();
+                alert('Retry failed: ' + err.message);
             }
         }
 

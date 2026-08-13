@@ -82,3 +82,26 @@ func TestHardwareDetection(t *testing.T) {
 		t.Fatalf("TotalRAM reported 0")
 	}
 }
+
+func TestValidateCapabilities(t *testing.T) {
+	w := New("TestNode", "./tmp-ws", true)
+	w.Capabilities = []string{"go", "non_existent_tool_12345"}
+	
+	valid, drift := w.ValidateCapabilities()
+	
+	// "go" might not be installed on test env, but we can mock or just check logic.
+	// Actually we expect non_existent_tool_12345 to ALWAYS be in drift.
+	hasDrift := false
+	for _, d := range drift {
+		if d == "non_existent_tool_12345" {
+			hasDrift = true
+		}
+	}
+	
+	// Avoid unused variable valid
+	_ = valid
+	
+	if !hasDrift {
+		t.Fatalf("Expected non_existent_tool_12345 to be detected as missing drift")
+	}
+}

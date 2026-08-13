@@ -43,22 +43,35 @@ func (d *Director) SubmitManifest(m *manifest.Manifest) error {
 			WorkerID:       assignedWorker,
 			Task:           "execute",
 			Status:         models.StatusPending,
-			Profile:        task.Execution.Profile,
-			Parameters:     task.Execution.Parameters,
-			TimeoutSeconds: task.Execution.TimeoutSeconds,
+			Profile:        task.Stages[0].Profile,
+			Parameters:     task.Stages[0].Parameters,
+			Tools:          task.Stages[0].Tools,
+			TimeoutSeconds: task.Stages[0].TimeoutSeconds,
 			Artefacts:      append([]string{}, task.Artefacts...),
 			RequiredLabels: append([]string{}, task.Requirements.Labels...),
 			RequiredCaps:   append([]string{}, task.Requirements.Capabilities...),
-			MaxRetries:     task.Execution.MaxRetries,
+			MaxRetries:     task.Stages[0].MaxRetries,
 			RepositoryURL:  m.Repository.URL,
 			BaseCommit:     m.Repository.BaseCommit,
 			BranchName:     m.Repository.Branch,
-			CommitChanges:  task.Execution.Changes.Commit,
-			PushChanges:    task.Execution.Changes.Push,
-			CommitMessage:  task.Execution.Changes.CommitMessage,
+			CommitChanges:  task.Stages[0].Changes.Commit,
+			PushChanges:    task.Stages[0].Changes.Push,
+			CommitMessage:  task.Stages[0].Changes.CommitMessage,
 			CreatePR:       m.Repository.CreatePR,
 			PRTitle:        m.Repository.PRTitle,
 			PRBody:         m.Repository.PRBody,
+			CurrentStage:   0,
+		}
+
+		for _, s := range task.Stages {
+			job.Stages = append(job.Stages, models.JobStage{
+				Name:           s.Name,
+				Profile:        s.Profile,
+				Parameters:     s.Parameters,
+				Tools:          s.Tools,
+				TimeoutSeconds: s.TimeoutSeconds,
+				Status:         models.StatusPending,
+			})
 		}
 
 		d.Store.Jobs[jobID] = job

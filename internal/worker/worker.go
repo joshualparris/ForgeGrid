@@ -7,8 +7,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -38,10 +40,11 @@ type Worker struct {
 
 	mu           sync.Mutex
 	activeJobs   map[string]context.CancelFunc
-	allowedRepos map[string]bool
-	allowPush    bool
-	Labels       []string
-	Capabilities []string
+	allowedRepos   map[string]bool
+	allowPush      bool
+	allowBootstrap bool
+	Labels         []string
+	Capabilities   []string
 }
 
 type WorkerCredentials struct {
@@ -54,10 +57,11 @@ type WorkerCredentials struct {
 }
 
 type Policy struct {
-	AllowedRepos []string `json:"allowed_repos"`
-	AllowPush    bool     `json:"allow_push"`
-	Labels       []string `json:"labels"`
-	Capabilities []string `json:"capabilities"`
+	AllowedRepos   []string `json:"allowed_repos"`
+	AllowPush      bool     `json:"allow_push"`
+	AllowBootstrap bool     `json:"allow_bootstrap"`
+	Labels         []string `json:"labels"`
+	Capabilities   []string `json:"capabilities"`
 }
 
 func getWorkerCredsPath() string {
@@ -115,14 +119,15 @@ func ResetCredentials() error {
 
 func New(nodeName, workspace string, insecure bool) *Worker {
 	w := &Worker{
-		NodeName:     nodeName,
-		Workspace:    workspace,
-		Insecure:     insecure,
-		activeJobs:   make(map[string]context.CancelFunc),
-		allowedRepos: parseRepoAllowlist(os.Getenv("FORGEGRID_ALLOWED_REPOS")),
-		allowPush:    os.Getenv("FORGEGRID_ALLOW_PUSH") == "true",
-		Labels:       parseCSV(os.Getenv("FORGEGRID_LABELS")),
-		Capabilities: parseCSV(os.Getenv("FORGEGRID_CAPABILITIES")),
+		NodeName:       nodeName,
+		Workspace:      workspace,
+		Insecure:       insecure,
+		activeJobs:     make(map[string]context.CancelFunc),
+		allowedRepos:   parseRepoAllowlist(os.Getenv("FORGEGRID_ALLOWED_REPOS")),
+		allowPush:      os.Getenv("FORGEGRID_ALLOW_PUSH") == "true",
+		allowBootstrap: os.Getenv("FORGEGRID_ALLOW_BOOTSTRAP") == "true",
+		Labels:         parseCSV(os.Getenv("FORGEGRID_LABELS")),
+		Capabilities:   parseCSV(os.Getenv("FORGEGRID_CAPABILITIES")),
 	}
 	w.LoadPolicy()
 	if envRepos := strings.TrimSpace(os.Getenv("FORGEGRID_ALLOWED_REPOS")); envRepos != "" {
@@ -130,6 +135,9 @@ func New(nodeName, workspace string, insecure bool) *Worker {
 	}
 	if os.Getenv("FORGEGRID_ALLOW_PUSH") == "true" {
 		w.allowPush = true
+	}
+	if os.Getenv("FORGEGRID_ALLOW_BOOTSTRAP") == "true" {
+		w.allowBootstrap = true
 	}
 	if labels := strings.TrimSpace(os.Getenv("FORGEGRID_LABELS")); labels != "" {
 		w.Labels = parseCSV(labels)
@@ -175,6 +183,31 @@ func (w *Worker) SetLabelsAndCapabilities(labels, capabilities string) {
 	if strings.TrimSpace(capabilities) != "" {
 		w.Capabilities = parseCSV(capabilities)
 	}
+}
+
+func (w *Worker) ValidateCapabilities() ([]string, []string) {
+	valid := []string{}
+	missing := []string{}
+	
+	conceptualCaps := map[string]bool{
+		"github-pr":     true,
+		"trusted":       true,
+		"windows-build": true,
+		"linux-build":   true,
+	}
+
+	for _, cap := range w.Capabilities {
+		if conceptualCaps[cap] {
+			valid = append(valid, cap)
+			continue
+		}
+		if _, err := exec.LookPath(cap); err == nil {
+			valid = append(valid, cap)
+		} else {
+			missing = append(missing, cap)
+		}
+	}
+	return valid, missing
 }
 
 func (w *Worker) LoadPolicy() error {
@@ -253,7 +286,11 @@ func (w *Worker) getHardwareInfo() (models.WorkerDTO, error) {
 	info.OS = runtime.GOOS
 	info.Architecture = runtime.GOARCH
 	info.Labels = append([]string{}, w.Labels...)
-	info.Capabilities = append([]string{}, w.Capabilities...)
+	validCaps, drift := w.ValidateCapabilities()
+	if len(drift) > 0 {
+		log.Printf("Capability drift detected: %v are configured but missing from PATH", drift)
+	}
+	info.Capabilities = append([]string{}, validCaps...)
 
 	if h, err := host.Info(); err == nil {
 		info.OSVersion = h.PlatformVersion
@@ -434,6 +471,14 @@ func (w *Worker) jobLoop() {
 }
 
 func (w *Worker) pollJobs() {
+	validCaps, drift := w.ValidateCapabilities()
+	if len(drift) > 0 {
+		w.mu.Lock()
+		w.Capabilities = validCaps
+		w.mu.Unlock()
+		w.sendHeartbeat()
+	}
+
 	req, _ := http.NewRequest("GET", fmt.Sprintf("%s/api/jobs?worker_id=%s", w.CoordinatorURL, w.WorkerID), nil)
 	req.Header.Set("Authorization", "Bearer "+w.Token)
 
@@ -511,10 +556,10 @@ func (w *Worker) claimJob(jobID string) (string, bool) {
 }
 
 func (w *Worker) updateJobStatus(jobID, attemptID string, status models.JobStatus, result string, logs []byte, seq int) {
-	w.updateJobStatusWithMetadata(jobID, attemptID, status, result, logs, seq, nil, "", "")
+	w.updateJobStatusWithMetadata(jobID, attemptID, status, result, logs, seq, nil, "", "", nil, 0)
 }
 
-func (w *Worker) updateJobStatusWithMetadata(jobID, attemptID string, status models.JobStatus, result string, logs []byte, seq int, artifacts []models.Artifact, pushedBranch, prURL string) {
+func (w *Worker) updateJobStatusWithMetadata(jobID, attemptID string, status models.JobStatus, result string, logs []byte, seq int, artifacts []models.Artifact, pushedBranch, prURL string, stages []models.JobStage, currentStage int) {
 	reqBody := map[string]interface{}{
 		"attempt_id":    attemptID,
 		"status":        status,
@@ -524,6 +569,10 @@ func (w *Worker) updateJobStatusWithMetadata(jobID, attemptID string, status mod
 		"artifacts":     artifacts,
 		"pushed_branch": pushedBranch,
 		"pr_url":        prURL,
+	}
+	if stages != nil {
+		reqBody["stages"] = stages
+		reqBody["current_stage"] = currentStage
 	}
 	body, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequest("POST", fmt.Sprintf("%s/api/jobs/%s", w.CoordinatorURL, jobID), bytes.NewReader(body))
@@ -568,12 +617,6 @@ func (w *Worker) executeJob(job models.Job) {
 		logs = append(logs, []byte(fmt.Sprintf("Calculated SHA-256: %s\n", result))...)
 		w.updateJobStatus(job.ID, job.AttemptID, models.StatusCompleted, result, logs, logSeq)
 	} else if job.Task == "execute" {
-		profile, err := execution.GetProfile(job.Profile)
-		if err != nil {
-			w.updateJobStatus(job.ID, job.AttemptID, models.StatusFailed, err.Error(), []byte(err.Error()+"\n"), logSeq)
-			return
-		}
-
 		var workDir string
 		var gm *gitworkspace.Manager
 		var mainRepoDir string
@@ -669,10 +712,10 @@ func (w *Worker) executeJob(job models.Job) {
 				} else if err := gm.CleanupWorktree(mainRepoDir, workDir, branchName); err != nil {
 					output = append(output, []byte(fmt.Sprintf("\n--- CLEANUP FAILED ---\n%v\n", err))...)
 				}
-				// Need to push output again since we appended
-				w.updateJobStatusWithMetadata(job.ID, job.AttemptID, finalStatus, finalResult, output, logSeq+1, artifacts, pushedBranch, prURL)
+				w.updateJobStatusWithMetadata(job.ID, job.AttemptID, finalStatus, finalResult, output, logSeq, artifacts, pushedBranch, prURL, job.Stages, job.CurrentStage)
 			}()
 		} else {
+			var err error
 			workDir, err = execution.SecureWorkspacePath(w.Workspace, ".")
 			if err != nil {
 				w.updateJobStatus(job.ID, job.AttemptID, models.StatusFailed, "workspace error", []byte(err.Error()+"\n"), logSeq)
@@ -680,35 +723,85 @@ func (w *Worker) executeJob(job models.Job) {
 			}
 		}
 
-		timeoutSeconds := job.TimeoutSeconds
-		if timeoutSeconds == 0 || timeoutSeconds > profile.MaxTimeoutSecs {
-			timeoutSeconds = profile.MaxTimeoutSecs
+		if len(job.Stages) == 0 {
+			job.Stages = []models.JobStage{{
+				Profile:        job.Profile,
+				Parameters:     job.Parameters,
+				Tools:          job.Tools,
+				TimeoutSeconds: job.TimeoutSeconds,
+			}}
 		}
-		timeout := time.Duration(timeoutSeconds) * time.Second
 
-		execCtx, execCancel := context.WithTimeout(ctx, timeout)
-		defer execCancel()
+		for i, stage := range job.Stages {
+			job.CurrentStage = i
+			stage.Status = models.StatusRunning
+			job.Stages[i] = stage
+			output = append(output, []byte(fmt.Sprintf("\n--- STAGE %d: %s ---\n", i+1, stage.Name))...)
+			w.updateJobStatusWithMetadata(job.ID, job.AttemptID, models.StatusRunning, "", output, logSeq, nil, "", "", job.Stages, job.CurrentStage)
+			logSeq++
 
-		executor := execution.NewExecutor()
-		output, err = executor.Execute(execCtx, profile, job.Parameters, workDir)
-
-		if err != nil {
-			if execCtx.Err() == context.DeadlineExceeded {
-				finalResult = "timeout"
+			profile, err := execution.GetProfile(stage.Profile)
+			if err != nil {
+				stage.Status = models.StatusFailed
+				stage.Result = err.Error()
+				job.Stages[i] = stage
+				finalResult = fmt.Sprintf("stage %d error: %v", i+1, err)
 				finalStatus = models.StatusFailed
-				output = append(output, []byte("\nJob timed out")...)
-			} else if ctx.Err() == context.Canceled {
-				finalResult = "cancelled"
-				finalStatus = models.StatusCancelled
-				output = append(output, []byte("\nJob cancelled by coordinator")...)
-			} else {
-				finalResult = fmt.Sprintf("error: %v", err)
-				finalStatus = models.StatusFailed
+				break
 			}
+			if profile.Name == "BootstrapEnvironment" && !w.allowBootstrap {
+				errStr := "worker not allowed to bootstrap environment. start worker with FORGEGRID_ALLOW_BOOTSTRAP=true"
+				stage.Status = models.StatusFailed
+				stage.Result = errStr
+				job.Stages[i] = stage
+				finalResult = "bootstrap forbidden"
+				finalStatus = models.StatusFailed
+				break
+			}
+
+			timeoutSeconds := stage.TimeoutSeconds
+			if timeoutSeconds == 0 || timeoutSeconds > profile.MaxTimeoutSecs {
+				timeoutSeconds = profile.MaxTimeoutSecs
+			}
+			timeout := time.Duration(timeoutSeconds) * time.Second
+
+			execCtx, execCancel := context.WithTimeout(ctx, timeout)
+			
+			executor := execution.NewExecutor()
+			stageOut, err := executor.Execute(execCtx, profile, stage.Parameters, stage.Tools, workDir)
+			output = append(output, stageOut...)
+			
+			if err != nil {
+				if execCtx.Err() == context.DeadlineExceeded {
+					finalResult = fmt.Sprintf("stage %d timeout", i+1)
+					finalStatus = models.StatusFailed
+					stage.Status = models.StatusFailed
+					stage.Result = "timeout"
+					output = append(output, []byte(fmt.Sprintf("\nStage %d timed out", i+1))...)
+				} else if ctx.Err() == context.Canceled {
+					finalResult = "cancelled"
+					finalStatus = models.StatusCancelled
+					stage.Status = models.StatusFailed
+					stage.Result = "cancelled"
+					output = append(output, []byte("\nJob cancelled by coordinator")...)
+				} else {
+					finalResult = fmt.Sprintf("stage %d error: %v", i+1, err)
+					finalStatus = models.StatusFailed
+					stage.Status = models.StatusFailed
+					stage.Result = err.Error()
+				}
+				job.Stages[i] = stage
+				execCancel()
+				break
+			}
+			
+			stage.Status = models.StatusCompleted
+			job.Stages[i] = stage
+			execCancel()
 		}
 
 		if gm == nil {
-			w.updateJobStatus(job.ID, job.AttemptID, finalStatus, finalResult, output, logSeq)
+			w.updateJobStatusWithMetadata(job.ID, job.AttemptID, finalStatus, finalResult, output, logSeq, nil, "", "", job.Stages, job.CurrentStage)
 		}
 	} else {
 		w.updateJobStatus(job.ID, job.AttemptID, models.StatusFailed, "unknown task", []byte("Unsupported task type\n"), logSeq)

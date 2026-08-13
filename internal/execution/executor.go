@@ -10,7 +10,7 @@ import (
 )
 
 type Executor interface {
-	Execute(ctx context.Context, profile Profile, params map[string]string, workDir string) ([]byte, error)
+	Execute(ctx context.Context, profile Profile, params map[string]string, tools []string, workDir string) ([]byte, error)
 }
 
 type DefaultExecutor struct{}
@@ -19,8 +19,8 @@ func NewExecutor() Executor {
 	return &DefaultExecutor{}
 }
 
-func (e *DefaultExecutor) Execute(ctx context.Context, profile Profile, params map[string]string, workDir string) ([]byte, error) {
-	args, err := BuildArgs(profile, params)
+func (e *DefaultExecutor) Execute(ctx context.Context, profile Profile, params map[string]string, tools []string, workDir string) ([]byte, error) {
+	args, err := BuildArgs(profile, params, tools)
 	if err != nil {
 		return nil, fmt.Errorf("argument validation failed: %w", err)
 	}
