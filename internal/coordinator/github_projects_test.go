@@ -42,3 +42,9 @@ func TestGitHubTokenFileRequiresOwnerOnlyPermissions(t *testing.T) {
 		t.Fatalf("expected secure token file to be loaded, got %q", got)
 	}
 }
+
+func TestGitHubTokenCompactsEditorWhitespace(t *testing.T) {
+	if got := compactToken("  github_pat_abc\n\t123\r\n  "); got != "github_pat_abc123" {
+		t.Fatalf("unexpected compact token %q", got)
+	}
+}

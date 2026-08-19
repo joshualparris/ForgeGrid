@@ -38,7 +38,7 @@ type githubUser struct {
 
 func (c *Coordinator) githubToken() string {
 	if token := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); token != "" {
-		return token
+		return compactToken(token)
 	}
 	b, err := os.ReadFile(filepath.Join(c.Store.Dir(), "github-token.txt"))
 	if err != nil {
@@ -47,7 +47,16 @@ func (c *Coordinator) githubToken() string {
 	if info, err := os.Stat(filepath.Join(c.Store.Dir(), "github-token.txt")); err == nil && info.Mode().Perm()&0077 != 0 {
 		return ""
 	}
-	return strings.TrimSpace(string(b))
+	return compactToken(string(b))
+}
+
+func compactToken(raw string) string {
+	return strings.Map(func(r rune) rune {
+		if r == ' ' || r == '\t' || r == '\r' || r == '\n' {
+			return -1
+		}
+		return r
+	}, strings.TrimSpace(raw))
 }
 
 func maskSecretError(err error) string {

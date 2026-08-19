@@ -527,8 +527,10 @@ chmod 600 ~/.config/forgegrid/coordinator/github-token.txt</textarea>
 
         function toggleManualRepo() {
             const manual = document.getElementById('manualRepoToggle').checked;
-            document.getElementById('quickRepoWrap').style.display = manual ? 'block' : 'none';
-            document.getElementById('projectPickerWrap').style.display = manual ? 'none' : 'block';
+            const repoJob = selectedQuickJob !== 'smoke';
+            document.getElementById('manualRepoToggle').closest('label').style.display = repoJob ? 'block' : 'none';
+            document.getElementById('quickRepoWrap').style.display = repoJob && manual ? 'block' : 'none';
+            document.getElementById('projectPickerWrap').style.display = repoJob && !manual ? 'block' : 'none';
             renderProjectList();
         }
 
@@ -917,11 +919,19 @@ tasks:`;
             });
             const projectSearch = document.getElementById('projectSearch');
             projectSearch.addEventListener('input', () => {
+                if (selectedQuickJob === 'smoke') {
+                    selectQuickJob('ai-fix');
+                }
                 selectedProject = null;
                 projectCursor = -1;
                 renderProjectList();
             });
-            projectSearch.addEventListener('focus', renderProjectList);
+            projectSearch.addEventListener('focus', () => {
+                if (selectedQuickJob === 'smoke') {
+                    selectQuickJob('ai-fix');
+                }
+                renderProjectList();
+            });
             projectSearch.addEventListener('keydown', ev => {
                 const list = Array.from(document.querySelectorAll('.project-option'));
                 if (ev.key === 'ArrowDown') {
