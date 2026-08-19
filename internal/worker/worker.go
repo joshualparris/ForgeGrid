@@ -543,9 +543,70 @@ func (w *Worker) Start() {
 	if w.Client == nil {
 		w.Client = &http.Client{Timeout: 10 * time.Second} // Should only happen in tests that bypassed Pair
 	}
+	
+	w.verifyUpdateTransaction()
+
 	w.loopsDone.Add(2)
 	go w.heartbeatLoop()
 	go w.jobLoop()
+}
+
+func (w *Worker) verifyUpdateTransaction() {
+	txID := os.Getenv("FORGEGRID_UPDATE_TX")
+	if txID == "" {
+		return
+	}
+
+	tx, err := readTx()
+	if err != nil || tx.ID != txID {
+		return
+	}
+
+	if tx.CurrentState == "COMPLETED" {
+		return
+	}
+
+	if tx.CurrentState == "ROLLED_BACK" {
+		w.reportUpdate(tx.ID, "rolled_back", "New worker did not reconnect within time limit. Previous version restored successfully. Reason: "+tx.RollbackReason, true)
+		log.Printf("[Update] Previous worker restored")
+		return
+	}
+
+	if tx.CurrentState != "VERIFYING_NEW_WORKER" && tx.CurrentState != "RESTARTING" {
+		return
+	}
+
+	log.Printf("[Update] Candidate installed")
+	log.Printf("[Update] Starting candidate worker")
+	log.Printf("[Update] Waiting for coordinator handshake")
+
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+
+	hash, err := fileSHA256(exe)
+	if err != nil || hash != tx.ExpectedSHA256 {
+		log.Printf("[Update] Candidate failed health verification: running hash %s did not match expected %s", hash, tx.ExpectedSHA256)
+		os.Exit(1)
+	}
+
+	// Wait briefly to ensure any prior connection closes, then send heartbeat
+	time.Sleep(1 * time.Second)
+	w.sendHeartbeat()
+	
+	status, _ := readStatus()
+	if status == nil || status.State != "heartbeat_ok" {
+		log.Printf("[Update] Candidate failed health verification: could not reconnect to coordinator")
+		os.Exit(1)
+	}
+
+	log.Printf("[Update] Candidate verified")
+	w.reportUpdate(tx.ID, "completed", "Worker successfully updated and verified.", true)
+
+	tx.CurrentState = "COMPLETED"
+	writeTx(tx)
+	log.Printf("[Update] Transaction completed")
 }
 
 func (w *Worker) Stop() {
@@ -975,21 +1036,49 @@ func (w *Worker) stageUpdate(req fgupdate.Request) {
 
 	_ = os.Chmod(stagedPath, 0755)
 
-	oldPath := filepath.Join(updateDir, "old-"+filepath.Base(exe))
-	if err := os.Rename(exe, oldPath); err != nil {
-		w.reportUpdate(req.ID, "failed", "Could not move current executable: "+err.Error(), false)
-		return
-	}
-	if err := os.Rename(stagedPath, exe); err != nil {
-		os.Rename(oldPath, exe) // Try to recover
-		w.reportUpdate(req.ID, "failed", "Could not place new executable: "+err.Error(), true)
-		return
-	}
-	_ = os.Chmod(exe, 0755)
+	log.Printf("[Update] Candidate staged")
 
-	w.reportUpdate(req.ID, "completed", "Update applied successfully. Restarting worker...", true)
-	time.Sleep(2 * time.Second)
-	os.Exit(1)
+	// Prepare updater helper
+	updaterPath := filepath.Join(updateDir, "updater-helper-"+filepath.Base(exe))
+	if err := copyFile(exe, updaterPath, 0755); err != nil {
+		w.reportUpdate(req.ID, "failed", "Could not copy updater helper: "+err.Error(), false)
+		return
+	}
+
+	tx := &UpdateTransaction{
+		ID:               req.ID,
+		WorkerID:         w.WorkerID,
+		OldBinaryPath:    exe,
+		NewBinaryPath:    stagedPath,
+		BackupBinaryPath: filepath.Join(filepath.Dir(exe), "previous-"+filepath.Base(exe)),
+		ExpectedSHA256:   req.Artifact.SHA256,
+		CurrentState:     "STAGED",
+		StartedAt:        time.Now(),
+		RestartDeadline:  time.Now().Add(60 * time.Second),
+		WorkerPID:        os.Getpid(),
+	}
+
+	if oldHash, err := fileSHA256(exe); err == nil {
+		tx.OldSHA256 = oldHash
+	}
+
+	if err := writeTx(tx); err != nil {
+		w.reportUpdate(req.ID, "failed", "Could not write transaction: "+err.Error(), false)
+		return
+	}
+
+	log.Printf("[Update] Launching update helper")
+	cmd := exec.Command(updaterPath, "-mode", "update-helper")
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	if err := cmd.Start(); err != nil {
+		w.reportUpdate(req.ID, "failed", "Could not launch updater: "+err.Error(), true)
+		return
+	}
+
+	w.reportUpdate(req.ID, "running", "Update staged. Launching updater helper...", false)
+	log.Printf("[Update] Worker exiting for replacement")
+	os.Exit(0)
 }
 
 func copyFile(src, dst string, perm os.FileMode) error {

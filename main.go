@@ -209,6 +209,8 @@ func main() {
 			fmt.Printf("Worker service error: %v\n", err)
 			os.Exit(1)
 		}
+	} else if *mode == "update-helper" {
+		worker.RunUpdater()
 	} else {
 		fmt.Println("Unknown mode:", *mode)
 		os.Exit(1)
