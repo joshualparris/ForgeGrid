@@ -972,10 +972,24 @@ func (w *Worker) stageUpdate(req fgupdate.Request) {
 		w.reportUpdate(req.ID, "failed", "Staged update failed checksum verification: "+err.Error(), true)
 		return
 	}
-	marker := filepath.Join(updateDir, "README-next-step.txt")
-	note := fmt.Sprintf("ForgeGrid staged update %s for %s.\nRollback copy: %s\nStaged binary: %s\nStop the worker service/manual worker and replace the running binary with the staged binary, then run a health check.\n", req.TargetVersion, w.NodeName, rollbackPath, stagedPath)
-	_ = os.WriteFile(marker, []byte(note), 0600)
-	w.reportUpdate(req.ID, "staged", "Update verified and staged. Restart/apply step is required; rollback copy is ready.", true)
+
+	_ = os.Chmod(stagedPath, 0755)
+
+	oldPath := filepath.Join(updateDir, "old-"+filepath.Base(exe))
+	if err := os.Rename(exe, oldPath); err != nil {
+		w.reportUpdate(req.ID, "failed", "Could not move current executable: "+err.Error(), false)
+		return
+	}
+	if err := os.Rename(stagedPath, exe); err != nil {
+		os.Rename(oldPath, exe) // Try to recover
+		w.reportUpdate(req.ID, "failed", "Could not place new executable: "+err.Error(), true)
+		return
+	}
+	_ = os.Chmod(exe, 0755)
+
+	w.reportUpdate(req.ID, "completed", "Update applied successfully. Restarting worker...", true)
+	time.Sleep(2 * time.Second)
+	os.Exit(1)
 }
 
 func copyFile(src, dst string, perm os.FileMode) error {
