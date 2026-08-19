@@ -1291,7 +1291,7 @@ Then run:
                 };
                 const caps = w.capabilities || [];
                 const labels = w.labels || [];
-                const currentJob = jobsStore.find(j => j.worker_id === w.id && ['RUNNING', 'CLAIMED', 'PENDING'].includes(j.status));
+                const currentJob = jobsStore.find(j => j.worker_id === w.id && ['RUNNING', 'CLAIMED', 'CANCEL_REQUESTED'].includes(j.status));
                 card.innerHTML = `
                     <div class="machine-head">
                         <div>

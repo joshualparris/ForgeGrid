@@ -518,7 +518,7 @@ func (c *Coordinator) workerHasActiveJobLocked(workerID string) bool {
 		if j.WorkerID != workerID && j.WorkerID != "" {
 			continue
 		}
-		if j.Status == models.StatusPending || j.Status == models.StatusClaimed || j.Status == models.StatusRunning || j.Status == models.StatusCancelRequested {
+		if j.Status == models.StatusClaimed || j.Status == models.StatusRunning || j.Status == models.StatusCancelRequested {
 			if j.WorkerID == workerID {
 				return true
 			}

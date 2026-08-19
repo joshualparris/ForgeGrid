@@ -18,6 +18,7 @@ import (
 
 func TestUpdateStatusExplainsBusyAndAvailableWorkers(t *testing.T) {
 	c := testCoordinator(t)
+	c.Store.Jobs["job-1"].Status = models.StatusRunning
 	c.Store.Workers["worker-1"].OS = "windows"
 	c.Store.Workers["worker-1"].Architecture = "amd64"
 	c.Store.Workers["worker-1"].Version = version.InfoData{Version: "0.8.0", Protocol: "1"}
