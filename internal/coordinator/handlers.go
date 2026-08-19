@@ -19,6 +19,8 @@ import (
 	"forgegrid/internal/manifest"
 	"forgegrid/internal/models"
 	"forgegrid/internal/network"
+	fgupdate "forgegrid/internal/update"
+	"forgegrid/internal/version"
 )
 
 func writeError(w http.ResponseWriter, status int, code, message, detail string) {
@@ -296,19 +298,20 @@ func (c *Coordinator) handlePair(w http.ResponseWriter, r *http.Request) {
 	// Limit request size to prevent oversized request attacks
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	var req struct {
-		Code              string   `json:"code"`
-		NodeName          string   `json:"node_name"`
-		OS                string   `json:"os"`
-		OSVersion         string   `json:"os_version"`
-		CPUModel          string   `json:"cpu_model"`
-		Architecture      string   `json:"architecture"`
-		PhysicalCores     int      `json:"physical_cores"`
-		LogicalProcessors int      `json:"logical_processors"`
-		TotalRAM          uint64   `json:"total_ram"`
-		AvailableRAM      uint64   `json:"available_ram"`
-		FreeWorkspaceDisk uint64   `json:"free_workspace_disk"`
-		Labels            []string `json:"labels"`
-		Capabilities      []string `json:"capabilities"`
+		Code              string           `json:"code"`
+		NodeName          string           `json:"node_name"`
+		OS                string           `json:"os"`
+		OSVersion         string           `json:"os_version"`
+		CPUModel          string           `json:"cpu_model"`
+		Architecture      string           `json:"architecture"`
+		PhysicalCores     int              `json:"physical_cores"`
+		LogicalProcessors int              `json:"logical_processors"`
+		TotalRAM          uint64           `json:"total_ram"`
+		AvailableRAM      uint64           `json:"available_ram"`
+		FreeWorkspaceDisk uint64           `json:"free_workspace_disk"`
+		Labels            []string         `json:"labels"`
+		Capabilities      []string         `json:"capabilities"`
+		Version           version.InfoData `json:"version"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Malformed JSON", err.Error())
@@ -357,6 +360,8 @@ func (c *Coordinator) handlePair(w http.ResponseWriter, r *http.Request) {
 		FreeWorkspaceDisk: req.FreeWorkspaceDisk,
 		Labels:            append([]string{}, req.Labels...),
 		Capabilities:      append([]string{}, req.Capabilities...),
+		Version:           req.Version,
+		UpdatePolicy:      "idle",
 		TokenHash:         hashToken(token),
 		LastSeen:          time.Now(),
 		Status:            "online",
@@ -372,11 +377,12 @@ func (c *Coordinator) handlePair(w http.ResponseWriter, r *http.Request) {
 func (c *Coordinator) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	var req struct {
-		WorkerID     string   `json:"worker_id"`
-		AvailableRAM uint64   `json:"available_ram"`
-		FreeDisk     uint64   `json:"free_workspace_disk"`
-		Labels       []string `json:"labels"`
-		Capabilities []string `json:"capabilities"`
+		WorkerID     string           `json:"worker_id"`
+		AvailableRAM uint64           `json:"available_ram"`
+		FreeDisk     uint64           `json:"free_workspace_disk"`
+		Labels       []string         `json:"labels"`
+		Capabilities []string         `json:"capabilities"`
+		Version      version.InfoData `json:"version"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Malformed JSON", "")
@@ -402,6 +408,9 @@ func (c *Coordinator) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Capabilities != nil {
 		worker.Capabilities = append([]string{}, req.Capabilities...)
+	}
+	if req.Version.Version != "" {
+		worker.Version = req.Version
 	}
 	worker.LastSeen = time.Now()
 	worker.Status = "online"
@@ -482,6 +491,279 @@ func (c *Coordinator) handleWorkerPolicy(w http.ResponseWriter, r *http.Request)
 	}
 	if req.Disabled != nil {
 		worker.Disabled = *req.Disabled
+	}
+	c.Store.Save()
+	json.NewEncoder(w).Encode(worker.ToDTO())
+}
+
+func (c *Coordinator) loadUpdateManifest() (*fgupdate.Manifest, string, error) {
+	paths := []string{
+		filepath.Join(c.Store.Dir(), "update-manifest.json"),
+		filepath.Join("dist", "ForgeGrid-USB", "update-manifest.json"),
+	}
+	for _, path := range paths {
+		m, err := fgupdate.LoadManifest(path)
+		if err == nil {
+			return m, filepath.Dir(path), nil
+		}
+		if !os.IsNotExist(err) {
+			return nil, "", err
+		}
+	}
+	return nil, "", fmt.Errorf("no update manifest found")
+}
+
+func (c *Coordinator) workerHasActiveJobLocked(workerID string) bool {
+	for _, j := range c.Store.Jobs {
+		if j.WorkerID != workerID && j.WorkerID != "" {
+			continue
+		}
+		if j.Status == models.StatusPending || j.Status == models.StatusClaimed || j.Status == models.StatusRunning || j.Status == models.StatusCancelRequested {
+			if j.WorkerID == workerID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (c *Coordinator) updateViewLocked(worker *models.WorkerState, m *fgupdate.Manifest) fgupdate.WorkerUpdateView {
+	view := fgupdate.WorkerUpdateView{
+		WorkerID:       worker.ID,
+		WorkerName:     worker.NodeName,
+		Current:        worker.Version,
+		LatestVersion:  "",
+		Status:         fgupdate.StatusUnavailable,
+		Reason:         "No update manifest is available",
+		PendingRequest: updateRequestToPublic(worker.UpdateRequest),
+		Compatible:     false,
+	}
+	if m == nil {
+		return view
+	}
+	view.LatestVersion = m.Version
+	artifact, ok := fgupdate.SelectArtifact(m, "worker", worker.OS, worker.Architecture)
+	view.ArtifactPresent = ok
+	if !ok {
+		view.Status = fgupdate.StatusUnavailable
+		view.Reason = fmt.Sprintf("No worker package for %s/%s", worker.OS, worker.Architecture)
+		return view
+	}
+	if m.Protocol != "" && worker.Version.Protocol != "" && m.Protocol != worker.Version.Protocol {
+		view.Status = fgupdate.StatusIncompatible
+		view.Reason = fmt.Sprintf("Protocol %s required, worker has %s", m.Protocol, worker.Version.Protocol)
+		return view
+	}
+	view.Compatible = true
+	if worker.UpdateRequest != nil && worker.UpdateRequest.Status != "" && worker.UpdateRequest.Status != "completed" && worker.UpdateRequest.Status != "failed" {
+		view.Status = fgupdate.StatusQueued
+		view.Reason = worker.UpdateRequest.Message
+		return view
+	}
+	if c.workerHasActiveJobLocked(worker.ID) {
+		view.Status = fgupdate.StatusBusy
+		view.Reason = "Machine is working; update will wait until it is idle"
+		return view
+	}
+	if fgupdate.NeedsUpdate(worker.Version.Version, m.Version) {
+		view.Status = fgupdate.StatusAvailable
+		view.Reason = fmt.Sprintf("%s can update to %s", worker.NodeName, m.Version)
+		return view
+	}
+	view.Status = fgupdate.StatusCurrent
+	view.Reason = "Already on the latest available version"
+	_ = artifact
+	return view
+}
+
+func updateRequestToPublic(req *models.WorkerUpdateRequest) *fgupdate.Request {
+	if req == nil {
+		return nil
+	}
+	return &fgupdate.Request{
+		ID:            req.ID,
+		TargetVersion: req.TargetVersion,
+		TargetCommit:  req.TargetCommit,
+		Artifact: fgupdate.Artifact{
+			Role:         "worker",
+			Platform:     req.ArtifactPlatform,
+			Architecture: req.ArtifactArch,
+			SHA256:       req.ArtifactSHA256,
+			Path:         req.ArtifactPath,
+			URL:          req.ArtifactURL,
+		},
+		Policy:        req.Policy,
+		Status:        req.Status,
+		Message:       req.Message,
+		RequestedAt:   req.RequestedAt,
+		StartedAt:     req.StartedAt,
+		FinishedAt:    req.FinishedAt,
+		RollbackReady: req.RollbackReady,
+	}
+}
+
+func (c *Coordinator) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", "")
+		return
+	}
+	m, _, manifestErr := c.loadUpdateManifest()
+	c.Store.Mu.RLock()
+	defer c.Store.Mu.RUnlock()
+	workers := make([]fgupdate.WorkerUpdateView, 0, len(c.Store.Workers))
+	for _, worker := range c.Store.Workers {
+		workers = append(workers, c.updateViewLocked(worker, m))
+	}
+	sort.Slice(workers, func(i, j int) bool { return workers[i].WorkerName < workers[j].WorkerName })
+	resp := map[string]interface{}{
+		"coordinator": version.Info(),
+		"workers":     workers,
+	}
+	if m != nil {
+		resp["manifest"] = m
+	}
+	if manifestErr != nil {
+		resp["manifest_error"] = manifestErr.Error()
+	}
+	json.NewEncoder(w).Encode(resp)
+}
+
+func (c *Coordinator) handleQueueWorkerUpdates(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", "")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	var req struct {
+		WorkerIDs []string `json:"worker_ids"`
+		All       bool     `json:"all"`
+		Policy    string   `json:"policy"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Malformed JSON", "")
+		return
+	}
+	m, _, err := c.loadUpdateManifest()
+	if err != nil {
+		writeError(w, http.StatusPreconditionFailed, "NO_MANIFEST", "No valid update manifest is available", err.Error())
+		return
+	}
+	policy := strings.TrimSpace(req.Policy)
+	if policy == "" {
+		policy = "idle"
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	c.Store.Mu.Lock()
+	defer c.Store.Mu.Unlock()
+	selected := map[string]bool{}
+	if req.All {
+		for id := range c.Store.Workers {
+			selected[id] = true
+		}
+	} else {
+		for _, id := range req.WorkerIDs {
+			selected[id] = true
+		}
+	}
+	views := []fgupdate.WorkerUpdateView{}
+	for id := range selected {
+		worker, ok := c.Store.Workers[id]
+		if !ok {
+			continue
+		}
+		artifact, ok := fgupdate.SelectArtifact(m, "worker", worker.OS, worker.Architecture)
+		if ok {
+			worker.UpdatePolicy = policy
+			worker.UpdateRequest = &models.WorkerUpdateRequest{
+				ID:               "update-" + cryptoRandomHex(12),
+				TargetVersion:    m.Version,
+				TargetCommit:     m.Commit,
+				ArtifactPlatform: artifact.Platform,
+				ArtifactArch:     artifact.Architecture,
+				ArtifactSHA256:   artifact.SHA256,
+				ArtifactPath:     artifact.Path,
+				ArtifactURL:      artifact.URL,
+				Policy:           policy,
+				Status:           "queued",
+				Message:          "Queued and waiting for the machine to be idle",
+				RequestedAt:      now,
+			}
+		}
+		views = append(views, c.updateViewLocked(worker, m))
+	}
+	c.Store.Save()
+	json.NewEncoder(w).Encode(map[string]interface{}{"workers": views})
+}
+
+func (c *Coordinator) handleWorkerUpdatePoll(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", "")
+		return
+	}
+	workerID := r.URL.Query().Get("worker_id")
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	c.Store.Mu.Lock()
+	defer c.Store.Mu.Unlock()
+	worker, ok := c.Store.Workers[workerID]
+	if !ok || worker.TokenHash != hashToken(token) {
+		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Unauthorized", "")
+		return
+	}
+	if worker.UpdateRequest == nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{"update": nil})
+		return
+	}
+	if worker.UpdateRequest.Status != "queued" && worker.UpdateRequest.Status != "waiting" {
+		json.NewEncoder(w).Encode(map[string]interface{}{"update": nil, "reason": worker.UpdateRequest.Message})
+		return
+	}
+	if c.workerHasActiveJobLocked(workerID) {
+		worker.UpdateRequest.Status = "waiting"
+		worker.UpdateRequest.Message = "Waiting for current job to finish"
+		c.Store.Save()
+		json.NewEncoder(w).Encode(map[string]interface{}{"update": nil, "reason": worker.UpdateRequest.Message})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{"update": updateRequestToPublic(worker.UpdateRequest)})
+}
+
+func (c *Coordinator) handleWorkerUpdateReport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", "")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	var req struct {
+		WorkerID      string `json:"worker_id"`
+		UpdateID      string `json:"update_id"`
+		Status        string `json:"status"`
+		Message       string `json:"message"`
+		RollbackReady bool   `json:"rollback_ready"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Malformed JSON", "")
+		return
+	}
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	c.Store.Mu.Lock()
+	defer c.Store.Mu.Unlock()
+	worker, ok := c.Store.Workers[req.WorkerID]
+	if !ok || worker.TokenHash != hashToken(token) {
+		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Unauthorized", "")
+		return
+	}
+	if worker.UpdateRequest == nil || worker.UpdateRequest.ID != req.UpdateID {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "Update request not found", "")
+		return
+	}
+	worker.UpdateRequest.Status = req.Status
+	worker.UpdateRequest.Message = req.Message
+	worker.UpdateRequest.RollbackReady = req.RollbackReady
+	if req.Status == "running" && worker.UpdateRequest.StartedAt == "" {
+		worker.UpdateRequest.StartedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	if req.Status == "completed" || req.Status == "failed" || req.Status == "rolled_back" {
+		worker.UpdateRequest.FinishedAt = time.Now().UTC().Format(time.RFC3339)
 	}
 	c.Store.Save()
 	json.NewEncoder(w).Encode(worker.ToDTO())

@@ -81,6 +81,9 @@
         .setup-step.attention { border-color: rgba(244, 200, 74, 0.8); }
         .setup-step strong { font-size: 16px; }
         .setup-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+        .update-list { display: grid; gap: 10px; margin-top: 12px; }
+        .update-row { display: grid; grid-template-columns: 1.2fr 1fr 1.6fr auto; gap: 10px; align-items: center; border-top: 1px solid var(--line); padding-top: 10px; }
+        .version-line { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
         .copy-box { display: grid; gap: 8px; }
         .copy-box textarea { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; min-height: 92px; resize: vertical; }
         .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.72); padding: 32px; z-index: 10; }
@@ -144,6 +147,20 @@ chmod 600 ~/.config/forgegrid/coordinator/github-token.txt</textarea>
         <div class="stat"><span class="muted">Ready For AI</span><strong id="aiCount">0</strong></div>
         <div class="stat"><span class="muted">Ready For Code</span><strong id="codeCount">0</strong></div>
         <div class="stat"><span class="muted">Active Jobs</span><strong id="activeJobCount">0</strong></div>
+    </section>
+
+    <section class="card">
+        <div class="setup-head">
+            <div>
+                <h2>Fleet Updates</h2>
+                <p id="updateSummary">Checking update bundle...</p>
+            </div>
+            <div class="setup-actions">
+                <button class="ghost-button" onclick="fetchUpdates()">Refresh</button>
+                <button onclick="queueUpdates(true)">Update All Idle Machines</button>
+            </div>
+        </div>
+        <div id="updateList" class="update-list"></div>
     </section>
 
     <section class="command-grid">
@@ -346,6 +363,7 @@ chmod 600 ~/.config/forgegrid/coordinator/github-token.txt</textarea>
         let selectedQuickJob = "smoke";
         let jobFilter = "all";
         let projectsStore = [];
+        let updatesStore = null;
         let selectedProject = null;
         let selectedInspection = null;
         let projectCursor = -1;
@@ -1292,6 +1310,73 @@ Then run:
             });
         }
 
+        async function fetchUpdates() {
+            const summary = document.getElementById('updateSummary');
+            const list = document.getElementById('updateList');
+            if (!summary || !list) return;
+            try {
+                const res = await fetch('/api/updates/status');
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || data.message || 'update status failed');
+                updatesStore = data;
+                const latest = data.manifest ? data.manifest.version : 'no bundle';
+                const current = data.coordinator ? data.coordinator.version : 'unknown';
+                summary.textContent = `Coordinator ${current}. Latest bundle: ${latest}.`;
+                if (data.manifest_error) {
+                    summary.textContent += ` ${data.manifest_error}`;
+                    summary.style.color = 'var(--yellow)';
+                } else {
+                    summary.style.color = 'var(--muted)';
+                }
+                renderUpdates();
+            } catch (e) {
+                updatesStore = null;
+                summary.textContent = `Update status unavailable: ${e.message}`;
+                summary.style.color = 'var(--red)';
+                list.innerHTML = '';
+            }
+        }
+
+        function renderUpdates() {
+            const list = document.getElementById('updateList');
+            if (!list) return;
+            const workers = updatesStore && updatesStore.workers ? updatesStore.workers : [];
+            if (workers.length === 0) {
+                list.innerHTML = '<span class="muted">No machines are paired yet.</span>';
+                return;
+            }
+            list.innerHTML = workers.map(w => {
+                const current = w.current && w.current.version ? `${w.current.version} (${w.current.commit || 'dev'})` : 'old build: version not reported';
+                const status = w.pending_request ? `${w.pending_request.status}: ${w.pending_request.message || ''}` : `${w.status}: ${w.reason || ''}`;
+                const canQueue = ['available', 'busy', 'queued'].includes(w.status) && w.artifact_present;
+                return `<div class="update-row">
+                    <div><strong>${escapeHTML(w.worker_name || w.worker_id)}</strong><div class="version-line">${escapeHTML(current)}</div></div>
+                    <div><span class="pill">${escapeHTML(w.latest_version || 'no bundle')}</span></div>
+                    <div>${escapeHTML(status)}</div>
+                    <div><button class="ghost-button" onclick="queueUpdates(false, '${escapeHTML(w.worker_id)}')" ${canQueue ? '' : 'disabled'}>Queue Update</button></div>
+                </div>`;
+            }).join('');
+        }
+
+        async function queueUpdates(all, workerId) {
+            const summary = document.getElementById('updateSummary');
+            summary.textContent = all ? 'Queueing updates for all idle machines...' : 'Queueing update...';
+            try {
+                const body = all ? { all: true, policy: 'idle' } : { worker_ids: [workerId], policy: 'idle' };
+                const res = await fetch('/api/updates/workers', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || data.message || 'queue failed');
+                await fetchUpdates();
+            } catch (e) {
+                summary.textContent = `Could not queue update: ${e.message}`;
+                summary.style.color = 'var(--red)';
+            }
+        }
+
         function updateStats() {
             const online = workersStore.filter(isWorkerOnline);
             const ai = online.filter(w => (w.capabilities || []).some(c => ['ai-agent', 'antigravity', 'codex'].includes(c)));
@@ -1788,8 +1873,10 @@ Then run:
 
         // Auto-refresh loops
         fetchStatus();
+        fetchUpdates();
         setInterval(fetchWorkers, 2000);
         setInterval(fetchJobs, 2000);
+        setInterval(fetchUpdates, 10000);
     </script>
     </main>
 </body>

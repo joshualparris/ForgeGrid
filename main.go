@@ -12,10 +12,16 @@ import (
 	"forgegrid/internal/runner"
 	"forgegrid/internal/session"
 	"forgegrid/internal/store"
+	"forgegrid/internal/version"
 	"forgegrid/internal/worker"
 )
 
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "version" || os.Args[1] == "--version" || os.Args[1] == "-version") {
+		info := version.Info()
+		fmt.Printf("ForgeGrid %s commit=%s built=%s platform=%s/%s protocol=%s\n", info.Version, info.Commit, info.BuildTime, info.Platform, info.Architecture, info.Protocol)
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "agent-bridge" {
 		agentbridge.RunCLI(os.Args[2:])
 		return

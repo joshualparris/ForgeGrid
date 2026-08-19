@@ -7,8 +7,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,6 +23,8 @@ import (
 	"forgegrid/internal/gitworkspace"
 	"forgegrid/internal/models"
 	"forgegrid/internal/network"
+	fgupdate "forgegrid/internal/update"
+	"forgegrid/internal/version"
 
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/disk"
@@ -402,6 +406,7 @@ func (w *Worker) getHardwareInfo() (models.WorkerDTO, error) {
 	info.NodeName = w.NodeName
 	info.OS = runtime.GOOS
 	info.Architecture = runtime.GOARCH
+	info.Version = version.Info()
 	info.Labels = append([]string{}, w.Labels...)
 	validCaps, drift := w.ValidateCapabilities()
 	if len(drift) > 0 {
@@ -477,6 +482,7 @@ func (w *Worker) Pair(ip, code, fingerprint string) error {
 		"free_workspace_disk": hw.FreeWorkspaceDisk,
 		"labels":              hw.Labels,
 		"capabilities":        hw.Capabilities,
+		"version":             hw.Version,
 	}
 	body, _ := json.Marshal(reqBody)
 
@@ -591,6 +597,7 @@ func (w *Worker) sendHeartbeat() {
 		"free_workspace_disk": free,
 		"labels":              labels,
 		"capabilities":        capabilities,
+		"version":             version.Info(),
 	}
 	body, _ := json.Marshal(reqBody)
 
@@ -638,6 +645,7 @@ func (w *Worker) pollJobs() {
 	if changed || len(drift) > 0 {
 		w.sendHeartbeat()
 	}
+	w.pollUpdateRequest()
 
 	req, _ := http.NewRequest("GET", fmt.Sprintf("%s/api/jobs?worker_id=%s", w.CoordinatorURL, w.WorkerID), nil)
 	req.Header.Set("Authorization", "Bearer "+w.Token)
@@ -808,6 +816,126 @@ func (w *Worker) postJobUpdate(jobID string, reqBody map[string]interface{}) {
 	if err == nil {
 		resp.Body.Close()
 	}
+}
+
+func (w *Worker) pollUpdateRequest() {
+	w.mu.Lock()
+	active := len(w.activeJobs)
+	w.mu.Unlock()
+	if active > 0 {
+		return
+	}
+	req, _ := http.NewRequest("GET", fmt.Sprintf("%s/api/updates/worker?worker_id=%s", w.CoordinatorURL, w.WorkerID), nil)
+	req.Header.Set("Authorization", "Bearer "+w.Token)
+	resp, err := w.Client.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+	var body struct {
+		Update *fgupdate.Request `json:"update"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil || body.Update == nil {
+		return
+	}
+	go w.stageUpdate(*body.Update)
+}
+
+func (w *Worker) reportUpdate(updateID, status, message string, rollbackReady bool) {
+	reqBody := map[string]interface{}{
+		"worker_id":      w.WorkerID,
+		"update_id":      updateID,
+		"status":         status,
+		"message":        message,
+		"rollback_ready": rollbackReady,
+	}
+	body, _ := json.Marshal(reqBody)
+	req, _ := http.NewRequest("POST", w.CoordinatorURL+"/api/updates/report", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+w.Token)
+	resp, err := w.Client.Do(req)
+	if err == nil {
+		resp.Body.Close()
+	}
+}
+
+func (w *Worker) stageUpdate(req fgupdate.Request) {
+	w.mu.Lock()
+	if len(w.activeJobs) > 0 {
+		w.mu.Unlock()
+		return
+	}
+	w.mu.Unlock()
+	w.reportUpdate(req.ID, "running", "Staging update package", false)
+
+	source := req.Artifact.Path
+	if source == "" && strings.HasPrefix(req.Artifact.URL, "file://") {
+		if u, err := url.Parse(req.Artifact.URL); err == nil {
+			source = u.Path
+		}
+	}
+	if source == "" {
+		w.reportUpdate(req.ID, "failed", "Remote update downloads are not enabled for this worker yet; provide a trusted local update bundle", false)
+		return
+	}
+	if !filepath.IsAbs(source) {
+		abs, err := filepath.Abs(source)
+		if err == nil {
+			source = abs
+		}
+	}
+	if err := fgupdate.VerifyFile(source, req.Artifact.SHA256); err != nil {
+		w.reportUpdate(req.ID, "failed", "Update package failed checksum verification: "+err.Error(), false)
+		return
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		w.reportUpdate(req.ID, "failed", "Could not locate running ForgeGrid executable: "+err.Error(), false)
+		return
+	}
+	updateDir := filepath.Join(getWorkerDataDir(), "updates", req.ID)
+	if err := os.MkdirAll(updateDir, 0700); err != nil {
+		w.reportUpdate(req.ID, "failed", "Could not create update staging folder: "+err.Error(), false)
+		return
+	}
+	rollbackPath := filepath.Join(updateDir, "rollback-"+filepath.Base(exe))
+	stagedPath := filepath.Join(updateDir, filepath.Base(source))
+	if err := copyFile(exe, rollbackPath, 0700); err != nil {
+		w.reportUpdate(req.ID, "failed", "Could not prepare rollback copy: "+err.Error(), false)
+		return
+	}
+	if err := copyFile(source, stagedPath, 0700); err != nil {
+		w.reportUpdate(req.ID, "failed", "Could not stage update package: "+err.Error(), true)
+		return
+	}
+	if err := fgupdate.VerifyFile(stagedPath, req.Artifact.SHA256); err != nil {
+		w.reportUpdate(req.ID, "failed", "Staged update failed checksum verification: "+err.Error(), true)
+		return
+	}
+	marker := filepath.Join(updateDir, "README-next-step.txt")
+	note := fmt.Sprintf("ForgeGrid staged update %s for %s.\nRollback copy: %s\nStaged binary: %s\nStop the worker service/manual worker and replace the running binary with the staged binary, then run a health check.\n", req.TargetVersion, w.NodeName, rollbackPath, stagedPath)
+	_ = os.WriteFile(marker, []byte(note), 0600)
+	w.reportUpdate(req.ID, "staged", "Update verified and staged. Restart/apply step is required; rollback copy is ready.", true)
+}
+
+func copyFile(src, dst string, perm os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 func (w *Worker) executeJob(job models.Job) {

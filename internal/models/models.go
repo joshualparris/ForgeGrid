@@ -1,28 +1,53 @@
 package models
 
-import "time"
+import (
+	"time"
+
+	"forgegrid/internal/version"
+)
 
 // Internal State Models
 
 type WorkerState struct {
-	ID                string    `json:"id"`
-	NodeName          string    `json:"node_name"`
-	OS                string    `json:"os"`
-	OSVersion         string    `json:"os_version"`
-	CPUModel          string    `json:"cpu_model"`
-	Architecture      string    `json:"architecture"`
-	PhysicalCores     int       `json:"physical_cores"`
-	LogicalProcessors int       `json:"logical_processors"`
-	TotalRAM          uint64    `json:"total_ram"`
-	AvailableRAM      uint64    `json:"available_ram"`
-	FreeWorkspaceDisk uint64    `json:"free_workspace_disk"`
-	Labels            []string  `json:"labels,omitempty"`
-	Capabilities      []string  `json:"capabilities,omitempty"`
-	LastSeen          time.Time `json:"last_seen"`
-	TokenHash         string    `json:"token_hash"`
-	Status            string    `json:"status"` // online, offline
-	Drain             bool      `json:"drain,omitempty"`
-	Disabled          bool      `json:"disabled,omitempty"`
+	ID                string               `json:"id"`
+	NodeName          string               `json:"node_name"`
+	OS                string               `json:"os"`
+	OSVersion         string               `json:"os_version"`
+	CPUModel          string               `json:"cpu_model"`
+	Architecture      string               `json:"architecture"`
+	PhysicalCores     int                  `json:"physical_cores"`
+	LogicalProcessors int                  `json:"logical_processors"`
+	TotalRAM          uint64               `json:"total_ram"`
+	AvailableRAM      uint64               `json:"available_ram"`
+	FreeWorkspaceDisk uint64               `json:"free_workspace_disk"`
+	Labels            []string             `json:"labels,omitempty"`
+	Capabilities      []string             `json:"capabilities,omitempty"`
+	Version           version.InfoData     `json:"version"`
+	UpdatePolicy      string               `json:"update_policy,omitempty"`
+	UpdateRequest     *WorkerUpdateRequest `json:"update_request,omitempty"`
+	LastSeen          time.Time            `json:"last_seen"`
+	TokenHash         string               `json:"token_hash"`
+	Status            string               `json:"status"` // online, offline
+	Drain             bool                 `json:"drain,omitempty"`
+	Disabled          bool                 `json:"disabled,omitempty"`
+}
+
+type WorkerUpdateRequest struct {
+	ID               string `json:"id"`
+	TargetVersion    string `json:"target_version"`
+	TargetCommit     string `json:"target_commit"`
+	ArtifactPlatform string `json:"artifact_platform"`
+	ArtifactArch     string `json:"artifact_arch"`
+	ArtifactSHA256   string `json:"artifact_sha256"`
+	ArtifactPath     string `json:"artifact_path,omitempty"`
+	ArtifactURL      string `json:"artifact_url,omitempty"`
+	Policy           string `json:"policy"`
+	Status           string `json:"status"`
+	Message          string `json:"message,omitempty"`
+	RequestedAt      string `json:"requested_at"`
+	StartedAt        string `json:"started_at,omitempty"`
+	FinishedAt       string `json:"finished_at,omitempty"`
+	RollbackReady    bool   `json:"rollback_ready,omitempty"`
 }
 
 type JobStatus string
@@ -201,23 +226,26 @@ type ProjectLibrary struct {
 // Public API DTOs
 
 type WorkerDTO struct {
-	ID                string    `json:"id"`
-	NodeName          string    `json:"node_name"`
-	OS                string    `json:"os"`
-	OSVersion         string    `json:"os_version"`
-	CPUModel          string    `json:"cpu_model"`
-	Architecture      string    `json:"architecture"`
-	PhysicalCores     int       `json:"physical_cores"`
-	LogicalProcessors int       `json:"logical_processors"`
-	TotalRAM          uint64    `json:"total_ram"`
-	AvailableRAM      uint64    `json:"available_ram"`
-	FreeWorkspaceDisk uint64    `json:"free_workspace_disk"`
-	Labels            []string  `json:"labels,omitempty"`
-	Capabilities      []string  `json:"capabilities,omitempty"`
-	LastSeen          time.Time `json:"last_seen"`
-	Status            string    `json:"status"`
-	Drain             bool      `json:"drain,omitempty"`
-	Disabled          bool      `json:"disabled,omitempty"`
+	ID                string               `json:"id"`
+	NodeName          string               `json:"node_name"`
+	OS                string               `json:"os"`
+	OSVersion         string               `json:"os_version"`
+	CPUModel          string               `json:"cpu_model"`
+	Architecture      string               `json:"architecture"`
+	PhysicalCores     int                  `json:"physical_cores"`
+	LogicalProcessors int                  `json:"logical_processors"`
+	TotalRAM          uint64               `json:"total_ram"`
+	AvailableRAM      uint64               `json:"available_ram"`
+	FreeWorkspaceDisk uint64               `json:"free_workspace_disk"`
+	Labels            []string             `json:"labels,omitempty"`
+	Capabilities      []string             `json:"capabilities,omitempty"`
+	Version           version.InfoData     `json:"version"`
+	UpdatePolicy      string               `json:"update_policy,omitempty"`
+	UpdateRequest     *WorkerUpdateRequest `json:"update_request,omitempty"`
+	LastSeen          time.Time            `json:"last_seen"`
+	Status            string               `json:"status"`
+	Drain             bool                 `json:"drain,omitempty"`
+	Disabled          bool                 `json:"disabled,omitempty"`
 }
 
 type ErrorResponse struct {
@@ -241,9 +269,20 @@ func (w *WorkerState) ToDTO() WorkerDTO {
 		FreeWorkspaceDisk: w.FreeWorkspaceDisk,
 		Labels:            append([]string{}, w.Labels...),
 		Capabilities:      append([]string{}, w.Capabilities...),
+		Version:           w.Version,
+		UpdatePolicy:      w.UpdatePolicy,
+		UpdateRequest:     cloneUpdateRequest(w.UpdateRequest),
 		LastSeen:          w.LastSeen,
 		Status:            w.Status,
 		Drain:             w.Drain,
 		Disabled:          w.Disabled,
 	}
+}
+
+func cloneUpdateRequest(in *WorkerUpdateRequest) *WorkerUpdateRequest {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
 }
