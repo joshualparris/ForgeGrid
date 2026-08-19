@@ -456,6 +456,14 @@ chmod 600 ~/.config/forgegrid/coordinator/github-token.txt</textarea>
             return pills.length ? pills.join('') : '<span class="muted">No usable tools detected yet</span>';
         }
 
+        function workerVersionText(worker) {
+            const v = worker.version || {};
+            if (!v.version) return 'Legacy worker - version information unavailable';
+            const commit = v.commit ? ` · ${v.commit}` : '';
+            const proto = v.protocol ? ` · protocol ${v.protocol}` : '';
+            return `ForgeGrid ${v.version}${commit}${proto}`;
+        }
+
         function setJobFilter(filter) {
             jobFilter = filter;
             renderJobs();
@@ -1251,7 +1259,7 @@ Then run:
                             <td>${escapeHTML(w.node_name)}</td>
                             <td>${escapeHTML(w.os)}</td>
                             <td>${escapeHTML(w.cpu_model || w.cpu)} / ${Math.round(w.total_ram / 1073741824)}GB</td>
-                            <td>${escapeHTML(machineCapabilityText(w))}</td>
+                            <td>${escapeHTML(machineCapabilityText(w))}<div class="version-line">${escapeHTML(workerVersionText(w))}</div></td>
                             <td class="${statusClass}"><strong>${escapeHTML(statusText)}</strong>${w.drain ? ' / drain' : ''}${w.disabled ? ' / disabled' : ''}</td>
                             <td>${lastSeen.toLocaleTimeString()}</td>
                             <td>${escapeHTML(currentJob)}</td>
@@ -1297,6 +1305,7 @@ Then run:
                         <div>
                             <div class="machine-name">${escapeHTML(w.node_name)}</div>
                             <div class="muted">${escapeHTML(w.os)} · ${Math.round((w.total_ram || 0) / 1073741824)} GB RAM</div>
+                            <div class="version-line">${escapeHTML(workerVersionText(w))}</div>
                         </div>
                         <span class="pill ${online ? 'online' : 'offline'}">${online ? 'online' : 'offline'}</span>
                     </div>

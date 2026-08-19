@@ -125,6 +125,7 @@ func (c *Coordinator) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"identity":    c.Store.CoordinatorCfg.Identity,
 		"fingerprint": c.Fingerprint,
 		"login_file":  filepath.Join(c.Store.Dir(), "dashboard-login.txt"),
+		"version":     version.Info(),
 	})
 }
 
@@ -567,7 +568,11 @@ func (c *Coordinator) updateViewLocked(worker *models.WorkerState, m *fgupdate.M
 	}
 	if fgupdate.NeedsUpdate(worker.Version.Version, m.Version) {
 		view.Status = fgupdate.StatusAvailable
-		view.Reason = fmt.Sprintf("%s can update to %s", worker.NodeName, m.Version)
+		if worker.Version.Version == "" {
+			view.Reason = fmt.Sprintf("%s is a legacy worker; update to %s to enable version, compatibility and capability reporting", worker.NodeName, m.Version)
+		} else {
+			view.Reason = fmt.Sprintf("%s can update to %s", worker.NodeName, m.Version)
+		}
 		return view
 	}
 	view.Status = fgupdate.StatusCurrent

@@ -3,9 +3,11 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -117,6 +119,13 @@ func TestDetectCapabilitiesIncludesGitAndAIAgentWhenAvailable(t *testing.T) {
 		if !hasWorkerString(caps, "ai-agent") {
 			t.Fatalf("expected ai-agent capability when a coding agent is available, got %#v", caps)
 		}
+	}
+}
+
+func TestClassifyConnectionErrorExplainsTLSMismatch(t *testing.T) {
+	msg := classifyConnectionError(fmt.Errorf("Get https://host: certificate fingerprint mismatch! expected: old got: new"))
+	if !strings.Contains(msg, "Worker cannot verify coordinator identity") {
+		t.Fatalf("unexpected message: %s", msg)
 	}
 }
 

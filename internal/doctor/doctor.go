@@ -98,6 +98,21 @@ func checkWorkerFiles(add func(string, string, string)) {
 	} else {
 		add("worker data dir", "ok", worker.WorkerDataDir())
 	}
+
+	if b, err := os.ReadFile(worker.WorkerStatusPath()); err == nil {
+		var status struct {
+			State     string `json:"state"`
+			Message   string `json:"message"`
+			UpdatedAt string `json:"updated_at"`
+		}
+		if json.Unmarshal(b, &status) == nil && status.State != "" {
+			level := "ok"
+			if strings.Contains(status.State, "failed") {
+				level = "fail"
+			}
+			add("last worker connection", level, fmt.Sprintf("%s at %s: %s", status.State, status.UpdatedAt, status.Message))
+		}
+	}
 }
 
 func checkAgentBridge(add func(string, string, string), agentURL string) {
@@ -143,16 +158,18 @@ func checkAgentBridge(add func(string, string, string), agentURL string) {
 }
 
 func checkCoordinator(add func(string, string, string), coordinatorURL string) {
+	fingerprint := ""
 	if coordinatorURL == "" {
 		if creds, err := loadWorkerCreds(); err == nil {
 			coordinatorURL = creds.CoordinatorURL
+			fingerprint = creds.Fingerprint
 		}
 	}
 	if coordinatorURL == "" {
 		add("coordinator reachability", "warn", "no coordinator URL supplied and no saved worker credentials found")
 		return
 	}
-	if err := probeURLReachable(coordinatorURL, ""); err != nil {
+	if err := probeURLReachable(coordinatorURL, fingerprint); err != nil {
 		add("coordinator reachability", "fail", err.Error())
 	} else {
 		add("coordinator reachability", "ok", coordinatorURL)

@@ -14,6 +14,7 @@ import (
 
 	"forgegrid/internal/coordinator"
 	"forgegrid/internal/models"
+	"forgegrid/internal/network"
 	"forgegrid/internal/store"
 	"forgegrid/internal/ui"
 	"forgegrid/internal/worker"
@@ -212,4 +213,55 @@ func TestIntegration(t *testing.T) {
 		t.Fatalf("Expected persistence to load 1 worker, got %d", len(s2.Workers))
 	}
 
+}
+
+func TestCoordinatorFingerprintPersistsAcrossRestart(t *testing.T) {
+	testRoot := t.TempDir()
+	storeDir := filepath.Join(testRoot, "data")
+	s1, err := store.NewStore(storeDir)
+	if err != nil {
+		t.Fatalf("store 1: %v", err)
+	}
+	c1 := coordinator.New(s1, false)
+	l1, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c1.Listener = l1
+	go c1.Start("0")
+	time.Sleep(300 * time.Millisecond)
+	s1.Mu.RLock()
+	fp1, err := network.FingerprintFromPEM(s1.CoordinatorCfg.CertPEM)
+	s1.Mu.RUnlock()
+	if err != nil {
+		t.Fatalf("first persisted cert fingerprint: %v", err)
+	}
+	if fp1 == "" {
+		t.Fatalf("first fingerprint was empty")
+	}
+	l1.Close()
+	time.Sleep(100 * time.Millisecond)
+
+	s2, err := store.NewStore(storeDir)
+	if err != nil {
+		t.Fatalf("store 2: %v", err)
+	}
+	c2 := coordinator.New(s2, false)
+	l2, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l2.Close()
+	c2.Listener = l2
+	go c2.Start("0")
+	time.Sleep(300 * time.Millisecond)
+	s2.Mu.RLock()
+	fp2, err := network.FingerprintFromPEM(s2.CoordinatorCfg.CertPEM)
+	s2.Mu.RUnlock()
+	if err != nil {
+		t.Fatalf("second persisted cert fingerprint: %v", err)
+	}
+	if fp2 != fp1 {
+		t.Fatalf("fingerprint changed across restart: %s -> %s", fp1, fp2)
+	}
 }

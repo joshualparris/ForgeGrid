@@ -88,6 +88,10 @@ func WorkerPolicyPath() string {
 	return getWorkerPolicyPath()
 }
 
+func WorkerStatusPath() string {
+	return filepath.Join(getWorkerDataDir(), "worker_status.json")
+}
+
 func getWorkerDataDir() string {
 	var dir string
 	if runtime.GOOS == "windows" {
@@ -488,6 +492,7 @@ func (w *Worker) Pair(ip, code, fingerprint string) error {
 
 	resp, err := w.Client.Post(w.CoordinatorURL+"/api/workers/pair", "application/json", bytes.NewReader(body))
 	if err != nil {
+		w.writeStatus("pair_failed", classifyConnectionError(err), false)
 		return err
 	}
 	defer resp.Body.Close()
@@ -495,6 +500,7 @@ func (w *Worker) Pair(ip, code, fingerprint string) error {
 	if resp.StatusCode != http.StatusOK {
 		var errRes models.ErrorResponse
 		json.NewDecoder(resp.Body).Decode(&errRes)
+		w.writeStatus("pair_failed", fmt.Sprintf("%s: %s", errRes.Code, errRes.Message), false)
 		return fmt.Errorf("pairing failed: %s - %s", errRes.Code, errRes.Message)
 	}
 
@@ -503,6 +509,7 @@ func (w *Worker) Pair(ip, code, fingerprint string) error {
 		Token    string `json:"token"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		w.writeStatus("pair_failed", err.Error(), false)
 		return err
 	}
 
@@ -527,6 +534,7 @@ func (w *Worker) Pair(ip, code, fingerprint string) error {
 		os.Rename(tmp, path)
 	}
 
+	w.writeStatus("paired", "Worker paired and trusted coordinator fingerprint "+w.Fingerprint, true)
 	fmt.Println("Successfully paired. Worker ID:", w.WorkerID)
 	return nil
 }
@@ -607,15 +615,64 @@ func (w *Worker) sendHeartbeat() {
 
 	resp, err := w.Client.Do(req)
 	if err != nil {
-		fmt.Println("Heartbeat failed:", err)
+		message := classifyConnectionError(err)
+		w.writeStatus("heartbeat_failed", message, false)
+		fmt.Println("Heartbeat failed:", message)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusUnauthorized {
+		w.writeStatus("authentication_failed", "Coordinator rejected saved worker token. Re-pair this worker from the dashboard.", false)
 		fmt.Println("Authentication rejected by coordinator. Your credentials may have been revoked or the coordinator was reset.")
 		fmt.Println("Please run ForgeGrid with --reset-worker to clear saved credentials and pair again.")
 		os.Exit(1)
+	}
+	if resp.StatusCode >= 400 {
+		w.writeStatus("heartbeat_failed", fmt.Sprintf("Coordinator returned HTTP %d", resp.StatusCode), false)
+		return
+	}
+	w.writeStatus("heartbeat_ok", "Connected to trusted coordinator", true)
+}
+
+func (w *Worker) writeStatus(state, message string, connected bool) {
+	status := map[string]interface{}{
+		"state":           state,
+		"message":         message,
+		"connected":       connected,
+		"coordinator_url": w.CoordinatorURL,
+		"fingerprint":     w.Fingerprint,
+		"worker_id":       w.WorkerID,
+		"node_name":       w.NodeName,
+		"updated_at":      time.Now().Format(time.RFC3339),
+	}
+	b, err := json.MarshalIndent(status, "", "  ")
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(getWorkerDataDir(), 0700); err != nil {
+		return
+	}
+	_ = os.WriteFile(WorkerStatusPath(), b, 0600)
+}
+
+func classifyConnectionError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	lower := strings.ToLower(msg)
+	switch {
+	case strings.Contains(lower, "certificate fingerprint mismatch"):
+		return "Worker cannot verify coordinator identity. The saved TLS fingerprint does not match the coordinator certificate. Do not auto-trust this; confirm the coordinator is correct and re-pair only if the coordinator identity was intentionally reset. Detail: " + msg
+	case strings.Contains(lower, "certificate") || strings.Contains(lower, "x509"):
+		return "Worker cannot verify coordinator TLS certificate. Detail: " + msg
+	case strings.Contains(lower, "connection refused"):
+		return "Coordinator is not accepting connections at the saved address. Check that ForgeGrid is running and the address has not changed. Detail: " + msg
+	case strings.Contains(lower, "timeout") || strings.Contains(lower, "deadline exceeded"):
+		return "Network timeout reaching coordinator. Check Wi-Fi, firewall and coordinator address. Detail: " + msg
+	default:
+		return msg
 	}
 }
 
