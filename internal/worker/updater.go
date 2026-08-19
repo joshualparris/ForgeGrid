@@ -11,7 +11,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -30,6 +29,7 @@ type UpdateTransaction struct {
 	RestartDeadline  time.Time `json:"restart_deadline"`
 	RollbackReason   string    `json:"rollback_reason"`
 	WorkerPID        int       `json:"worker_pid"`
+	LifecycleMode    string    `json:"lifecycle_mode"`
 }
 
 func getTxPath() string {
@@ -142,7 +142,7 @@ func RunUpdater() {
 		writeTx(tx)
 
 		log.Printf("[Update] Starting candidate worker...")
-		if err := startCandidateWorker(tx); err != nil {
+		if err := GetLifecycle(tx.LifecycleMode).Start(tx); err != nil {
 			tx.RollbackReason = "Start failed: " + err.Error()
 			rollback(tx)
 			return
@@ -170,24 +170,17 @@ func RunUpdater() {
 }
 
 func swapBinaries(tx *UpdateTransaction) error {
-	os.Remove(tx.BackupBinaryPath)
-	if err := os.Rename(tx.OldBinaryPath, tx.BackupBinaryPath); err != nil {
-		return fmt.Errorf("rename old to backup: %w", err)
-	}
+	// Backup was already created by stageUpdate, so we just atomically replace the primary
+	// If the old process is dead, this is an atomic replace on Windows/Linux.
 	if err := os.Rename(tx.NewBinaryPath, tx.OldBinaryPath); err != nil {
-		os.Rename(tx.BackupBinaryPath, tx.OldBinaryPath)
-		return fmt.Errorf("rename new to current: %w", err)
+		return fmt.Errorf("rename candidate to primary: %w", err)
 	}
 	_ = os.Chmod(tx.OldBinaryPath, 0755)
 	return nil
 }
 
 func startCandidateWorker(tx *UpdateTransaction) error {
-	cmd := exec.Command(tx.OldBinaryPath, "-mode", "worker")
-	cmd.Env = append(os.Environ(), "FORGEGRID_UPDATE_TX="+tx.ID)
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	return cmd.Start()
+	return GetLifecycle(tx.LifecycleMode).Start(tx)
 }
 
 func waitForHealth(tx *UpdateTransaction) error {
@@ -214,13 +207,9 @@ func rollback(tx *UpdateTransaction) {
 	_ = os.Chmod(tx.OldBinaryPath, 0755)
 
 	log.Printf("[Update] Restarting previous worker...")
-	cmd := exec.Command(tx.OldBinaryPath, "-mode", "worker")
-	cmd.Env = append(os.Environ(), "FORGEGRID_UPDATE_TX="+tx.ID)
-	cmd.Start()
+	GetLifecycle(tx.LifecycleMode).Start(tx)
 
-	tx.CurrentState = "ROLLED_BACK"
-	writeTx(tx)
-	log.Printf("[Update] Rollback verified")
+	log.Printf("[Update] Rollback initiated. Waiting for previous worker to verify...")
 }
 
 type WorkerStatus struct {

@@ -544,6 +544,7 @@ func (w *Worker) Start() {
 		w.Client = &http.Client{Timeout: 10 * time.Second} // Should only happen in tests that bypassed Pair
 	}
 	
+	w.cleanupUpdateFiles()
 	w.verifyUpdateTransaction()
 
 	w.loopsDone.Add(2)
@@ -553,22 +554,48 @@ func (w *Worker) Start() {
 
 func (w *Worker) verifyUpdateTransaction() {
 	txID := os.Getenv("FORGEGRID_UPDATE_TX")
-	if txID == "" {
-		return
-	}
 
 	tx, err := readTx()
-	if err != nil || tx.ID != txID {
+	if err != nil {
+		return
+	}
+	
+	// If txID is not empty, ensure it matches. If empty (e.g. started by Windows SCM), we just use the active tx.
+	if txID != "" && tx.ID != txID {
 		return
 	}
 
-	if tx.CurrentState == "COMPLETED" {
+	if tx.CurrentState == "COMPLETED" || tx.CurrentState == "ROLLED_BACK" || tx.CurrentState == "ROLLBACK_FAILED" {
 		return
 	}
 
-	if tx.CurrentState == "ROLLED_BACK" {
+	if tx.CurrentState == "ROLLING_BACK" {
+		// Wait briefly to ensure any prior connection closes, then send heartbeat
+		time.Sleep(1 * time.Second)
+		w.sendHeartbeat()
+		status, _ := readStatus()
+		if status == nil || status.State != "heartbeat_ok" {
+			log.Printf("[Update] Rollback failed health verification: could not reconnect to coordinator")
+			w.reportUpdate(tx.ID, "rollback_failed", "Rollback failed: could not reconnect to coordinator", true)
+			tx.CurrentState = "ROLLBACK_FAILED"
+			writeTx(tx)
+			return
+		}
+
+		exe, _ := os.Executable()
+		hash, _ := fileSHA256(exe)
+		if tx.OldSHA256 != "" && hash != tx.OldSHA256 {
+			log.Printf("[Update] Rollback failed health verification: running hash did not match old hash")
+			w.reportUpdate(tx.ID, "rollback_failed", "Rollback failed: running hash did not match old hash", true)
+			tx.CurrentState = "ROLLBACK_FAILED"
+			writeTx(tx)
+			return
+		}
+
 		w.reportUpdate(tx.ID, "rolled_back", "New worker did not reconnect within time limit. Previous version restored successfully. Reason: "+tx.RollbackReason, true)
 		log.Printf("[Update] Previous worker restored")
+		tx.CurrentState = "ROLLED_BACK"
+		writeTx(tx)
 		return
 	}
 
@@ -607,6 +634,27 @@ func (w *Worker) verifyUpdateTransaction() {
 	tx.CurrentState = "COMPLETED"
 	writeTx(tx)
 	log.Printf("[Update] Transaction completed")
+}
+
+func (w *Worker) cleanupUpdateFiles() {
+	tx, _ := readTx()
+	if tx != nil && (tx.CurrentState == "STAGED" || tx.CurrentState == "APPLYING" || tx.CurrentState == "RESTARTING" || tx.CurrentState == "VERIFYING_NEW_WORKER" || tx.CurrentState == "ROLLING_BACK") {
+		// Active transaction, do not clean up
+		return
+	}
+
+	updateDir := filepath.Join(getWorkerDataDir(), "updates")
+	entries, err := os.ReadDir(updateDir)
+	if err != nil {
+		return
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasPrefix(entry.Name(), "updater-helper-") {
+			path := filepath.Join(updateDir, entry.Name())
+			os.Remove(path)
+		}
+	}
 }
 
 func (w *Worker) Stop() {
@@ -1056,6 +1104,13 @@ func (w *Worker) stageUpdate(req fgupdate.Request) {
 		StartedAt:        time.Now(),
 		RestartDeadline:  time.Now().Add(60 * time.Second),
 		WorkerPID:        os.Getpid(),
+		LifecycleMode:    DetectCurrentLifecycle(),
+	}
+
+	// Prepare rollback backup
+	if err := copyFile(exe, tx.BackupBinaryPath, 0755); err != nil {
+		w.reportUpdate(req.ID, "failed", "Could not create backup: "+err.Error(), false)
+		return
 	}
 
 	if oldHash, err := fileSHA256(exe); err == nil {
