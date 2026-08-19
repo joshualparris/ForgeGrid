@@ -33,7 +33,11 @@ func writeError(w http.ResponseWriter, status int, code, message, detail string)
 
 func (c *Coordinator) isAdminRequest(r *http.Request) bool {
 	user, pass, ok := r.BasicAuth()
-	return ok && user == "admin" && c.AdminToken != "" && pass == c.AdminToken
+	if ok && user == "admin" && c.AdminToken != "" && pass == c.AdminToken {
+		return true
+	}
+	cookie, err := r.Cookie("forgegrid_admin")
+	return err == nil && c.AdminToken != "" && cookie.Value == c.AdminToken
 }
 
 func (c *Coordinator) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
@@ -42,6 +46,17 @@ func (c *Coordinator) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 			w.Header().Set("WWW-Authenticate", `Basic realm="ForgeGrid Dashboard"`)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
+		}
+		if _, err := r.Cookie("forgegrid_admin"); err != nil {
+			http.SetCookie(w, &http.Cookie{
+				Name:     "forgegrid_admin",
+				Value:    c.AdminToken,
+				Path:     "/",
+				HttpOnly: true,
+				Secure:   !c.Insecure,
+				SameSite: http.SameSiteStrictMode,
+				MaxAge:   60 * 60 * 24 * 14,
+			})
 		}
 		next.ServeHTTP(w, r)
 	}
@@ -107,6 +122,7 @@ func (c *Coordinator) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"ip":          c.IP,
 		"identity":    c.Store.CoordinatorCfg.Identity,
 		"fingerprint": c.Fingerprint,
+		"login_file":  filepath.Join(c.Store.Dir(), "dashboard-login.txt"),
 	})
 }
 

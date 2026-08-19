@@ -99,3 +99,30 @@ func TestWorkerCanOnlyPollOwnPendingAndCancelRequestedJobs(t *testing.T) {
 		}
 	}
 }
+
+func TestAdminAuthSetsAndAcceptsBrowserCookie(t *testing.T) {
+	c := testCoordinator(t)
+	handler := c.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	firstReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	firstReq.SetBasicAuth("admin", "admin-token")
+	first := httptest.NewRecorder()
+	handler(first, firstReq)
+	if first.Code != http.StatusNoContent {
+		t.Fatalf("first status = %d", first.Code)
+	}
+	cookies := first.Result().Cookies()
+	if len(cookies) == 0 || cookies[0].Name != "forgegrid_admin" {
+		t.Fatalf("expected forgegrid_admin cookie, got %#v", cookies)
+	}
+
+	nextReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	nextReq.AddCookie(cookies[0])
+	next := httptest.NewRecorder()
+	handler(next, nextReq)
+	if next.Code != http.StatusNoContent {
+		t.Fatalf("cookie status = %d", next.Code)
+	}
+}

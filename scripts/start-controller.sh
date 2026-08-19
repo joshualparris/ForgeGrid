@@ -9,11 +9,11 @@ mkdir -p "$LOG_DIR"
 cd "$ROOT"
 
 if ! pgrep -f "$ROOT/forgegrid agent-bridge serve --port 9091" >/dev/null 2>&1; then
-  nohup "$ROOT/forgegrid" agent-bridge serve --port 9091 >>"$LOG_DIR/agentbridge.log" 2>&1 &
+  setsid "$ROOT/forgegrid" agent-bridge serve --port 9091 >>"$LOG_DIR/agentbridge.log" 2>&1 < /dev/null &
 fi
 
 if ! pgrep -f "$ROOT/forgegrid -mode coordinator -port 8080" >/dev/null 2>&1; then
-  nohup "$ROOT/forgegrid" -mode coordinator -port 8080 >>"$LOG_DIR/coordinator.log" 2>&1 &
+  setsid "$ROOT/forgegrid" -mode coordinator -port 8080 >>"$LOG_DIR/coordinator.log" 2>&1 < /dev/null &
 fi
 
 for _ in {1..30}; do

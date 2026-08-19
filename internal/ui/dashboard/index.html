@@ -72,10 +72,21 @@
         .project-tools { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
         .intelligence { background: #151719; border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
         .intelligence ul { margin: 8px 0 0; padding-left: 18px; }
+        .setup-wizard { display: grid; gap: 16px; border-color: #2e5f7f; background: #151a1d; }
+        .setup-head { display: flex; justify-content: space-between; gap: 16px; align-items: start; flex-wrap: wrap; }
+        .setup-head p { margin: 6px 0 0; color: var(--muted); max-width: 760px; line-height: 1.45; }
+        .setup-steps { display: grid; grid-template-columns: repeat(3, minmax(220px, 1fr)); gap: 12px; }
+        .setup-step { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 14px; display: grid; gap: 8px; }
+        .setup-step.done { border-color: rgba(65, 211, 125, 0.7); }
+        .setup-step.attention { border-color: rgba(244, 200, 74, 0.8); }
+        .setup-step strong { font-size: 16px; }
+        .setup-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+        .copy-box { display: grid; gap: 8px; }
+        .copy-box textarea { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; min-height: 92px; resize: vertical; }
         .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.72); padding: 32px; z-index: 10; }
         .modal-content { background: #1e1e1e; border: 1px solid #444; border-radius: 8px; padding: 20px; height: calc(100vh - 96px); display: flex; flex-direction: column; }
         pre { background: #101010; color: #d7ffd7; padding: 12px; border-radius: 6px; overflow: auto; white-space: pre-wrap; }
-        @media (max-width: 900px) { main { padding: 14px; } .command-grid, .stats, .job-picker { grid-template-columns: 1fr; } .topbar { position: static; } }
+        @media (max-width: 900px) { main { padding: 14px; } .command-grid, .stats, .job-picker, .setup-steps { grid-template-columns: 1fr; } .topbar { position: static; } }
     </style>
 </head>
 <body>
@@ -89,6 +100,45 @@
     </header>
 
     <main>
+    <section class="card setup-wizard" id="setupWizard">
+        <div class="setup-head">
+            <div>
+                <h2>Welcome To ForgeGrid</h2>
+                <p id="setupSummary">Checking what is ready...</p>
+            </div>
+            <div class="setup-actions">
+                <button onclick="startFirstRunSession()">Add Computer</button>
+                <button class="ghost-button" onclick="refreshProjects()">Connect GitHub</button>
+                <button class="ghost-button" onclick="dismissSetupWizard()">Hide</button>
+            </div>
+        </div>
+        <div class="setup-steps">
+            <div class="setup-step" id="setupStepGithub">
+                <strong>1. Connect GitHub</strong>
+                <span class="muted">Not checked yet.</span>
+                <details class="mini-details">
+                    <summary>Token setup</summary>
+                    <div class="copy-box">
+                        <textarea readonly>mkdir -p ~/.config/forgegrid/coordinator
+nano ~/.config/forgegrid/coordinator/github-token.txt
+chmod 600 ~/.config/forgegrid/coordinator/github-token.txt</textarea>
+                    </div>
+                </details>
+            </div>
+            <div class="setup-step" id="setupStepComputer">
+                <strong>2. Add A Computer</strong>
+                <span class="muted">No machines checked yet.</span>
+                <button onclick="startFirstRunSession()">Show Join Command</button>
+            </div>
+            <div class="setup-step" id="setupStepWork">
+                <strong>3. Send Work</strong>
+                <span class="muted">Waiting for a project and an online machine.</span>
+                <button class="success-button" onclick="scrollToWork()">Choose Work</button>
+            </div>
+        </div>
+        <pre id="setupJoinOutput" style="display: none;"></pre>
+    </section>
+
     <section class="stats">
         <div class="stat"><span class="muted">Online Machines</span><strong id="onlineCount">0</strong></div>
         <div class="stat"><span class="muted">Ready For AI</span><strong id="aiCount">0</strong></div>
@@ -292,6 +342,7 @@
         let selectedProject = null;
         let selectedInspection = null;
         let projectCursor = -1;
+        let latestSetupSession = null;
 
         function splitCSV(value) {
             return value.split(',').map(v => v.trim()).filter(Boolean);
@@ -496,10 +547,12 @@
                     state.style.color = 'var(--yellow)';
                 }
                 renderProjectList();
+                updateSetupWizard();
             } catch (e) {
                 const state = document.getElementById('githubState');
                 state.textContent = `Project library unavailable: ${e.message}`;
                 state.style.color = 'var(--red)';
+                updateSetupWizard();
             }
         }
 
@@ -515,9 +568,11 @@
                 state.textContent = `GitHub: connected as ${data.login || 'authenticated user'} · ${projectsStore.length} projects`;
                 state.style.color = 'var(--green)';
                 renderProjectList();
+                updateSetupWizard();
             } catch (e) {
                 state.textContent = e.message;
                 state.style.color = 'var(--red)';
+                updateSetupWizard();
             }
         }
 
@@ -939,6 +994,7 @@ tasks:`;
             const data = await res.json();
             document.getElementById('coordIP').innerText = data.ip;
             coordinatorIdentity = data.identity;
+            updateSetupWizard();
             initMessaging();
         }
 
@@ -959,6 +1015,7 @@ tasks:`;
                 return;
             }
             const data = await res.json();
+            latestSetupSession = data;
             latestAgentBridgeFingerprint = data.agent_fingerprint || latestAgentBridgeFingerprint;
             document.getElementById('pairingCode').innerText = data.pairing_code;
             output.textContent =
@@ -972,6 +1029,29 @@ Windows runner bootstrap:
 ${data.windows_bootstrap}
 
 Reconnect existing runner:
+${data.reconnect_command}`;
+            updateSetupJoinOutput(data);
+        }
+
+        async function startFirstRunSession() {
+            await startWifiSession();
+            const output = document.getElementById('setupJoinOutput');
+            if (output) output.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+
+        function updateSetupJoinOutput(data) {
+            const output = document.getElementById('setupJoinOutput');
+            if (!output || !data) return;
+            output.style.display = 'block';
+            output.textContent =
+`On the other computer, run this:
+
+${data.windows_bootstrap}
+
+Pairing code: ${data.pairing_code}
+Coordinator: ${data.controller_url}
+
+Already paired? Start the worker with:
 ${data.reconnect_command}`;
         }
 
@@ -1062,6 +1142,7 @@ Then run:
             }
             renderMachineList();
             updateStats();
+            updateSetupWizard();
             const tbody = document.getElementById('workersTable');
             tbody.innerHTML = '';
             if (workers) {
@@ -1151,6 +1232,45 @@ Then run:
             document.getElementById('aiCount').textContent = ai.length;
             document.getElementById('codeCount').textContent = code.length;
             document.getElementById('activeJobCount').textContent = active.length;
+        }
+
+        function updateSetupWizard() {
+            const wizard = document.getElementById('setupWizard');
+            if (!wizard) return;
+            if (localStorage.getItem('forgegrid.setup.dismissed') === 'true') {
+                wizard.style.display = 'none';
+                return;
+            }
+            const online = workersStore.filter(isWorkerOnline);
+            const githubReady = projectsStore.length > 0;
+            const hasAI = online.some(w => (w.capabilities || []).includes('codex'));
+            setSetupStep('setupStepGithub', githubReady, githubReady ? `Ready: ${projectsStore.length} GitHub projects loaded.` : 'Add a GitHub token, then press Connect GitHub.');
+            setSetupStep('setupStepComputer', online.length > 0, online.length ? `Ready: ${online.map(w => w.node_name).join(', ')} online.` : 'Press Add Computer and run the join command on another laptop.');
+            setSetupStep('setupStepWork', githubReady && online.length > 0, githubReady && online.length > 0 ? (hasAI ? 'Ready: AI work is available.' : 'Ready for tests/builds. Add a Codex-capable worker for AI jobs.') : 'Connect GitHub and add at least one online machine.');
+            document.getElementById('setupSummary').textContent = githubReady && online.length > 0
+                ? 'You are ready to choose a project and send work to a machine.'
+                : 'Finish these setup steps once, then ForgeGrid becomes a project command center.';
+            if (latestSetupSession) updateSetupJoinOutput(latestSetupSession);
+        }
+
+        function setSetupStep(id, done, text) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.classList.toggle('done', !!done);
+            el.classList.toggle('attention', !done);
+            const span = el.querySelector('.muted');
+            if (span) span.textContent = text;
+        }
+
+        function dismissSetupWizard() {
+            localStorage.setItem('forgegrid.setup.dismissed', 'true');
+            const wizard = document.getElementById('setupWizard');
+            if (wizard) wizard.style.display = 'none';
+        }
+
+        function scrollToWork() {
+            const target = document.querySelector('.command-grid');
+            if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
         
         async function fetchJobs() {
