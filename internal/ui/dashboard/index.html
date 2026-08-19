@@ -157,7 +157,7 @@ chmod 600 ~/.config/forgegrid/coordinator/github-token.txt</textarea>
             <div class="job-picker">
                 <button class="job-card selected" data-job-type="smoke" onclick="selectQuickJob('smoke')"><strong>Check This Machine</strong><span>Fast built-in test. Use this first.</span></button>
                 <button class="job-card" data-job-type="go-test" onclick="selectQuickJob('go-test')"><strong>Run Project Tests</strong><span>Clone a Go repo and run its test suite.</span></button>
-                <button class="job-card" data-job-type="ai-fix" onclick="selectQuickJob('ai-fix')"><strong>Ask AI To Improve Code</strong><span>Have a Codex-capable worker make a small change.</span></button>
+                <button class="job-card" data-job-type="ai-fix" onclick="selectQuickJob('ai-fix')"><strong>Ask AI To Work On This Project</strong><span>Use the best available coding agent on your laptops.</span></button>
                 <button class="job-card" data-job-type="godot-export" onclick="selectQuickJob('godot-export')"><strong>Build Godot Game</strong><span>Export a Windows build from a Godot project.</span></button>
             </div>
 
@@ -183,6 +183,13 @@ chmod 600 ~/.config/forgegrid/coordinator/github-token.txt</textarea>
                 </label>
                 <label id="quickPromptWrap">What should the AI do?
                     <textarea id="quickPrompt" rows="4">Inspect this project, make one small useful improvement, and add or update a test if appropriate.</textarea>
+                </label>
+                <label id="aiAgentWrap">AI agent
+                    <select id="aiAgentChoice">
+                        <option value="auto">Automatic - best available</option>
+                        <option value="antigravity">Antigravity</option>
+                        <option value="codex">Codex</option>
+                    </select>
                 </label>
                 <label>Save changes?
                     <select id="quickCommit">
@@ -386,10 +393,49 @@ chmod 600 ~/.config/forgegrid/coordinator/github-token.txt</textarea>
 
         function jobKind(job) {
             if (job.task === 'test') return 'Machine check';
-            if (job.profile === 'CodexExec') return 'AI code work';
+            if (job.profile === 'CodexExec' || job.profile === 'AIAgent' || job.profile === 'AIAgentAuto') return 'AI code work';
             if (job.profile === 'GoTest') return 'Go tests';
             if (job.profile === 'GodotExport') return 'Godot build';
             return job.profile || job.task || 'Job';
+        }
+
+        function humanCapability(cap) {
+            const names = {
+                'ai-agent': 'AI agent',
+                antigravity: 'Antigravity',
+                codex: 'Codex',
+                python: 'Python',
+                go: 'Go',
+                node: 'Node',
+                git: 'Git',
+                godot: 'Godot'
+            };
+            return names[cap] || cap;
+        }
+
+        function visibleCapabilities(worker) {
+            const caps = worker.capabilities || [];
+            return caps.filter(c => c !== 'ai-agent').map(humanCapability);
+        }
+
+        function machineCapabilityText(worker) {
+            const labels = worker.labels || [];
+            const caps = visibleCapabilities(worker);
+            const pieces = [];
+            if (labels.length) pieces.push(`Labels: ${labels.join(', ')}`);
+            pieces.push(caps.length ? `Can run: ${caps.join(', ')}` : 'Can run: nothing detected yet');
+            return pieces.join(' | ');
+        }
+
+        function capabilityPills(worker) {
+            const labels = worker.labels || [];
+            const caps = visibleCapabilities(worker);
+            const pills = labels.map(c => `<span class="pill">${escapeHTML(c)}</span>`);
+            if (caps.length) {
+                pills.push(`<span class="muted">Can run:</span>`);
+                caps.forEach(c => pills.push(`<span class="pill">${escapeHTML(c)}</span>`));
+            }
+            return pills.length ? pills.join('') : '<span class="muted">No usable tools detected yet</span>';
         }
 
         function setJobFilter(filter) {
@@ -493,6 +539,7 @@ chmod 600 ~/.config/forgegrid/coordinator/github-token.txt</textarea>
             const picker = document.querySelector('.job-picker');
             picker.innerHTML = '';
             const typeMap = {
+                'ai-agent': 'ai-fix',
                 codex: 'ai-fix',
                 'go-test': 'go-test',
                 'go-race': 'go-race',
@@ -588,6 +635,7 @@ chmod 600 ~/.config/forgegrid/coordinator/github-token.txt</textarea>
             document.getElementById('quickBase').closest('label').style.display = repoJob ? 'block' : 'none';
             document.getElementById('quickBranch').closest('label').style.display = repoJob ? 'block' : 'none';
             document.getElementById('quickPromptWrap').style.display = type === 'ai-fix' ? 'block' : 'none';
+            document.getElementById('aiAgentWrap').style.display = type === 'ai-fix' ? 'block' : 'none';
             document.getElementById('quickCommit').closest('label').style.display = type === 'ai-fix' ? 'block' : 'none';
             document.getElementById('projectPickerWrap').style.display = repoJob && !document.getElementById('manualRepoToggle').checked ? 'block' : 'none';
             document.getElementById('manualRepoToggle').closest('label').style.display = repoJob ? 'block' : 'none';
@@ -611,10 +659,9 @@ chmod 600 ~/.config/forgegrid/coordinator/github-token.txt</textarea>
             return JSON.stringify(String(value || ''));
         }
 
-        function quickRequirements(worker, caps) {
-            const labels = worker && worker.labels ? worker.labels.filter(l => l === 'trusted') : [];
-            return `      os: ${yamlQuote(worker ? worker.os : 'windows')}
-      labels: [${labels.map(yamlQuote).join(', ')}]
+        function quickRequirements(caps, os) {
+            return `      os: ${yamlQuote(os || '')}
+      labels: []
       capabilities: [${caps.map(yamlQuote).join(', ')}]`;
         }
 
@@ -633,9 +680,10 @@ chmod 600 ~/.config/forgegrid/coordinator/github-token.txt</textarea>
             let artefacts = '';
             let timeout = 600;
             if (selectedQuickJob === 'ai-fix') {
-                profile = 'CodexExec';
+                const agentChoice = document.getElementById('aiAgentChoice').value;
+                profile = agentChoice === 'antigravity' ? 'AIAgent' : (agentChoice === 'codex' ? 'CodexExec' : 'AIAgentAuto');
                 task = 'ai_improvement';
-                desc = 'Ask AI to improve code';
+                desc = 'Ask AI to work on this project';
                 caps = projectValidationCaps();
                 const context = selectedInspection ? `\n\nForgeGrid detected: ${(selectedInspection.project_types || []).join(', ') || 'unknown project type'}. Available validation: ${(selectedInspection.available_actions || []).map(a => a.label).join(', ')}. Work only on branch ${branch}; do not push to main or master.` : '';
                 params = `        prompt: ${yamlQuote(prompt + context)}`;
@@ -709,7 +757,7 @@ tasks:
   ${task}:
     description: ${yamlQuote(desc)}
     requirements:
-${quickRequirements(worker, caps)}
+${quickRequirements(caps, selectedQuickJob === 'godot-export' ? 'windows' : '')}
     execution:
       profile: ${yamlQuote(profile)}
       parameters:
@@ -729,7 +777,8 @@ ${params}
         }
 
         function projectValidationCaps() {
-            const caps = ['codex'];
+            const choice = document.getElementById('aiAgentChoice') ? document.getElementById('aiAgentChoice').value : 'auto';
+            const caps = [choice === 'antigravity' ? 'antigravity' : (choice === 'codex' ? 'codex' : 'ai-agent')];
             const types = selectedInspection && selectedInspection.project_types ? selectedInspection.project_types.map(t => t.toLowerCase()) : [];
             if (types.includes('go')) caps.push('go');
             if (types.includes('python')) caps.push('python');
@@ -1184,13 +1233,13 @@ Then run:
                             <td>${escapeHTML(w.node_name)}</td>
                             <td>${escapeHTML(w.os)}</td>
                             <td>${escapeHTML(w.cpu_model || w.cpu)} / ${Math.round(w.total_ram / 1073741824)}GB</td>
-                            <td>${escapeHTML([...(w.labels || []), ...(w.capabilities || []).map(c => 'cap:' + c)].join(', ') || '-')}</td>
+                            <td>${escapeHTML(machineCapabilityText(w))}</td>
                             <td class="${statusClass}"><strong>${escapeHTML(statusText)}</strong>${w.drain ? ' / drain' : ''}${w.disabled ? ' / disabled' : ''}</td>
                             <td>${lastSeen.toLocaleTimeString()}</td>
                             <td>${escapeHTML(currentJob)}</td>
                             <td style="max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${msgsHTML}</td>
                             <td>
-                                <button onclick="runTestJob('${escapeHTML(w.id)}')" ${w.status !== 'online' ? 'disabled' : ''}>Run Test</button>
+                                <button onclick="runTestJob('${escapeHTML(w.id)}')" ${w.status !== 'online' ? 'disabled' : ''}>Refresh Tools</button>
                                 <button onclick="setWorkerPolicy('${escapeHTML(w.id)}', { drain: ${!w.drain} })" style="background: #555;">${w.drain ? 'Undrain' : 'Drain'}</button>
                                 <button onclick="setWorkerPolicy('${escapeHTML(w.id)}', { disabled: ${!w.disabled} })" style="background: #775500;">${w.disabled ? 'Enable' : 'Disable'}</button>
                                 <button onclick="disconnectWorker('${escapeHTML(w.id)}')" style="background: #ff4d4d;">Disconnect</button>
@@ -1211,10 +1260,17 @@ Then run:
             }
             workersStore.forEach(w => {
                 const online = isWorkerOnline(w);
-                const card = document.createElement('button');
-                card.type = 'button';
+                const card = document.createElement('div');
+                card.tabIndex = 0;
+                card.role = 'button';
                 card.className = `machine-card ${selectedWorkerId === w.id ? 'selected' : ''} ${online ? '' : 'offline'}`;
                 card.onclick = () => selectWorker(w.id);
+                card.onkeydown = ev => {
+                    if (ev.key === 'Enter' || ev.key === ' ') {
+                        ev.preventDefault();
+                        selectWorker(w.id);
+                    }
+                };
                 const caps = w.capabilities || [];
                 const labels = w.labels || [];
                 const currentJob = jobsStore.find(j => j.worker_id === w.id && ['RUNNING', 'CLAIMED', 'PENDING'].includes(j.status));
@@ -1226,8 +1282,11 @@ Then run:
                         </div>
                         <span class="pill ${online ? 'online' : 'offline'}">${online ? 'online' : 'offline'}</span>
                     </div>
-                    <div style="margin-top: 8px;">${caps.length || labels.length ? [...labels, ...caps.map(c => 'can ' + c)].map(c => `<span class="pill">${escapeHTML(c)}</span>`).join('') : '<span class="muted">No special abilities advertised yet</span>'}</div>
-                    <div class="muted" style="margin-top: 8px;">${currentJob ? 'Working on ' + escapeHTML(currentJob.id) : 'Idle'}</div>
+                    <div style="margin-top: 8px;">${capabilityPills(w)}</div>
+                    <div class="setup-actions" style="margin-top: 8px;">
+                        <span class="muted">${currentJob ? 'Working on ' + escapeHTML(currentJob.id) : 'Idle'}</span>
+                        <button class="ghost-button" onclick="event.stopPropagation(); runTestJob('${escapeHTML(w.id)}')" ${online ? '' : 'disabled'}>Refresh tools</button>
+                    </div>
                 `;
                 list.appendChild(card);
             });
@@ -1235,7 +1294,7 @@ Then run:
 
         function updateStats() {
             const online = workersStore.filter(isWorkerOnline);
-            const ai = online.filter(w => (w.capabilities || []).includes('codex'));
+            const ai = online.filter(w => (w.capabilities || []).some(c => ['ai-agent', 'antigravity', 'codex'].includes(c)));
             const code = online.filter(w => (w.capabilities || []).some(c => ['go', 'node', 'godot'].includes(c)));
             const active = jobsStore.filter(j => ['PENDING', 'CLAIMED', 'RUNNING'].includes(j.status));
             document.getElementById('onlineCount').textContent = online.length;
@@ -1253,10 +1312,10 @@ Then run:
             }
             const online = workersStore.filter(isWorkerOnline);
             const githubReady = projectsStore.length > 0;
-            const hasAI = online.some(w => (w.capabilities || []).includes('codex'));
+            const hasAI = online.some(w => (w.capabilities || []).some(c => ['ai-agent', 'antigravity', 'codex'].includes(c)));
             setSetupStep('setupStepGithub', githubReady, githubReady ? `Ready: ${projectsStore.length} GitHub projects loaded.` : 'Add a GitHub token, then press Connect GitHub.');
             setSetupStep('setupStepComputer', online.length > 0, online.length ? `Ready: ${online.map(w => w.node_name).join(', ')} online.` : 'Press Add Computer and run the join command on another laptop.');
-            setSetupStep('setupStepWork', githubReady && online.length > 0, githubReady && online.length > 0 ? (hasAI ? 'Ready: AI work is available.' : 'Ready for tests/builds. Add a Codex-capable worker for AI jobs.') : 'Connect GitHub and add at least one online machine.');
+            setSetupStep('setupStepWork', githubReady && online.length > 0, githubReady && online.length > 0 ? (hasAI ? 'Ready: AI work is available.' : 'Ready for tests/builds. Add an AI-capable worker for AI jobs.') : 'Connect GitHub and add at least one online machine.');
             document.getElementById('setupSummary').textContent = githubReady && online.length > 0
                 ? 'You are ready to choose a project and send work to a machine.'
                 : 'Finish these setup steps once, then ForgeGrid becomes a project command center.';

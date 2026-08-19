@@ -61,6 +61,7 @@ func (c *Coordinator) inspectProject(ctx context.Context, projectID string, forc
 	}
 	if !force && project.Inspection != nil && !project.UpdatedAt.After(project.Inspection.InspectionTimestamp) {
 		inspection := *project.Inspection
+		normalizeInspectionActions(&inspection)
 		c.Store.Mu.RUnlock()
 		return &inspection, nil
 	}
@@ -87,6 +88,7 @@ func (c *Coordinator) inspectProject(ctx context.Context, projectID string, forc
 		packageScripts = githubPackageScripts(ctx, client, token, fullName, defaultBranch)
 	}
 	inspection := buildInspection(projectID, defaultBranch, sha, paths, packageScripts, truncated)
+	normalizeInspectionActions(inspection)
 
 	c.Store.Mu.Lock()
 	if stored := c.Store.ProjectLibrary.Projects[projectID]; stored != nil {
@@ -99,6 +101,22 @@ func (c *Coordinator) inspectProject(ctx context.Context, projectID string, forc
 	}
 	c.Store.Mu.Unlock()
 	return inspection, nil
+}
+
+func normalizeInspectionActions(inspection *models.ProjectInspection) {
+	if inspection == nil {
+		return
+	}
+	for i := range inspection.AvailableActions {
+		action := &inspection.AvailableActions[i]
+		if action.ID == "codex" || action.Profile == "CodexExec" && action.Label == "Work on with Codex" {
+			action.ID = "ai-agent"
+			action.Label = "Ask AI To Work On This Project"
+			action.Description = "Describe a coding task in plain English"
+			action.Profile = "AIAgentAuto"
+			action.RequiredCapabilities = []string{"ai-agent"}
+		}
+	}
 }
 
 func githubDefaultSHA(ctx context.Context, client *http.Client, token, fullName, branch string) (string, error) {
@@ -228,7 +246,7 @@ func buildInspection(projectID, branch, sha string, paths []string, scripts map[
 		warnings = append(warnings, "GitHub tree was truncated; inspection may be incomplete")
 	}
 	actions = append([]models.ProjectAction{
-		action("codex", "Work on with Codex", "Describe a coding task in plain English", "CodexExec", nil, []string{"codex"}, "", true, 3600),
+		action("ai-agent", "Ask AI To Work On This Project", "Describe a coding task in plain English", "AIAgentAuto", nil, []string{"ai-agent"}, "", true, 3600),
 		action("inspect", "Inspect Project", "Refresh project detection", "", nil, nil, "", false, 0),
 	}, actions...)
 	return &models.ProjectInspection{

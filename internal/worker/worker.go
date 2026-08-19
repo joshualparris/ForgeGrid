@@ -38,16 +38,17 @@ type Worker struct {
 	Insecure       bool
 	Fingerprint    string
 
-	mu             sync.Mutex
-	activeJobs     map[string]context.CancelFunc
-	stopOnce       sync.Once
-	stopCh         chan struct{}
-	loopsDone      sync.WaitGroup
-	allowedRepos   map[string]bool
-	allowPush      bool
-	allowBootstrap bool
-	Labels         []string
-	Capabilities   []string
+	mu              sync.Mutex
+	activeJobs      map[string]context.CancelFunc
+	stopOnce        sync.Once
+	stopCh          chan struct{}
+	loopsDone       sync.WaitGroup
+	allowedRepos    map[string]bool
+	allowPush       bool
+	allowBootstrap  bool
+	Labels          []string
+	Capabilities    []string
+	capabilityAllow []string
 }
 
 type WorkerCredentials struct {
@@ -122,16 +123,16 @@ func ResetCredentials() error {
 
 func New(nodeName, workspace string, insecure bool) *Worker {
 	w := &Worker{
-		NodeName:       nodeName,
-		Workspace:      workspace,
-		Insecure:       insecure,
-		activeJobs:     make(map[string]context.CancelFunc),
-		stopCh:         make(chan struct{}),
-		allowedRepos:   parseRepoAllowlist(os.Getenv("FORGEGRID_ALLOWED_REPOS")),
-		allowPush:      os.Getenv("FORGEGRID_ALLOW_PUSH") == "true",
-		allowBootstrap: os.Getenv("FORGEGRID_ALLOW_BOOTSTRAP") == "true",
-		Labels:         parseCSV(os.Getenv("FORGEGRID_LABELS")),
-		Capabilities:   parseCSV(os.Getenv("FORGEGRID_CAPABILITIES")),
+		NodeName:        nodeName,
+		Workspace:       workspace,
+		Insecure:        insecure,
+		activeJobs:      make(map[string]context.CancelFunc),
+		stopCh:          make(chan struct{}),
+		allowedRepos:    parseRepoAllowlist(os.Getenv("FORGEGRID_ALLOWED_REPOS")),
+		allowPush:       os.Getenv("FORGEGRID_ALLOW_PUSH") == "true",
+		allowBootstrap:  os.Getenv("FORGEGRID_ALLOW_BOOTSTRAP") == "true",
+		Labels:          parseCSV(os.Getenv("FORGEGRID_LABELS")),
+		capabilityAllow: parseCSV(os.Getenv("FORGEGRID_CAPABILITIES")),
 	}
 	w.LoadPolicy()
 	if envRepos := strings.TrimSpace(os.Getenv("FORGEGRID_ALLOWED_REPOS")); envRepos != "" {
@@ -147,8 +148,9 @@ func New(nodeName, workspace string, insecure bool) *Worker {
 		w.Labels = parseCSV(labels)
 	}
 	if capabilities := strings.TrimSpace(os.Getenv("FORGEGRID_CAPABILITIES")); capabilities != "" {
-		w.Capabilities = parseCSV(capabilities)
+		w.capabilityAllow = parseCSV(capabilities)
 	}
+	w.RefreshCapabilities()
 	return w
 }
 
@@ -171,6 +173,23 @@ func parseRepoAllowlist(raw string) map[string]bool {
 	return allowed
 }
 
+func sameStringSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	set := make(map[string]int, len(a))
+	for _, v := range a {
+		set[v]++
+	}
+	for _, v := range b {
+		if set[v] == 0 {
+			return false
+		}
+		set[v]--
+	}
+	return true
+}
+
 func (w *Worker) SetGitPolicy(allowedRepos string, allowPush bool) {
 	if strings.TrimSpace(allowedRepos) != "" {
 		w.allowedRepos = parseRepoAllowlist(allowedRepos)
@@ -185,33 +204,126 @@ func (w *Worker) SetLabelsAndCapabilities(labels, capabilities string) {
 		w.Labels = parseCSV(labels)
 	}
 	if strings.TrimSpace(capabilities) != "" {
-		w.Capabilities = parseCSV(capabilities)
+		w.capabilityAllow = parseCSV(capabilities)
+		w.RefreshCapabilities()
 	}
 }
 
 func (w *Worker) ValidateCapabilities() ([]string, []string) {
-	valid := []string{}
-	missing := []string{}
-
-	conceptualCaps := map[string]bool{
-		"github-pr":     true,
-		"trusted":       true,
-		"windows-build": true,
-		"linux-build":   true,
+	detected := DetectCapabilities()
+	if len(w.capabilityAllow) == 0 {
+		return detected, nil
 	}
-
-	for _, cap := range w.Capabilities {
-		if conceptualCaps[cap] {
-			valid = append(valid, cap)
+	detectedSet := make(map[string]bool, len(detected))
+	for _, cap := range detected {
+		detectedSet[cap] = true
+	}
+	valid := make([]string, 0, len(w.capabilityAllow))
+	missing := make([]string, 0)
+	seen := make(map[string]bool)
+	for _, cap := range w.capabilityAllow {
+		cap = strings.ToLower(strings.TrimSpace(cap))
+		if cap == "" || seen[cap] {
 			continue
 		}
-		if _, err := exec.LookPath(cap); err == nil {
+		seen[cap] = true
+		if detectedSet[cap] {
 			valid = append(valid, cap)
 		} else {
 			missing = append(missing, cap)
 		}
 	}
 	return valid, missing
+}
+
+func (w *Worker) RefreshCapabilities() {
+	valid, _ := w.ValidateCapabilities()
+	w.Capabilities = valid
+}
+
+func DetectCapabilities() []string {
+	checks := []struct {
+		name string
+		ok   func() bool
+	}{
+		{"git", commandOK("git", "--version")},
+		{"python", pythonOK},
+		{"go", commandOK("go", "version")},
+		{"node", commandOK("node", "--version")},
+		{"antigravity", antigravityOK},
+		{"codex", commandOK("codex", "--version")},
+		{"godot", godotOK},
+	}
+	var caps []string
+	hasAgent := false
+	for _, check := range checks {
+		if check.ok() {
+			caps = append(caps, check.name)
+			if check.name == "antigravity" || check.name == "codex" {
+				hasAgent = true
+			}
+		}
+	}
+	if hasAgent {
+		caps = append(caps, "ai-agent")
+	}
+	return caps
+}
+
+func commandOK(name string, args ...string) func() bool {
+	return func() bool {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, name, args...)
+		return cmd.Run() == nil
+	}
+}
+
+func pythonOK() bool {
+	return commandOK("python", "-c", "import sys; sys.exit(0)")() || commandOK("python3", "-c", "import sys; sys.exit(0)")()
+}
+
+func antigravityOK() bool {
+	if path := strings.TrimSpace(os.Getenv("ANTIGRAVITY_PATH")); path != "" {
+		return fileExecutableExists(path)
+	}
+	if _, err := exec.LookPath("antigravity"); err == nil {
+		return true
+	}
+	if _, err := exec.LookPath("antigravity.exe"); err == nil {
+		return true
+	}
+	for _, root := range []string{os.Getenv("LOCALAPPDATA"), os.Getenv("ProgramFiles"), os.Getenv("ProgramFiles(x86)")} {
+		if root == "" {
+			continue
+		}
+		for _, candidate := range []string{
+			filepath.Join(root, "Programs", "Antigravity", "Antigravity.exe"),
+			filepath.Join(root, "Antigravity", "Antigravity.exe"),
+			filepath.Join(root, "Google", "Antigravity", "Antigravity.exe"),
+		} {
+			if fileExecutableExists(candidate) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func godotOK() bool {
+	return commandOK("godot", "--version")() || commandOK("godot4", "--version")()
+}
+
+func commandPathOK(path string, args ...string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, args...)
+	return cmd.Run() == nil
+}
+
+func fileExecutableExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 func (w *Worker) LoadPolicy() error {
@@ -233,7 +345,7 @@ func (w *Worker) LoadPolicy() error {
 	w.allowPush = p.AllowPush
 	w.allowBootstrap = p.AllowBootstrap
 	w.Labels = append([]string{}, p.Labels...)
-	w.Capabilities = append([]string{}, p.Capabilities...)
+	w.capabilityAllow = append([]string{}, p.Capabilities...)
 	return nil
 }
 
@@ -295,6 +407,7 @@ func (w *Worker) getHardwareInfo() (models.WorkerDTO, error) {
 	if len(drift) > 0 {
 		log.Printf("Capability drift detected: %v are configured but missing from PATH", drift)
 	}
+	w.Capabilities = append([]string{}, validCaps...)
 	info.Capabilities = append([]string{}, validCaps...)
 
 	if h, err := host.Info(); err == nil {
@@ -449,6 +562,16 @@ func (w *Worker) heartbeatLoop() {
 }
 
 func (w *Worker) sendHeartbeat() {
+	validCaps, drift := w.ValidateCapabilities()
+	if len(drift) > 0 {
+		log.Printf("Capability drift detected: %v are configured but missing from PATH", drift)
+	}
+	w.mu.Lock()
+	w.Capabilities = validCaps
+	labels := append([]string{}, w.Labels...)
+	capabilities := append([]string{}, w.Capabilities...)
+	w.mu.Unlock()
+
 	var avail uint64
 	if v, err := mem.VirtualMemory(); err == nil {
 		avail = v.Available
@@ -466,8 +589,8 @@ func (w *Worker) sendHeartbeat() {
 		"worker_id":           w.WorkerID,
 		"available_ram":       avail,
 		"free_workspace_disk": free,
-		"labels":              w.Labels,
-		"capabilities":        w.Capabilities,
+		"labels":              labels,
+		"capabilities":        capabilities,
 	}
 	body, _ := json.Marshal(reqBody)
 
@@ -505,10 +628,14 @@ func (w *Worker) jobLoop() {
 
 func (w *Worker) pollJobs() {
 	validCaps, drift := w.ValidateCapabilities()
+	w.mu.Lock()
+	changed := !sameStringSet(w.Capabilities, validCaps)
+	w.Capabilities = validCaps
+	w.mu.Unlock()
 	if len(drift) > 0 {
-		w.mu.Lock()
-		w.Capabilities = validCaps
-		w.mu.Unlock()
+		log.Printf("Capability drift detected: %v are configured but missing from PATH", drift)
+	}
+	if changed || len(drift) > 0 {
 		w.sendHeartbeat()
 	}
 

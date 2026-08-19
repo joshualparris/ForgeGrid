@@ -40,7 +40,7 @@ func TestBuildInspectionDetectsGoPythonNodeGodot(t *testing.T) {
 	for _, action := range inspection.AvailableActions {
 		actionIDs = append(actionIDs, action.ID)
 	}
-	for _, want := range []string{"codex", "go-test", "go-race", "python-test", "node-test", "node-build", "godot-export-windows"} {
+	for _, want := range []string{"ai-agent", "go-test", "go-race", "python-test", "node-test", "node-build", "godot-export-windows"} {
 		if !hasString(actionIDs, want) {
 			t.Fatalf("expected action %s in %#v", want, actionIDs)
 		}
@@ -76,8 +76,14 @@ func TestInspectProjectReturnsCachedInspectionWithoutGitHubToken(t *testing.T) {
 		FullName:  "josh/repo",
 		UpdatedAt: cachedAt.Add(-time.Hour),
 		Inspection: &models.ProjectInspection{
-			ProjectID:           "josh/repo",
-			ProjectTypes:        []string{"Go"},
+			ProjectID:    "josh/repo",
+			ProjectTypes: []string{"Go"},
+			AvailableActions: []models.ProjectAction{{
+				ID:                   "codex",
+				Label:                "Work on with Codex",
+				Profile:              "CodexExec",
+				RequiredCapabilities: []string{"codex"},
+			}},
 			InspectionTimestamp: cachedAt,
 		},
 	}
@@ -89,6 +95,9 @@ func TestInspectProjectReturnsCachedInspectionWithoutGitHubToken(t *testing.T) {
 	}
 	if !hasString(inspection.ProjectTypes, "Go") {
 		t.Fatalf("expected cached Go inspection, got %#v", inspection.ProjectTypes)
+	}
+	if inspection.AvailableActions[0].ID != "ai-agent" || inspection.AvailableActions[0].Profile != "AIAgentAuto" {
+		t.Fatalf("expected cached Codex action to normalize, got %#v", inspection.AvailableActions[0])
 	}
 }
 

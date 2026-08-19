@@ -58,13 +58,12 @@ func RunHealthCheck(coordinatorURL string, fingerprint string) error {
 
 	// 4. Verify Local Execution Profiles
 	fmt.Println("4. Validating Common Executables...")
-	executables := []string{"git", "go", "python", "python3"}
-	for _, exe := range executables {
-		path, err := exec.LookPath(exe)
-		if err != nil {
-			fmt.Printf("   [WARNING] Executable '%s' not found in PATH.\n", exe)
+	caps := DetectCapabilities()
+	for _, cap := range []string{"git", "python", "go", "node", "antigravity", "codex", "godot"} {
+		if hasCapability(caps, cap) {
+			fmt.Printf("   [OK] %s available.\n", humanToolName(cap))
 		} else {
-			fmt.Printf("   [OK] '%s' found at %s\n", exe, path)
+			fmt.Printf("   [WARNING] %s not detected.\n", humanToolName(cap))
 		}
 	}
 
@@ -74,4 +73,34 @@ func RunHealthCheck(coordinatorURL string, fingerprint string) error {
 
 	fmt.Println("-------------------------------------")
 	return nil
+}
+
+func hasCapability(caps []string, want string) bool {
+	for _, cap := range caps {
+		if cap == want {
+			return true
+		}
+	}
+	return false
+}
+
+func humanToolName(cap string) string {
+	switch cap {
+	case "git":
+		return "Git"
+	case "python":
+		return "Python"
+	case "go":
+		return "Go"
+	case "node":
+		return "Node"
+	case "antigravity":
+		return "Antigravity"
+	case "codex":
+		return "Codex"
+	case "godot":
+		return "Godot"
+	default:
+		return cap
+	}
 }

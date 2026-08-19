@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,12 +38,14 @@ func (d *Director) SubmitManifest(m *manifest.Manifest) error {
 		assignedWorker := d.selectWorker(task.Requirements)
 
 		if assignedWorker == "" {
-			return fmt.Errorf("no eligible online worker found for task '%s'", name)
+			return fmt.Errorf("no eligible online worker found for task '%s': %s", name, d.ExplainEligibility(task.Requirements))
 		}
+		worker := d.Store.Workers[assignedWorker]
 		workerName := assignedWorker
-		if worker := d.Store.Workers[assignedWorker]; worker != nil && worker.NodeName != "" {
+		if worker != nil && worker.NodeName != "" {
 			workerName = worker.NodeName
 		}
+		stages := bindAgentProfiles(task.Stages, worker)
 
 		job := &models.Job{
 			ID:             jobID,
@@ -53,27 +57,27 @@ func (d *Director) SubmitManifest(m *manifest.Manifest) error {
 			Task:           "execute",
 			Status:         models.StatusPending,
 			CreatedAt:      time.Now(),
-			Profile:        task.Stages[0].Profile,
-			Parameters:     task.Stages[0].Parameters,
-			Tools:          task.Stages[0].Tools,
-			TimeoutSeconds: task.Stages[0].TimeoutSeconds,
+			Profile:        stages[0].Profile,
+			Parameters:     stages[0].Parameters,
+			Tools:          stages[0].Tools,
+			TimeoutSeconds: stages[0].TimeoutSeconds,
 			Artefacts:      append([]string{}, task.Artefacts...),
 			RequiredLabels: append([]string{}, task.Requirements.Labels...),
 			RequiredCaps:   append([]string{}, task.Requirements.Capabilities...),
-			MaxRetries:     task.Stages[0].MaxRetries,
+			MaxRetries:     stages[0].MaxRetries,
 			RepositoryURL:  m.Repository.URL,
 			BaseCommit:     m.Repository.BaseCommit,
 			BranchName:     m.Repository.Branch,
-			CommitChanges:  task.Stages[0].Changes.Commit,
-			PushChanges:    task.Stages[0].Changes.Push,
-			CommitMessage:  task.Stages[0].Changes.CommitMessage,
+			CommitChanges:  stages[0].Changes.Commit,
+			PushChanges:    stages[0].Changes.Push,
+			CommitMessage:  stages[0].Changes.CommitMessage,
 			CreatePR:       m.Repository.CreatePR,
 			PRTitle:        m.Repository.PRTitle,
 			PRBody:         m.Repository.PRBody,
 			CurrentStage:   0,
 		}
 
-		for _, s := range task.Stages {
+		for _, s := range stages {
 			job.Stages = append(job.Stages, models.JobStage{
 				Name:           s.Name,
 				Profile:        s.Profile,
@@ -90,6 +94,79 @@ func (d *Director) SubmitManifest(m *manifest.Manifest) error {
 
 	d.Store.Save()
 	return nil
+}
+
+func bindAgentProfiles(stages []manifest.Execution, worker *models.WorkerState) []manifest.Execution {
+	out := make([]manifest.Execution, len(stages))
+	copy(out, stages)
+	if worker == nil {
+		return out
+	}
+	for i := range out {
+		if out[i].Profile != "AIAgentAuto" {
+			continue
+		}
+		if containsAll(worker.Capabilities, []string{"antigravity"}) {
+			out[i].Profile = "AIAgent"
+		} else if containsAll(worker.Capabilities, []string{"codex"}) {
+			out[i].Profile = "CodexExec"
+		}
+	}
+	return out
+}
+
+func (d *Director) ExplainEligibility(req manifest.Requirements) string {
+	if len(d.Store.Workers) == 0 {
+		return "no machines are paired yet"
+	}
+	var explanations []string
+	for _, w := range d.Store.Workers {
+		name := w.NodeName
+		if name == "" {
+			name = w.ID
+		}
+		reasons := d.workerIneligibleReasons(w, req)
+		if len(reasons) == 0 {
+			explanations = append(explanations, fmt.Sprintf("%s: ready", name))
+			continue
+		}
+		explanations = append(explanations, fmt.Sprintf("%s: %s", name, strings.Join(reasons, "; ")))
+	}
+	sort.Strings(explanations)
+	return strings.Join(explanations, " | ")
+}
+
+func (d *Director) workerIneligibleReasons(w *models.WorkerState, req manifest.Requirements) []string {
+	var reasons []string
+	if w.Status != "online" {
+		reasons = append(reasons, "offline")
+		return reasons
+	}
+	if w.Drain {
+		reasons = append(reasons, "paused")
+	}
+	if w.Disabled {
+		reasons = append(reasons, "disabled")
+	}
+	if d.workerLoad(w.ID) > 0 {
+		reasons = append(reasons, "busy")
+	}
+	if req.OS != "" && w.OS != req.OS {
+		reasons = append(reasons, fmt.Sprintf("needs %s, this is %s", req.OS, w.OS))
+	}
+	if req.MinCores > 0 && w.LogicalProcessors < req.MinCores {
+		reasons = append(reasons, fmt.Sprintf("needs %d CPU threads", req.MinCores))
+	}
+	if req.MinRAMGB > 0 && w.AvailableRAM < uint64(req.MinRAMGB)*1024*1024*1024 {
+		reasons = append(reasons, fmt.Sprintf("needs %dGB free RAM", req.MinRAMGB))
+	}
+	for _, label := range missingValues(w.Labels, req.Labels) {
+		reasons = append(reasons, fmt.Sprintf("missing label %s", label))
+	}
+	for _, cap := range missingValues(w.Capabilities, req.Capabilities) {
+		reasons = append(reasons, fmt.Sprintf("%s not available", humanCapability(cap)))
+	}
+	return reasons
 }
 
 func (d *Director) selectWorker(req manifest.Requirements) string {
@@ -124,10 +201,72 @@ func workerEligible(w *models.WorkerState, req manifest.Requirements) bool {
 	if req.MinRAMGB > 0 && w.AvailableRAM < uint64(req.MinRAMGB)*1024*1024*1024 {
 		return false
 	}
-	if !containsAll(w.Labels, req.Labels) || !containsAll(w.Capabilities, req.Capabilities) {
+	if !containsAll(w.Labels, req.Labels) || !workerHasCapabilities(w.Capabilities, req.Capabilities) {
 		return false
 	}
 	return true
+}
+
+func workerHasCapabilities(have, want []string) bool {
+	for _, cap := range want {
+		if cap == "ai-agent" {
+			if !containsAny(have, []string{"ai-agent", "antigravity", "codex"}) {
+				return false
+			}
+			continue
+		}
+		if !containsAll(have, []string{cap}) {
+			return false
+		}
+	}
+	return true
+}
+
+func missingValues(have, want []string) []string {
+	set := make(map[string]bool, len(have))
+	for _, v := range have {
+		set[v] = true
+	}
+	var missing []string
+	for _, v := range want {
+		if v == "ai-agent" && containsAny(have, []string{"ai-agent", "antigravity", "codex"}) {
+			continue
+		}
+		if !set[v] {
+			missing = append(missing, v)
+		}
+	}
+	return missing
+}
+
+func containsAny(have, want []string) bool {
+	set := make(map[string]bool, len(have))
+	for _, v := range have {
+		set[v] = true
+	}
+	for _, v := range want {
+		if set[v] {
+			return true
+		}
+	}
+	return false
+}
+
+func humanCapability(cap string) string {
+	names := map[string]string{
+		"codex":       "Codex",
+		"antigravity": "Antigravity",
+		"ai-agent":    "AI agent",
+		"python":      "Python",
+		"go":          "Go",
+		"node":        "Node",
+		"git":         "Git",
+		"godot":       "Godot",
+	}
+	if name := names[cap]; name != "" {
+		return name
+	}
+	return cap
 }
 
 func workerScore(w *models.WorkerState, req manifest.Requirements) int {

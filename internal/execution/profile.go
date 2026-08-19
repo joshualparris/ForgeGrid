@@ -91,7 +91,7 @@ var Profiles = map[string]Profile{
 		Executable:     "antigravity",
 		MaxTimeoutSecs: 3600, // 1 hour max for agent tasks
 		Subcommand:     []string{"--task"},
-		ArgKeys:        []string{"task"},
+		ArgKeys:        []string{"prompt", "task"},
 	},
 	"GodotExport": {
 		Name:           "GodotExport",
@@ -120,11 +120,42 @@ var Profiles = map[string]Profile{
 func init() {
 	// Pin executables on initialization
 	for _, p := range Profiles {
-		path, err := exec.LookPath(p.Executable)
-		if err == nil {
-			pinnedExecutables[p.Name] = path
+		for _, candidate := range executableCandidates(p.Executable) {
+			path, err := exec.LookPath(candidate)
+			if err == nil {
+				pinnedExecutables[p.Name] = path
+				break
+			}
+			if filepath.IsAbs(candidate) {
+				if info, statErr := os.Stat(candidate); statErr == nil && !info.IsDir() {
+					pinnedExecutables[p.Name] = candidate
+					break
+				}
+			}
 		}
 	}
+}
+
+func executableCandidates(name string) []string {
+	if name != "antigravity" {
+		return []string{name}
+	}
+	var candidates []string
+	if env := strings.TrimSpace(os.Getenv("ANTIGRAVITY_PATH")); env != "" {
+		candidates = append(candidates, env)
+	}
+	candidates = append(candidates, "antigravity", "antigravity.exe")
+	for _, root := range []string{os.Getenv("LOCALAPPDATA"), os.Getenv("ProgramFiles"), os.Getenv("ProgramFiles(x86)")} {
+		if root == "" {
+			continue
+		}
+		candidates = append(candidates,
+			filepath.Join(root, "Programs", "Antigravity", "Antigravity.exe"),
+			filepath.Join(root, "Antigravity", "Antigravity.exe"),
+			filepath.Join(root, "Google", "Antigravity", "Antigravity.exe"),
+		)
+	}
+	return candidates
 }
 
 func GetProfile(name string) (Profile, error) {

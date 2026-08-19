@@ -87,7 +87,7 @@ func TestHardwareDetection(t *testing.T) {
 
 func TestValidateCapabilities(t *testing.T) {
 	w := New("TestNode", "./tmp-ws", true)
-	w.Capabilities = []string{"go", "non_existent_tool_12345"}
+	w.SetLabelsAndCapabilities("", "go,non_existent_tool_12345")
 
 	valid, drift := w.ValidateCapabilities()
 
@@ -106,6 +106,27 @@ func TestValidateCapabilities(t *testing.T) {
 	if !hasDrift {
 		t.Fatalf("Expected non_existent_tool_12345 to be detected as missing drift")
 	}
+}
+
+func TestDetectCapabilitiesIncludesGitAndAIAgentWhenAvailable(t *testing.T) {
+	caps := DetectCapabilities()
+	if _, err := exec.LookPath("git"); err == nil && !hasWorkerString(caps, "git") {
+		t.Fatalf("expected git capability when git is available, got %#v", caps)
+	}
+	if hasWorkerString(caps, "antigravity") || hasWorkerString(caps, "codex") {
+		if !hasWorkerString(caps, "ai-agent") {
+			t.Fatalf("expected ai-agent capability when a coding agent is available, got %#v", caps)
+		}
+	}
+}
+
+func hasWorkerString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestLoadPolicyRestoresBootstrapPermission(t *testing.T) {

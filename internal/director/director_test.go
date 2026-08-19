@@ -213,6 +213,127 @@ tasks:
 	}
 }
 
+func TestDirectorAutoAIAgentChoosesIdleAntigravityPythonWorker(t *testing.T) {
+	s, err := store.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+
+	s.Mu.Lock()
+	s.Workers["thinkpad"] = &models.WorkerState{
+		ID:                "thinkpad",
+		NodeName:          "ThinkPad-Lenovo",
+		OS:                "windows",
+		Status:            "online",
+		AvailableRAM:      8 * 1024 * 1024 * 1024,
+		LogicalProcessors: 4,
+		Capabilities:      []string{"git", "python", "antigravity", "ai-agent"},
+	}
+	s.Workers["probook"] = &models.WorkerState{
+		ID:                "probook",
+		NodeName:          "probook",
+		OS:                "windows",
+		Status:            "online",
+		AvailableRAM:      16 * 1024 * 1024 * 1024,
+		LogicalProcessors: 12,
+		Capabilities:      []string{"git", "go", "node", "codex", "ai-agent"},
+	}
+	s.Jobs["busy"] = &models.Job{ID: "busy", WorkerID: "probook", Status: models.StatusRunning}
+	s.Mu.Unlock()
+
+	m, err := manifest.Parse(strings.NewReader(`
+project: "Whispering-Wilds"
+tasks:
+  ai_improvement:
+    requirements:
+      capabilities: ["ai-agent", "python"]
+    execution:
+      profile: "AIAgentAuto"
+      parameters:
+        prompt: "make a safe change"
+      changes:
+        commit: true
+`))
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	if err := New(s).SubmitManifest(m); err != nil {
+		t.Fatalf("dispatch failed: %v", err)
+	}
+	var job *models.Job
+	for _, j := range s.Jobs {
+		if j.ID != "busy" {
+			job = j
+		}
+	}
+	if job == nil {
+		t.Fatal("expected dispatched job")
+	}
+	if job.WorkerID != "thinkpad" {
+		t.Fatalf("expected ThinkPad, got %s", job.WorkerID)
+	}
+	if job.Profile != "AIAgent" {
+		t.Fatalf("expected AIAgent profile, got %s", job.Profile)
+	}
+}
+
+func TestDirectorEligibilityExplainsMissingAgentValidationAndBusy(t *testing.T) {
+	s, err := store.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+
+	s.Mu.Lock()
+	s.Workers["thinkpad"] = &models.WorkerState{ID: "thinkpad", NodeName: "ThinkPad-Lenovo", OS: "windows", Status: "online", Capabilities: []string{"antigravity", "ai-agent"}}
+	s.Workers["probook"] = &models.WorkerState{ID: "probook", NodeName: "probook", OS: "windows", Status: "online", Capabilities: []string{"codex", "ai-agent", "python"}}
+	s.Jobs["busy"] = &models.Job{ID: "busy", WorkerID: "probook", Status: models.StatusRunning}
+	s.Mu.Unlock()
+
+	req := manifest.Requirements{Capabilities: []string{"ai-agent", "python"}}
+	explanation := New(s).ExplainEligibility(req)
+	if !strings.Contains(explanation, "ThinkPad-Lenovo: Python not available") {
+		t.Fatalf("missing ThinkPad explanation: %s", explanation)
+	}
+	if !strings.Contains(explanation, "probook: busy") {
+		t.Fatalf("missing probook busy explanation: %s", explanation)
+	}
+}
+
+func TestDirectorExplicitCodexDoesNotUseAntigravityOnlyWorker(t *testing.T) {
+	s, err := store.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+
+	s.Mu.Lock()
+	s.Workers["thinkpad"] = &models.WorkerState{ID: "thinkpad", NodeName: "ThinkPad-Lenovo", OS: "windows", Status: "online", Capabilities: []string{"antigravity", "ai-agent", "python"}}
+	s.Mu.Unlock()
+
+	m, err := manifest.Parse(strings.NewReader(`
+project: "Whispering-Wilds"
+tasks:
+  ai_improvement:
+    requirements:
+      capabilities: ["codex", "python"]
+    execution:
+      profile: "CodexExec"
+      parameters:
+        prompt: "make a safe change"
+`))
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	err = New(s).SubmitManifest(m)
+	if err == nil {
+		t.Fatal("expected explicit Codex job to reject Antigravity-only worker")
+	}
+	if !strings.Contains(err.Error(), "Codex not available") {
+		t.Fatalf("expected Codex explanation, got %v", err)
+	}
+}
+
 func TestDirectorDispatchStages(t *testing.T) {
 	ws := t.TempDir()
 	s, err := store.NewStore(ws)
