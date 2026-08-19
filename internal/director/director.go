@@ -7,6 +7,7 @@ import (
 	"log"
 	"math"
 	"sync"
+	"time"
 
 	"forgegrid/internal/manifest"
 	"forgegrid/internal/models"
@@ -37,12 +38,21 @@ func (d *Director) SubmitManifest(m *manifest.Manifest) error {
 		if assignedWorker == "" {
 			return fmt.Errorf("no eligible online worker found for task '%s'", name)
 		}
+		workerName := assignedWorker
+		if worker := d.Store.Workers[assignedWorker]; worker != nil && worker.NodeName != "" {
+			workerName = worker.NodeName
+		}
 
 		job := &models.Job{
 			ID:             jobID,
 			WorkerID:       assignedWorker,
+			WorkerName:     workerName,
+			ProjectName:    m.Project,
+			TaskName:       name,
+			Description:    task.Description,
 			Task:           "execute",
 			Status:         models.StatusPending,
+			CreatedAt:      time.Now(),
 			Profile:        task.Stages[0].Profile,
 			Parameters:     task.Stages[0].Parameters,
 			Tools:          task.Stages[0].Tools,
@@ -89,7 +99,10 @@ func (d *Director) selectWorker(req manifest.Requirements) string {
 		if !workerEligible(w, req) {
 			continue
 		}
-		score := workerScore(w, req) - d.workerLoad(w.ID)*100
+		if d.workerLoad(w.ID) > 0 {
+			continue
+		}
+		score := workerScore(w, req)
 		if score > bestScore {
 			bestScore = score
 			bestWorker = w.ID

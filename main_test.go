@@ -137,10 +137,13 @@ func TestIntegration(t *testing.T) {
 
 	// 5. Authenticated worker heartbeat
 	w1Restarted.Start()
+	defer w1Restarted.Stop()
 	time.Sleep(2 * time.Second)
 
 	// 6. Worker appearing online
-	resp, err = client.Get(serverURL + "/api/workers")
+	reqWorkers, _ := http.NewRequest("GET", serverURL+"/api/workers", nil)
+	reqWorkers.SetBasicAuth("admin", adminToken)
+	resp, err = client.Do(reqWorkers)
 	if err != nil {
 		t.Fatalf("Failed to fetch workers: %v", err)
 	}
@@ -180,11 +183,16 @@ func TestIntegration(t *testing.T) {
 	if jobRes.Status != "PENDING" {
 		t.Fatalf("Expected job to be pending, got %s", jobRes.Status)
 	}
+	if jobRes.WorkerName != "TestWorker-1" {
+		t.Fatalf("Expected job worker name TestWorker-1, got %s", jobRes.WorkerName)
+	}
 
 	// 8. Test-job completion & Challenge Verification
 	time.Sleep(3 * time.Second)
 
-	resp, err = client.Get(serverURL + "/api/jobs/" + jobRes.ID)
+	reqJob, _ := http.NewRequest("GET", serverURL+"/api/jobs/"+jobRes.ID, nil)
+	reqJob.SetBasicAuth("admin", adminToken)
+	resp, err = client.Do(reqJob)
 	if err != nil {
 		t.Fatalf("Failed to get job status: %v", err)
 	}

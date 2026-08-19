@@ -38,8 +38,11 @@ type Worker struct {
 	Insecure       bool
 	Fingerprint    string
 
-	mu           sync.Mutex
-	activeJobs   map[string]context.CancelFunc
+	mu             sync.Mutex
+	activeJobs     map[string]context.CancelFunc
+	stopOnce       sync.Once
+	stopCh         chan struct{}
+	loopsDone      sync.WaitGroup
 	allowedRepos   map[string]bool
 	allowPush      bool
 	allowBootstrap bool
@@ -123,6 +126,7 @@ func New(nodeName, workspace string, insecure bool) *Worker {
 		Workspace:      workspace,
 		Insecure:       insecure,
 		activeJobs:     make(map[string]context.CancelFunc),
+		stopCh:         make(chan struct{}),
 		allowedRepos:   parseRepoAllowlist(os.Getenv("FORGEGRID_ALLOWED_REPOS")),
 		allowPush:      os.Getenv("FORGEGRID_ALLOW_PUSH") == "true",
 		allowBootstrap: os.Getenv("FORGEGRID_ALLOW_BOOTSTRAP") == "true",
@@ -188,7 +192,7 @@ func (w *Worker) SetLabelsAndCapabilities(labels, capabilities string) {
 func (w *Worker) ValidateCapabilities() ([]string, []string) {
 	valid := []string{}
 	missing := []string{}
-	
+
 	conceptualCaps := map[string]bool{
 		"github-pr":     true,
 		"trusted":       true,
@@ -227,6 +231,7 @@ func (w *Worker) LoadPolicy() error {
 		}
 	}
 	w.allowPush = p.AllowPush
+	w.allowBootstrap = p.AllowBootstrap
 	w.Labels = append([]string{}, p.Labels...)
 	w.Capabilities = append([]string{}, p.Capabilities...)
 	return nil
@@ -411,14 +416,35 @@ func (w *Worker) Start() {
 	if w.Client == nil {
 		w.Client = &http.Client{Timeout: 10 * time.Second} // Should only happen in tests that bypassed Pair
 	}
+	w.loopsDone.Add(2)
 	go w.heartbeatLoop()
 	go w.jobLoop()
 }
 
+func (w *Worker) Stop() {
+	w.stopOnce.Do(func() {
+		close(w.stopCh)
+		w.mu.Lock()
+		for jobID, cancel := range w.activeJobs {
+			cancel()
+			delete(w.activeJobs, jobID)
+		}
+		w.mu.Unlock()
+	})
+	w.loopsDone.Wait()
+}
+
 func (w *Worker) heartbeatLoop() {
+	defer w.loopsDone.Done()
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
 	for {
 		w.sendHeartbeat()
-		time.Sleep(5 * time.Second)
+		select {
+		case <-w.stopCh:
+			return
+		case <-ticker.C:
+		}
 	}
 }
 
@@ -464,9 +490,16 @@ func (w *Worker) sendHeartbeat() {
 }
 
 func (w *Worker) jobLoop() {
+	defer w.loopsDone.Done()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
 	for {
 		w.pollJobs()
-		time.Sleep(2 * time.Second)
+		select {
+		case <-w.stopCh:
+			return
+		case <-ticker.C:
+		}
 	}
 }
 
@@ -498,7 +531,7 @@ func (w *Worker) pollJobs() {
 	}
 
 	for _, job := range jobs {
-		if job.Status == models.StatusCancelled && job.Result == "cancelled" {
+		if job.Status == models.StatusCancelRequested {
 			w.cancelJob(job.ID)
 		} else if job.Status == models.StatusPending {
 			w.mu.Lock()
@@ -574,6 +607,72 @@ func (w *Worker) updateJobStatusWithMetadata(jobID, attemptID string, status mod
 		reqBody["stages"] = stages
 		reqBody["current_stage"] = currentStage
 	}
+	addJobResultMetadata(reqBody, jobResultMetadata{})
+	w.postJobUpdate(jobID, reqBody)
+}
+
+type jobResultMetadata struct {
+	FailureCode       string
+	BaseBranch        string
+	ResolvedBase      string
+	WorkBranch        string
+	CommitSHA         string
+	WorkspaceID       string
+	WorkspaceRetained bool
+	ChangedFiles      []models.ChangedFile
+	ValidationResults []models.ValidationResult
+}
+
+func (w *Worker) updateJobStatusFull(jobID, attemptID string, status models.JobStatus, result string, logs []byte, seq int, artifacts []models.Artifact, pushedBranch, prURL string, stages []models.JobStage, currentStage int, meta jobResultMetadata) {
+	reqBody := map[string]interface{}{
+		"attempt_id":    attemptID,
+		"status":        status,
+		"result":        result,
+		"logs":          logs,
+		"log_seq":       seq,
+		"artifacts":     artifacts,
+		"pushed_branch": pushedBranch,
+		"pr_url":        prURL,
+	}
+	if stages != nil {
+		reqBody["stages"] = stages
+		reqBody["current_stage"] = currentStage
+	}
+	addJobResultMetadata(reqBody, meta)
+	w.postJobUpdate(jobID, reqBody)
+}
+
+func addJobResultMetadata(reqBody map[string]interface{}, meta jobResultMetadata) {
+	if meta.FailureCode != "" {
+		reqBody["failure_code"] = meta.FailureCode
+	}
+	if meta.BaseBranch != "" {
+		reqBody["base_branch"] = meta.BaseBranch
+	}
+	if meta.ResolvedBase != "" {
+		reqBody["resolved_base"] = meta.ResolvedBase
+	}
+	if meta.WorkBranch != "" {
+		reqBody["work_branch"] = meta.WorkBranch
+	}
+	if meta.CommitSHA != "" {
+		reqBody["commit_sha"] = meta.CommitSHA
+	}
+	if meta.WorkspaceID != "" {
+		reqBody["workspace_id"] = meta.WorkspaceID
+	}
+	if meta.WorkspaceRetained {
+		reqBody["workspace_retained"] = true
+	}
+	if meta.ChangedFiles != nil {
+		reqBody["changed_files"] = meta.ChangedFiles
+	}
+	if meta.ValidationResults != nil {
+		reqBody["validation_results"] = meta.ValidationResults
+	}
+}
+
+func (w *Worker) postJobUpdate(jobID string, reqBody map[string]interface{}) {
 	body, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequest("POST", fmt.Sprintf("%s/api/jobs/%s", w.CoordinatorURL, jobID), bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -621,6 +720,7 @@ func (w *Worker) executeJob(job models.Job) {
 		var gm *gitworkspace.Manager
 		var mainRepoDir string
 		var branchName string
+		var resultMeta jobResultMetadata
 
 		var output []byte
 		var artifacts []models.Artifact
@@ -648,28 +748,60 @@ func (w *Worker) executeJob(job models.Job) {
 				branchName = "forgegrid-" + job.ID
 			}
 
-			wd, err := gm.PrepareWorkspace(job.RepositoryURL, job.BaseCommit, branchName, job.ID)
+			ws, err := gm.PrepareJobWorkspace(job.RepositoryURL, job.BaseCommit, branchName, job.ID)
 			if err != nil {
 				w.updateJobStatus(job.ID, job.AttemptID, models.StatusFailed, "workspace prep error", []byte(err.Error()+"\n"), logSeq)
 				return
 			}
-			workDir = wd
-			mainRepoDir = filepath.Join(w.Workspace, strings.TrimSuffix(filepath.Base(job.RepositoryURL), ".git"))
+			workDir = ws.WorkDir
+			mainRepoDir = ws.RepoDir
+			resultMeta.WorkspaceID = ws.ID
+			resultMeta.ResolvedBase = ws.BaseCommit
+			resultMeta.WorkBranch = ws.BranchName
+			output = append(output, []byte(fmt.Sprintf("\n--- GIT WORKSPACE ---\nRepository: %s\nBase: %s\nBranch: %s\nWorkspace: %s\n", job.RepositoryURL, ws.BaseCommit, ws.BranchName, ws.WorkDir))...)
 
 			// Setup cleanup and reporting
 			defer func() {
 				// Attempt push if successful and requested
 				if finalStatus == models.StatusCompleted && job.CommitChanges {
+					changed, changeErr := gm.ChangedFiles(workDir)
+					if changeErr != nil {
+						output = append(output, []byte(fmt.Sprintf("\n--- CHANGE DETECTION FAILED ---\n%v\n", changeErr))...)
+						finalStatus = models.StatusFailed
+						finalResult = "change detection failed"
+						resultMeta.FailureCode = "CHANGE_DETECTION_FAILED"
+					}
+					resultMeta.ChangedFiles = changed
+					if finalStatus == models.StatusCompleted && len(changed) == 0 {
+						finalResult = "no changes"
+						output = append(output, []byte("\n--- GIT CHANGES ---\nNo files changed; nothing to commit.\n")...)
+					}
+					if finalStatus == models.StatusCompleted {
+						blocked := gitworkspace.SecretLikeChangedFiles(changed)
+						if len(blocked) > 0 {
+							output = append(output, []byte("\n--- SECRET GUARD FAILED ---\nForgeGrid refused to commit likely secret files:\n"+strings.Join(blocked, "\n")+"\n")...)
+							finalStatus = models.StatusFailed
+							finalResult = "secret guard failed"
+							resultMeta.FailureCode = "SECRET_GUARD_FAILED"
+							resultMeta.WorkspaceRetained = true
+						}
+					}
+				}
+				if finalStatus == models.StatusCompleted && job.CommitChanges && finalResult != "no changes" {
 					commitMsg := job.CommitMessage
 					if commitMsg == "" {
 						commitMsg = "Automated commit by ForgeGrid worker"
 					}
-					commitResult, pushErr := gm.CommitAndMaybePush(workDir, job.RepositoryURL, commitMsg, job.PushChanges)
-					output = append(output, []byte("\n--- GIT CHANGES ---\n"+commitResult+"\n")...)
+					commitResult, pushErr := gm.CommitAndMaybePushDetailed(workDir, job.RepositoryURL, commitMsg, job.PushChanges)
+					if commitResult != nil {
+						resultMeta.CommitSHA = commitResult.CommitSHA
+						output = append(output, []byte("\n--- GIT CHANGES ---\n"+commitResult.Message+"\n")...)
+					}
 					if pushErr != nil {
 						output = append(output, []byte(fmt.Sprintf("\n--- GIT CHANGE FAILED ---\n%v", pushErr))...)
 						finalStatus = models.StatusFailed
 						finalResult = "git change failed"
+						resultMeta.FailureCode = "GIT_CHANGE_FAILED"
 					} else if job.PushChanges {
 						pushedBranch = branchName
 						if job.CreatePR {
@@ -707,12 +839,16 @@ func (w *Worker) executeJob(job models.Job) {
 				if diffErr == nil {
 					output = append(output, []byte("\n--- WORKSPACE STATUS ---\n"+diff)...)
 				}
-				if finalStatus == models.StatusCompleted && job.CommitChanges && !job.PushChanges {
+				if finalStatus == models.StatusCompleted && job.CommitChanges && !job.PushChanges && finalResult != "no changes" {
+					resultMeta.WorkspaceRetained = true
 					output = append(output, []byte(fmt.Sprintf("\n--- WORKTREE RETAINED ---\nLocal commit kept at %s on branch %s because push is disabled for this job.\n", workDir, branchName))...)
-				} else if err := gm.CleanupWorktree(mainRepoDir, workDir, branchName); err != nil {
-					output = append(output, []byte(fmt.Sprintf("\n--- CLEANUP FAILED ---\n%v\n", err))...)
 				}
-				w.updateJobStatusWithMetadata(job.ID, job.AttemptID, finalStatus, finalResult, output, logSeq, artifacts, pushedBranch, prURL, job.Stages, job.CurrentStage)
+				if !resultMeta.WorkspaceRetained {
+					if err := gm.CleanupWorktree(mainRepoDir, workDir, branchName); err != nil {
+						output = append(output, []byte(fmt.Sprintf("\n--- CLEANUP FAILED ---\n%v\n", err))...)
+					}
+				}
+				w.updateJobStatusFull(job.ID, job.AttemptID, finalStatus, finalResult, output, logSeq, artifacts, pushedBranch, prURL, job.Stages, job.CurrentStage, resultMeta)
 			}()
 		} else {
 			var err error
@@ -735,6 +871,8 @@ func (w *Worker) executeJob(job models.Job) {
 		for i, stage := range job.Stages {
 			job.CurrentStage = i
 			stage.Status = models.StatusRunning
+			startedAt := time.Now()
+			stage.StartedAt = &startedAt
 			job.Stages[i] = stage
 			output = append(output, []byte(fmt.Sprintf("\n--- STAGE %d: %s ---\n", i+1, stage.Name))...)
 			w.updateJobStatusWithMetadata(job.ID, job.AttemptID, models.StatusRunning, "", output, logSeq, nil, "", "", job.Stages, job.CurrentStage)
@@ -766,11 +904,11 @@ func (w *Worker) executeJob(job models.Job) {
 			timeout := time.Duration(timeoutSeconds) * time.Second
 
 			execCtx, execCancel := context.WithTimeout(ctx, timeout)
-			
+
 			executor := execution.NewExecutor()
 			stageOut, err := executor.Execute(execCtx, profile, stage.Parameters, stage.Tools, workDir)
 			output = append(output, stageOut...)
-			
+
 			if err != nil {
 				if execCtx.Err() == context.DeadlineExceeded {
 					finalResult = fmt.Sprintf("stage %d timeout", i+1)
@@ -790,14 +928,34 @@ func (w *Worker) executeJob(job models.Job) {
 					stage.Status = models.StatusFailed
 					stage.Result = err.Error()
 				}
+				endedAt := time.Now()
+				stage.EndedAt = &endedAt
+				stage.Duration = endedAt.Sub(startedAt).Round(time.Millisecond).String()
 				job.Stages[i] = stage
 				execCancel()
 				break
 			}
-			
+
+			endedAt := time.Now()
 			stage.Status = models.StatusCompleted
+			stage.EndedAt = &endedAt
+			stage.Duration = endedAt.Sub(startedAt).Round(time.Millisecond).String()
 			job.Stages[i] = stage
 			execCancel()
+		}
+
+		if finalStatus == models.StatusCompleted && gm != nil && job.CommitChanges {
+			validations := runAutoValidation(ctx, workDir, job.RequiredCaps)
+			resultMeta.ValidationResults = validations
+			for _, validation := range validations {
+				output = append(output, []byte(fmt.Sprintf("\n--- VALIDATION: %s ---\n%s\n", validation.Name, validation.Output))...)
+				if validation.Status != models.StatusCompleted {
+					finalStatus = models.StatusFailed
+					finalResult = "validation failed"
+					resultMeta.FailureCode = "VALIDATION_FAILED"
+					resultMeta.WorkspaceRetained = true
+				}
+			}
 		}
 
 		if gm == nil {
@@ -806,4 +964,83 @@ func (w *Worker) executeJob(job models.Job) {
 	} else {
 		w.updateJobStatus(job.ID, job.AttemptID, models.StatusFailed, "unknown task", []byte("Unsupported task type\n"), logSeq)
 	}
+}
+
+func runAutoValidation(ctx context.Context, workDir string, requiredCaps []string) []models.ValidationResult {
+	var validations []models.ValidationResult
+	caps := make(map[string]bool)
+	for _, cap := range requiredCaps {
+		caps[strings.ToLower(strings.TrimSpace(cap))] = true
+	}
+	add := func(name string, args ...string) {
+		if len(args) == 0 {
+			return
+		}
+		start := time.Now()
+		cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+		cmd.Dir = workDir
+		out, err := cmd.CombinedOutput()
+		end := time.Now()
+		status := models.StatusCompleted
+		if err != nil {
+			status = models.StatusFailed
+			out = append(out, []byte(fmt.Sprintf("\n%v", err))...)
+		}
+		validations = append(validations, models.ValidationResult{
+			Name:      name,
+			Status:    status,
+			Output:    string(out),
+			StartedAt: start,
+			EndedAt:   end,
+			Duration:  end.Sub(start).Round(time.Millisecond).String(),
+		})
+	}
+	if caps["go"] && fileExists(filepath.Join(workDir, "go.mod")) {
+		add("Go tests", "go", "test", "./...")
+	}
+	if caps["python"] || caps["python3"] {
+		if fileExists(filepath.Join(workDir, "pyproject.toml")) || fileExists(filepath.Join(workDir, "requirements.txt")) || dirExists(filepath.Join(workDir, "tests")) {
+			python := "python"
+			if _, err := exec.LookPath(python); err != nil {
+				python = "python3"
+			}
+			add("Python compile", python, "-m", "compileall", "-q", ".")
+			if dirExists(filepath.Join(workDir, "tests")) {
+				add("Python unittest", python, "-m", "unittest", "discover")
+			}
+		}
+	}
+	if caps["node"] && fileExists(filepath.Join(workDir, "package.json")) {
+		if packageScriptExists(filepath.Join(workDir, "package.json"), "test") {
+			add("Node tests", "npm", "test")
+		}
+		if packageScriptExists(filepath.Join(workDir, "package.json"), "build") {
+			add("Node build", "npm", "run", "build")
+		}
+	}
+	return validations
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+func packageScriptExists(path, script string) bool {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var pkg struct {
+		Scripts map[string]string `json:"scripts"`
+	}
+	if err := json.Unmarshal(b, &pkg); err != nil {
+		return false
+	}
+	return strings.TrimSpace(pkg.Scripts[script]) != ""
 }

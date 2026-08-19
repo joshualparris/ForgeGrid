@@ -64,6 +64,20 @@ var Profiles = map[string]Profile{
 		Subcommand:     []string{"build"},
 		ArgKeys:        []string{"package"},
 	},
+	"GoRaceTest": {
+		Name:           "GoRaceTest",
+		Executable:     "go",
+		MaxTimeoutSecs: 900,
+		Subcommand:     []string{"test", "-race", "-v"},
+		ArgKeys:        []string{"package"},
+	},
+	"PythonCompile": {
+		Name:           "PythonCompile",
+		Executable:     "python",
+		MaxTimeoutSecs: 300,
+		Subcommand:     []string{"-m", "compileall", "-q"},
+		ArgKeys:        []string{"path"},
+	},
 	"PythonUnittest": {
 		Name:           "PythonUnittest",
 		Executable:     "python",

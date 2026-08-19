@@ -2,6 +2,7 @@ package gitworkspace
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -98,4 +99,86 @@ func TestCollectArtifactsPackagesLargeCompressibleFile(t *testing.T) {
 	if artifacts[0].ContentBase64 == "" {
 		t.Fatalf("expected packaged artifact content")
 	}
+}
+
+func TestValidateBranchNameRejectsUnsafeNames(t *testing.T) {
+	bad := []string{"", "main", "master", "../escape", "forgegrid\\bad", "feature..bad", "/leading", "trailing/"}
+	for _, name := range bad {
+		if err := ValidateBranchName(name); err == nil {
+			t.Fatalf("expected %q to be rejected", name)
+		}
+	}
+	if err := ValidateBranchName("forgegrid/codex/add-a-test-20260819"); err != nil {
+		t.Fatalf("expected safe branch name, got %v", err)
+	}
+}
+
+func TestParseChangedFilesAndSecretGuard(t *testing.T) {
+	raw := " M README.md\x00A  .env.local\x00R  old.txt\x00new.txt\x00"
+	files := ParseChangedFiles(raw)
+	if len(files) != 3 {
+		t.Fatalf("expected 3 changed files, got %#v", files)
+	}
+	blocked := SecretLikeChangedFiles(files)
+	if len(blocked) != 1 || blocked[0] != ".env.local" {
+		t.Fatalf("expected .env.local to be blocked, got %#v", blocked)
+	}
+}
+
+func TestPrepareJobWorkspaceUsesIsolatedJobDirectory(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	base := t.TempDir()
+	origin := filepath.Join(base, "origin")
+	if err := os.MkdirAll(origin, 0755); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, origin, "init")
+	runGitTest(t, origin, "config", "user.email", "forgegrid@example.test")
+	runGitTest(t, origin, "config", "user.name", "ForgeGrid Test")
+	if err := os.WriteFile(filepath.Join(origin, "README.md"), []byte("hello\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, origin, "add", "README.md")
+	runGitTest(t, origin, "commit", "-m", "initial")
+	sha := strings.TrimSpace(runGitOutputTest(t, origin, "rev-parse", "HEAD"))
+
+	manager := NewManager(base, Options{AllowedRepos: map[string]bool{origin: true}})
+	ws, err := manager.PrepareJobWorkspace(origin, sha, "forgegrid/codex/test-branch", "job/../../../abc123")
+	if err != nil {
+		t.Fatalf("PrepareJobWorkspace failed: %v", err)
+	}
+	if !strings.Contains(filepath.ToSlash(ws.WorkDir), "/workspaces/") {
+		t.Fatalf("expected isolated workspace path, got %s", ws.WorkDir)
+	}
+	rel, err := filepath.Rel(base, ws.WorkDir)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		t.Fatalf("workspace escaped base: rel=%s err=%v", rel, err)
+	}
+	if ws.BaseCommit != sha {
+		t.Fatalf("expected resolved base %s, got %s", sha, ws.BaseCommit)
+	}
+}
+
+func runGitTest(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, string(out))
+	}
+}
+
+func runGitOutputTest(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, string(out))
+	}
+	return string(out)
 }

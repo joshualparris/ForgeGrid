@@ -8,6 +8,8 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"forgegrid/internal/models"
@@ -21,6 +23,7 @@ type Coordinator struct {
 	IP               string
 	Insecure         bool
 	Fingerprint      string
+	AdminToken       string
 	Listener         net.Listener
 	MessagingGateway MessagingGateway
 }
@@ -81,6 +84,7 @@ func (c *Coordinator) Start(port string) error {
 		c.Fingerprint = fp
 	}
 	adminToken := c.Store.CoordinatorCfg.AdminToken
+	c.AdminToken = adminToken
 	c.Store.Mu.Unlock()
 
 	if c.MessagingGateway == nil {
@@ -91,22 +95,16 @@ func (c *Coordinator) Start(port string) error {
 		// If err != nil, c.MessagingGateway remains nil (Messaging unavailable)
 	}
 
-	adminAuth := func(next http.HandlerFunc) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			user, pass, ok := r.BasicAuth()
-			if !ok || user != "admin" || pass != adminToken {
-				w.Header().Set("WWW-Authenticate", `Basic realm="ForgeGrid Dashboard"`)
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-				return
-			}
-			next.ServeHTTP(w, r)
-		}
-	}
+	adminAuth := func(next http.HandlerFunc) http.HandlerFunc { return c.requireAdmin(next) }
 
 	mux.HandleFunc("/api/coordinator/start", adminAuth(c.handleStart))
 	mux.HandleFunc("/api/coordinator/status", adminAuth(c.handleStatus))
 	mux.HandleFunc("/api/session/start", adminAuth(c.handleSessionStart))
 	mux.HandleFunc("/api/pairing/code", adminAuth(c.handleGenerateCode))
+	mux.HandleFunc("/api/projects", adminAuth(c.handleProjects))
+	mux.HandleFunc("/api/projects/refresh", adminAuth(c.handleProjectsRefresh))
+	mux.HandleFunc("/api/projects/favorite", adminAuth(c.handleProjectFavorite))
+	mux.HandleFunc("/api/projects/inspect", adminAuth(c.handleProjectInspect))
 
 	// Messaging API
 	mux.HandleFunc("/api/dashboard/messaging/status", adminAuth(c.handleMessagingStatus))
@@ -119,7 +117,7 @@ func (c *Coordinator) Start(port string) error {
 	mux.HandleFunc("/api/workers/heartbeat", c.handleHeartbeat)
 	mux.HandleFunc("/api/workers/disconnect", adminAuth(c.handleDisconnectWorker))
 	mux.HandleFunc("/api/workers/policy", adminAuth(c.handleWorkerPolicy))
-	mux.HandleFunc("/api/workers", c.handleListWorkers) // Dashboard uses this, but let's let workers use it too or add auth inside handler
+	mux.HandleFunc("/api/workers", adminAuth(c.handleListWorkers))
 	mux.HandleFunc("/api/jobs/test", adminAuth(c.handleTestJob))
 	mux.HandleFunc("/api/jobs", c.handleListJobs)
 	mux.HandleFunc("/api/jobs/", c.handleJobAction)
@@ -149,11 +147,8 @@ func (c *Coordinator) Start(port string) error {
 		scheme = "http"
 	}
 	uiURL := fmt.Sprintf("%s://%s:%s", scheme, c.IP, port)
-	fmt.Printf("Coordinator starting on %s (LAN IP: %s)\n", addr, c.IP)
-	if !c.Insecure {
-		fmt.Printf("TLS Fingerprint: %s\n", c.Fingerprint)
-	}
-	fmt.Printf("Admin Password (Dashboard): %s\n", adminToken)
+	loginPath, loginErr := c.writeDashboardLoginFile(uiURL, adminToken)
+	c.printDashboardLogin(addr, uiURL, adminToken, loginPath, loginErr)
 
 	ui.OpenBrowser(uiURL)
 
@@ -212,6 +207,36 @@ func (c *Coordinator) Start(port string) error {
 	}
 
 	return server.ListenAndServeTLS("", "")
+}
+
+func (c *Coordinator) writeDashboardLoginFile(uiURL, adminToken string) (string, error) {
+	path := filepath.Join(c.Store.Dir(), "dashboard-login.txt")
+	body := fmt.Sprintf("ForgeGrid Dashboard Login\n\nURL: %s\nUsername: admin\nPassword: %s\n\nKeep this file private. Anyone with this password can control the local ForgeGrid coordinator.\n", uiURL, adminToken)
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		return path, err
+	}
+	return path, nil
+}
+
+func (c *Coordinator) printDashboardLogin(addr, uiURL, adminToken, loginPath string, loginErr error) {
+	fmt.Println()
+	fmt.Println("========================================")
+	fmt.Println(" ForgeGrid Dashboard Login")
+	fmt.Println("========================================")
+	fmt.Printf(" Coordinator: %s (LAN IP: %s)\n", addr, c.IP)
+	fmt.Printf(" URL:         %s\n", uiURL)
+	fmt.Println(" Username:    admin")
+	fmt.Printf(" Password:    %s\n", adminToken)
+	if !c.Insecure {
+		fmt.Printf(" TLS FP:      %s\n", c.Fingerprint)
+	}
+	if loginErr != nil {
+		fmt.Printf(" Login file:  unavailable (%v)\n", loginErr)
+	} else {
+		fmt.Printf(" Login file:  %s\n", loginPath)
+	}
+	fmt.Println("========================================")
+	fmt.Println()
 }
 
 func (c *Coordinator) checkWorkerStatus() {

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -28,6 +29,22 @@ func writeError(w http.ResponseWriter, status int, code, message, detail string)
 		Message: message,
 		Detail:  detail,
 	})
+}
+
+func (c *Coordinator) isAdminRequest(r *http.Request) bool {
+	user, pass, ok := r.BasicAuth()
+	return ok && user == "admin" && c.AdminToken != "" && pass == c.AdminToken
+}
+
+func (c *Coordinator) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !c.isAdminRequest(r) {
+			w.Header().Set("WWW-Authenticate", `Basic realm="ForgeGrid Dashboard"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	}
 }
 
 func hashToken(token string) string {
@@ -108,6 +125,91 @@ func (c *Coordinator) handleGenerateCode(w http.ResponseWriter, r *http.Request)
 	json.NewEncoder(w).Encode(map[string]string{"code": code})
 }
 
+func (c *Coordinator) handleProjects(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", "")
+		return
+	}
+	c.Store.Mu.RLock()
+	library := c.Store.ProjectLibrary
+	projects := sortedProjects(library.Projects)
+	c.Store.Mu.RUnlock()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"connected":    library.Connected,
+		"login":        library.Login,
+		"last_refresh": library.LastRefresh,
+		"last_error":   library.LastError,
+		"projects":     projects,
+	})
+}
+
+func (c *Coordinator) handleProjectsRefresh(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", "")
+		return
+	}
+	if err := c.refreshGitHubProjects(r.Context()); err != nil {
+		writeError(w, http.StatusBadGateway, "GITHUB_REFRESH_FAILED", "Failed to refresh GitHub projects", maskSecretError(err))
+		return
+	}
+	c.handleProjects(w, httptestLikeGet(r))
+}
+
+func httptestLikeGet(r *http.Request) *http.Request {
+	next := r.Clone(r.Context())
+	next.Method = http.MethodGet
+	return next
+}
+
+func (c *Coordinator) handleProjectFavorite(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", "")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	var req struct {
+		ProjectID string `json:"project_id"`
+		Favorite  bool   `json:"favorite"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Malformed JSON", "")
+		return
+	}
+	c.Store.Mu.Lock()
+	defer c.Store.Mu.Unlock()
+	project := c.Store.ProjectLibrary.Projects[req.ProjectID]
+	if project == nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "Project not found", "")
+		return
+	}
+	project.Favorite = req.Favorite
+	c.Store.Save()
+	json.NewEncoder(w).Encode(project)
+}
+
+func (c *Coordinator) handleProjectInspect(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet, http.MethodPost:
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", "")
+		return
+	}
+	projectID := r.URL.Query().Get("project_id")
+	if projectID == "" {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "project_id is required", "")
+		return
+	}
+	force := r.Method == http.MethodPost || r.URL.Query().Get("refresh") == "true"
+	inspection, err := c.inspectProject(r.Context(), projectID, force)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "INSPECTION_FAILED", "Failed to inspect project", maskSecretError(err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(inspection)
+}
+
 func (c *Coordinator) handleSessionStart(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", "")
@@ -125,14 +227,7 @@ func (c *Coordinator) handleSessionStart(w http.ResponseWriter, r *http.Request)
 	if agentPort == "" {
 		agentPort = "9091"
 	}
-	scheme := "https"
-	if c.Insecure {
-		scheme = "http"
-	}
-	controllerURL := fmt.Sprintf("%s://%s", scheme, r.Host)
-	if strings.HasPrefix(r.Host, "127.0.0.1") || strings.HasPrefix(r.Host, "localhost") {
-		controllerURL = fmt.Sprintf("%s://%s:8080", scheme, c.IP)
-	}
+	controllerURL := c.controllerURLForRequest(r)
 	agentURL := fmt.Sprintf("https://%s:%s", c.IP, agentPort)
 	agentFP := localAgentBridgeFingerprint()
 	bootstrap := fmt.Sprintf(".\\ForgeGrid.exe runner bootstrap -name \"RUNNER_NAME\" -controller %s -code %s -fingerprint %s -agent-url %s -agent-fingerprint %s", controllerURL, code, c.Fingerprint, agentURL, agentFP)
@@ -148,6 +243,21 @@ func (c *Coordinator) handleSessionStart(w http.ResponseWriter, r *http.Request)
 		"reconnect_command":       ".\\ForgeGrid.exe -mode worker",
 		"pairing_expires_seconds": "300",
 	})
+}
+
+func (c *Coordinator) controllerURLForRequest(r *http.Request) string {
+	scheme := "https"
+	if c.Insecure {
+		scheme = "http"
+	}
+	host := r.Host
+	requestHost, requestPort, err := net.SplitHostPort(r.Host)
+	if err == nil && (requestHost == "127.0.0.1" || requestHost == "localhost") {
+		host = net.JoinHostPort(c.IP, requestPort)
+	} else if r.Host == "127.0.0.1" || r.Host == "localhost" {
+		host = c.IP
+	}
+	return fmt.Sprintf("%s://%s", scheme, host)
 }
 
 func localAgentBridgeFingerprint() string {
@@ -374,7 +484,8 @@ func (c *Coordinator) handleTestJob(w http.ResponseWriter, r *http.Request) {
 	c.Store.Mu.Lock()
 	defer c.Store.Mu.Unlock()
 
-	if _, ok := c.Store.Workers[req.WorkerID]; !ok {
+	worker, ok := c.Store.Workers[req.WorkerID]
+	if !ok {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "Worker not found", "")
 		return
 	}
@@ -382,11 +493,16 @@ func (c *Coordinator) handleTestJob(w http.ResponseWriter, r *http.Request) {
 	jobID := "job-" + cryptoRandomHex(16)
 	challenge := cryptoRandomHex(32)
 	job := &models.Job{
-		ID:        jobID,
-		WorkerID:  req.WorkerID,
-		Task:      "test",
-		Status:    models.StatusPending,
-		Challenge: challenge,
+		ID:          jobID,
+		WorkerID:    req.WorkerID,
+		WorkerName:  worker.NodeName,
+		ProjectName: "ForgeGrid",
+		TaskName:    "Machine check",
+		Description: "Built-in connectivity and execution check",
+		Task:        "test",
+		Status:      models.StatusPending,
+		CreatedAt:   time.Now(),
+		Challenge:   challenge,
 	}
 	c.Store.Jobs[jobID] = job
 	c.Store.Save()
@@ -410,11 +526,16 @@ func (c *Coordinator) handleListJobs(w http.ResponseWriter, r *http.Request) {
 		}
 		var jobs []models.Job
 		for _, j := range c.Store.Jobs {
-			if j.WorkerID == workerID && j.Status == models.StatusPending {
+			if j.WorkerID == workerID && (j.Status == models.StatusPending || j.Status == models.StatusCancelRequested) {
 				jobs = append(jobs, *j)
 			}
 		}
 		json.NewEncoder(w).Encode(jobs)
+		return
+	}
+	if !c.isAdminRequest(r) {
+		w.Header().Set("WWW-Authenticate", `Basic realm="ForgeGrid Dashboard"`)
+		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Unauthorized", "")
 		return
 	}
 
@@ -424,10 +545,28 @@ func (c *Coordinator) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sort.Slice(jobs, func(i, j int) bool {
-		return jobs[i].ID < jobs[j].ID
+		left := jobs[i].CreatedAt
+		right := jobs[j].CreatedAt
+		if left.IsZero() {
+			left = timeFromJob(jobs[i])
+		}
+		if right.IsZero() {
+			right = timeFromJob(jobs[j])
+		}
+		return left.After(right)
 	})
 
 	json.NewEncoder(w).Encode(jobs)
+}
+
+func timeFromJob(job models.Job) time.Time {
+	if job.StartTime != nil {
+		return *job.StartTime
+	}
+	if job.EndTime != nil {
+		return *job.EndTime
+	}
+	return time.Time{}
 }
 
 func (c *Coordinator) handleJobAction(w http.ResponseWriter, r *http.Request) {
@@ -440,6 +579,11 @@ func (c *Coordinator) handleJobAction(w http.ResponseWriter, r *http.Request) {
 	jobID := parts[3]
 
 	if r.Method == http.MethodGet && len(parts) == 6 && parts[4] == "artifacts" {
+		if !c.isAdminRequest(r) {
+			w.Header().Set("WWW-Authenticate", `Basic realm="ForgeGrid Dashboard"`)
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Unauthorized", "")
+			return
+		}
 		idx := parts[5]
 		c.Store.Mu.RLock()
 		job, ok := c.Store.Jobs[jobID]
@@ -457,6 +601,11 @@ func (c *Coordinator) handleJobAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet && len(parts) == 6 && parts[4] == "logs" && parts[5] == "stream" {
+		if !c.isAdminRequest(r) {
+			w.Header().Set("WWW-Authenticate", `Basic realm="ForgeGrid Dashboard"`)
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Unauthorized", "")
+			return
+		}
 		c.streamJobLogs(w, r, jobID)
 		return
 	}
@@ -471,11 +620,21 @@ func (c *Coordinator) handleJobAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == http.MethodGet {
+		if !c.isAdminRequest(r) {
+			w.Header().Set("WWW-Authenticate", `Basic realm="ForgeGrid Dashboard"`)
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Unauthorized", "")
+			return
+		}
 		json.NewEncoder(w).Encode(job)
 		return
 	}
 
 	if r.Method == http.MethodDelete {
+		if !c.isAdminRequest(r) {
+			w.Header().Set("WWW-Authenticate", `Basic realm="ForgeGrid Dashboard"`)
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Unauthorized", "")
+			return
+		}
 		c.Store.Mu.Unlock() // Unlock before calling DeleteJob which takes the lock
 		err := c.Store.DeleteJob(jobID)
 		c.Store.Mu.Lock() // Relock for the defer to unlock
@@ -491,18 +650,30 @@ func (c *Coordinator) handleJobAction(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodPost {
 		if len(parts) == 5 && parts[4] == "cancel" {
+			if !c.isAdminRequest(r) {
+				w.Header().Set("WWW-Authenticate", `Basic realm="ForgeGrid Dashboard"`)
+				writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Unauthorized", "")
+				return
+			}
 			job.Status = models.StatusCancelRequested
-			now := time.Now()
-			job.EndTime = &now
-			job.Result = "cancelled"
+			job.Result = "cancellation requested"
 			c.Store.Save()
 			json.NewEncoder(w).Encode(job)
 			return
 		}
 
 		if len(parts) == 5 && parts[4] == "retry" {
+			if !c.isAdminRequest(r) {
+				w.Header().Set("WWW-Authenticate", `Basic realm="ForgeGrid Dashboard"`)
+				writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Unauthorized", "")
+				return
+			}
 			if job.Status != models.StatusFailed {
 				writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Only failed jobs can be retried", "")
+				return
+			}
+			if job.MaxRetries > 0 && job.RetryCount >= job.MaxRetries {
+				writeError(w, http.StatusBadRequest, "RETRY_LIMIT", "Retry limit reached", "")
 				return
 			}
 			retry := *job
@@ -519,6 +690,7 @@ func (c *Coordinator) handleJobAction(w http.ResponseWriter, r *http.Request) {
 			retry.PRURL = ""
 			retry.RetryOf = job.ID
 			retry.RetryCount = job.RetryCount + 1
+			retry.CreatedAt = time.Now()
 			c.Store.Jobs[retry.ID] = &retry
 			c.Store.Save()
 			json.NewEncoder(w).Encode(&retry)
@@ -558,16 +730,25 @@ func (c *Coordinator) handleJobAction(w http.ResponseWriter, r *http.Request) {
 		}
 
 		var req struct {
-			AttemptID    string            `json:"attempt_id"`
-			Status       models.JobStatus  `json:"status"`
-			Result       string            `json:"result"`
-			Logs         []byte            `json:"logs"`
-			LogSeq       int               `json:"log_seq"`
-			Artifacts    []models.Artifact `json:"artifacts"`
-			PushedBranch string            `json:"pushed_branch"`
-			PRURL        string            `json:"pr_url"`
-			Stages       []models.JobStage `json:"stages"`
-			CurrentStage *int              `json:"current_stage"`
+			AttemptID         string                    `json:"attempt_id"`
+			Status            models.JobStatus          `json:"status"`
+			Result            string                    `json:"result"`
+			Logs              []byte                    `json:"logs"`
+			LogSeq            int                       `json:"log_seq"`
+			Artifacts         []models.Artifact         `json:"artifacts"`
+			PushedBranch      string                    `json:"pushed_branch"`
+			PRURL             string                    `json:"pr_url"`
+			Stages            []models.JobStage         `json:"stages"`
+			CurrentStage      *int                      `json:"current_stage"`
+			FailureCode       string                    `json:"failure_code"`
+			BaseBranch        string                    `json:"base_branch"`
+			ResolvedBase      string                    `json:"resolved_base"`
+			WorkBranch        string                    `json:"work_branch"`
+			CommitSHA         string                    `json:"commit_sha"`
+			WorkspaceID       string                    `json:"workspace_id"`
+			WorkspaceRetained bool                      `json:"workspace_retained"`
+			ChangedFiles      []models.ChangedFile      `json:"changed_files"`
+			ValidationResults []models.ValidationResult `json:"validation_results"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Malformed JSON", "")
@@ -621,6 +802,33 @@ func (c *Coordinator) handleJobAction(w http.ResponseWriter, r *http.Request) {
 			}
 			if req.PRURL != "" {
 				job.PRURL = req.PRURL
+			}
+			if req.FailureCode != "" {
+				job.FailureCode = req.FailureCode
+			}
+			if req.BaseBranch != "" {
+				job.BaseBranch = req.BaseBranch
+			}
+			if req.ResolvedBase != "" {
+				job.ResolvedBase = req.ResolvedBase
+			}
+			if req.WorkBranch != "" {
+				job.WorkBranch = req.WorkBranch
+			}
+			if req.CommitSHA != "" {
+				job.CommitSHA = req.CommitSHA
+			}
+			if req.WorkspaceID != "" {
+				job.WorkspaceID = req.WorkspaceID
+			}
+			if req.WorkspaceRetained {
+				job.WorkspaceRetained = true
+			}
+			if req.ChangedFiles != nil {
+				job.ChangedFiles = req.ChangedFiles
+			}
+			if req.ValidationResults != nil {
+				job.ValidationResults = req.ValidationResults
 			}
 		}
 
@@ -705,7 +913,23 @@ func (c *Coordinator) handleManifest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "Failed to dispatch manifest tasks", err.Error())
 		return
 	}
+	c.markProjectUsed(m.Repository.URL)
 
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"status": "dispatched", "project": m.Project})
+}
+
+func (c *Coordinator) markProjectUsed(cloneURL string) {
+	if strings.TrimSpace(cloneURL) == "" {
+		return
+	}
+	c.Store.Mu.Lock()
+	defer c.Store.Mu.Unlock()
+	for _, project := range c.Store.ProjectLibrary.Projects {
+		if project != nil && project.CloneURL == cloneURL {
+			project.LastUsedAt = time.Now()
+			c.Store.Save()
+			return
+		}
+	}
 }

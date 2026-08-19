@@ -5,31 +5,146 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ForgeGrid - Dashboard</title>
     <style>
-        body { font-family: 'Inter', sans-serif; background-color: #121212; color: #ffffff; padding: 20px; }
-        .card { background-color: #1e1e1e; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
-        h1, h2 { color: #4facfe; margin-top: 0; }
-        button { background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); border: none; color: white; padding: 8px 16px; border-radius: 4px; cursor: pointer; }
-        button:hover { opacity: 0.9; }
+        :root { color-scheme: dark; --bg: #101112; --panel: #1b1d1f; --panel-2: #23272a; --line: #34393e; --text: #f4f7f8; --muted: #a7b0b7; --blue: #37a7ff; --green: #41d37d; --red: #ff5b66; --yellow: #f4c84a; --orange: #f28b45; }
+        * { box-sizing: border-box; }
+        body { font-family: Inter, system-ui, -apple-system, Segoe UI, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 0; }
+        main { padding: 24px; max-width: 1720px; margin: 0 auto; }
+        .topbar { background: #17191b; border-bottom: 1px solid var(--line); padding: 16px 24px; position: sticky; top: 0; z-index: 4; }
+        .topbar h1 { margin: 0; color: var(--text); font-size: 24px; }
+        .topbar-meta { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px; color: var(--muted); font-size: 14px; }
+        .card { background-color: var(--panel); padding: 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #24282c; }
+        h1, h2 { color: var(--blue); margin-top: 0; }
+        h2 { font-size: 22px; }
+        h3 { margin: 0 0 10px; }
+        button { background: var(--blue); border: none; color: white; padding: 9px 14px; border-radius: 5px; cursor: pointer; font-weight: 700; }
+        button:hover { filter: brightness(1.08); }
+        button:disabled { cursor: not-allowed; opacity: 0.45; }
+        .ghost-button { background: #30353a; border: 1px solid #49515a; }
+        .danger-button { background: var(--red); }
+        .warn-button { background: #876500; }
+        .success-button { background: #159264; }
         table { width: 100%; border-collapse: collapse; margin-top: 10px; }
         th, td { text-align: left; padding: 10px; border-bottom: 1px solid #333; }
-        .status-online { color: #00ff00; }
-        .status-offline { color: #ff0000; }
+        .status-online { color: var(--green); }
+        .status-offline { color: var(--red); }
         input, textarea, select { background: #333; color: white; border: 1px solid #555; padding: 8px; border-radius: 4px; }
         .field-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+        .command-grid { display: grid; grid-template-columns: minmax(280px, 0.9fr) minmax(320px, 1.1fr); gap: 20px; align-items: start; }
+        .stats { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 12px; margin-bottom: 20px; }
+        .stat { background: var(--panel); border: 1px solid #24282c; border-radius: 8px; padding: 14px; }
+        .stat strong { display: block; font-size: 26px; margin-top: 4px; }
+        .muted { color: var(--muted); }
+        .machine-list { display: grid; gap: 10px; }
+        .machine-card { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 14px; cursor: pointer; }
+        .machine-card.selected { border-color: var(--blue); box-shadow: inset 0 0 0 1px var(--blue); }
+        .machine-card.offline { opacity: 0.62; }
+        .machine-head { display: flex; justify-content: space-between; gap: 10px; align-items: start; }
+        .machine-name { font-size: 18px; font-weight: 800; }
+        .pill { display: inline-flex; align-items: center; min-height: 24px; padding: 3px 8px; border-radius: 999px; background: #30353a; color: #dbe3e8; font-size: 12px; margin: 3px 4px 0 0; }
+        .pill.online { background: rgba(65, 211, 125, 0.14); color: var(--green); }
+        .pill.offline { background: rgba(255, 91, 102, 0.14); color: var(--red); }
+        .job-picker { display: grid; grid-template-columns: repeat(2, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; }
+        .job-card { text-align: left; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 14px; color: var(--text); min-height: 118px; }
+        .job-card.selected { border-color: var(--blue); box-shadow: inset 0 0 0 1px var(--blue); }
+        .job-card strong { display: block; font-size: 17px; margin-bottom: 6px; }
+        .job-card span { color: var(--muted); font-weight: 500; line-height: 1.35; }
+        .quick-form { display: grid; gap: 12px; }
+        .quick-form input, .quick-form textarea, .quick-form select { width: 100%; background: #282d31; }
+        .result-box { min-height: 28px; font-weight: 700; }
+        .advanced { margin-top: 18px; }
+        .advanced summary { cursor: pointer; color: var(--blue); font-weight: 800; margin-bottom: 12px; }
+        .table-wrap { overflow-x: auto; }
+        .job-id { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; }
+        .job-machine { font-weight: 800; }
+        .job-result { max-width: 520px; white-space: normal; }
+        .mini-details summary { color: var(--muted); cursor: pointer; font-size: 12px; margin-top: 6px; }
+        .mini-details code { display: block; color: #d7ffd7; overflow-wrap: anywhere; margin-top: 4px; }
+        .job-facts { display: grid; gap: 4px; margin-top: 8px; color: var(--muted); font-size: 12px; }
+        .job-facts strong { color: var(--text); }
+        .file-list { margin: 6px 0 0; padding-left: 18px; }
+        .file-list li { margin: 2px 0; }
+        .project-picker { position: relative; }
+        .project-list { display: none; position: absolute; left: 0; right: 0; top: calc(100% + 4px); background: #202428; border: 1px solid var(--line); border-radius: 8px; max-height: 320px; overflow: auto; z-index: 5; box-shadow: 0 14px 40px rgba(0,0,0,0.35); }
+        .project-option { display: block; width: 100%; text-align: left; background: transparent; border: 0; border-bottom: 1px solid #30353a; border-radius: 0; padding: 10px 12px; }
+        .project-option.active, .project-option:hover { background: #2c3338; filter: none; }
+        .project-option strong { display: block; }
+        .project-option span { color: var(--muted); font-weight: 500; }
+        .project-tools { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+        .intelligence { background: #151719; border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+        .intelligence ul { margin: 8px 0 0; padding-left: 18px; }
         .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.72); padding: 32px; z-index: 10; }
         .modal-content { background: #1e1e1e; border: 1px solid #444; border-radius: 8px; padding: 20px; height: calc(100vh - 96px); display: flex; flex-direction: column; }
         pre { background: #101010; color: #d7ffd7; padding: 12px; border-radius: 6px; overflow: auto; white-space: pre-wrap; }
+        @media (max-width: 900px) { main { padding: 14px; } .command-grid, .stats, .job-picker { grid-template-columns: 1fr; } .topbar { position: static; } }
     </style>
 </head>
 <body>
-    <h1>ForgeGrid Dashboard</h1>
-    
-    <div class="card">
-        <h2>Coordinator Status</h2>
-        <p>IP Address: <span id="coordIP">...</span></p>
-        <p>Pairing Code: <strong id="pairingCode" style="font-size: 1.2em; color: #ffeb3b;">None</strong></p>
-        <button onclick="generateCode()">Generate Pairing Code</button>
-    </div>
+    <header class="topbar">
+        <h1>ForgeGrid Command Center</h1>
+        <div class="topbar-meta">
+            <span>Coordinator <strong id="coordIP">...</strong></span>
+            <span>Pairing code <strong id="pairingCode" style="color: var(--yellow);">None</strong></span>
+            <span><button onclick="generateCode()">New Pairing Code</button></span>
+        </div>
+    </header>
+
+    <main>
+    <section class="stats">
+        <div class="stat"><span class="muted">Online Machines</span><strong id="onlineCount">0</strong></div>
+        <div class="stat"><span class="muted">Ready For AI</span><strong id="aiCount">0</strong></div>
+        <div class="stat"><span class="muted">Ready For Code</span><strong id="codeCount">0</strong></div>
+        <div class="stat"><span class="muted">Active Jobs</span><strong id="activeJobCount">0</strong></div>
+    </section>
+
+    <section class="command-grid">
+        <div class="card">
+            <h2>Your Laptop Crew</h2>
+            <div id="machineList" class="machine-list"></div>
+        </div>
+
+        <div class="card">
+            <h2>Send Them Something To Do</h2>
+            <div class="job-picker">
+                <button class="job-card selected" data-job-type="smoke" onclick="selectQuickJob('smoke')"><strong>Check This Machine</strong><span>Fast built-in test. Use this first.</span></button>
+                <button class="job-card" data-job-type="go-test" onclick="selectQuickJob('go-test')"><strong>Run Project Tests</strong><span>Clone a Go repo and run its test suite.</span></button>
+                <button class="job-card" data-job-type="ai-fix" onclick="selectQuickJob('ai-fix')"><strong>Ask AI To Improve Code</strong><span>Have a Codex-capable worker make a small change.</span></button>
+                <button class="job-card" data-job-type="godot-export" onclick="selectQuickJob('godot-export')"><strong>Build Godot Game</strong><span>Export a Windows build from a Godot project.</span></button>
+            </div>
+
+            <div class="quick-form" id="quickJobForm">
+                <div class="project-tools">
+                    <span id="githubState" class="muted">GitHub not checked yet</span>
+                    <button class="ghost-button" onclick="refreshProjects()">Refresh GitHub Projects</button>
+                </div>
+                <label class="project-picker" id="projectPickerWrap">Project
+                    <input id="projectSearch" autocomplete="off" placeholder="Search your projects...">
+                    <div id="projectList" class="project-list"></div>
+                </label>
+                <div id="projectIntelligence" class="intelligence" style="display: none;"></div>
+                <label><input id="manualRepoToggle" type="checkbox" onchange="toggleManualRepo()"> Use repository URL manually</label>
+                <label id="quickRepoWrap">Manual repository URL
+                    <input id="quickRepo" placeholder="https://github.com/you/project.git">
+                </label>
+                <label>Branch or commit to start from
+                    <input id="quickBase" value="main">
+                </label>
+                <label>New work branch
+                    <input id="quickBranch" value="forgegrid/work">
+                </label>
+                <label id="quickPromptWrap">What should the AI do?
+                    <textarea id="quickPrompt" rows="4">Inspect this project, make one small useful improvement, and add or update a test if appropriate.</textarea>
+                </label>
+                <label>Save changes?
+                    <select id="quickCommit">
+                        <option value="false">No, just run it</option>
+                        <option value="true">Yes, commit on the worker</option>
+                    </select>
+                </label>
+                <button class="success-button" onclick="submitQuickJob()">Start Selected Job</button>
+                <div id="quickResult" class="result-box"></div>
+            </div>
+        </div>
+    </section>
 
     <div class="card">
         <h2>Wi-Fi Setup</h2>
@@ -47,7 +162,7 @@
 
     <div class="card">
         <h2>Connected Workers</h2>
-        <table>
+        <div class="table-wrap"><table>
             <thead>
                 <tr>
                     <th>Node Name</th>
@@ -63,7 +178,7 @@
             </thead>
             <tbody id="workersTable">
             </tbody>
-        </table>
+        </table></div>
     </div>
 
     <div class="card">
@@ -78,7 +193,8 @@
         <pre id="policyOutput" style="display: none;"></pre>
     </div>
     
-    <div class="card">
+    <details class="card advanced">
+        <summary>Advanced: edit the raw job manifest</summary>
         <h2>Submit Job Manifest</h2>
         <div style="margin-bottom: 10px; display: flex; gap: 10px;">
             <button onclick="loadTemplate('go-test')" style="background: #333; border: 1px solid #555; padding: 5px 10px;">Run Go Test Suite</button>
@@ -93,26 +209,32 @@
         </div>
         <button onclick="submitManifest()" style="margin-top: 10px; background: linear-gradient(135deg, #00b09b 0%, #96c93d 100%);">Submit Job Manifest</button>
         <div id="manifestResult" style="margin-top: 10px; font-weight: bold;"></div>
-    </div>
+    </details>
     
     <div class="card">
         <h2>Recent Jobs</h2>
-        <table>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px;">
+            <button class="ghost-button" onclick="setJobFilter('all')">All</button>
+            <button class="ghost-button" onclick="setJobFilter('active')">Running</button>
+            <button class="ghost-button" onclick="setJobFilter('failed')">Failed</button>
+            <button class="ghost-button" onclick="setJobFilter('completed')">Completed</button>
+        </div>
+        <div class="table-wrap"><table>
             <thead>
                 <tr>
-                    <th>Date / Time</th>
-                    <th>Job ID</th>
-                    <th>Worker ID</th>
-                    <th>Task</th>
+                    <th>When</th>
+                    <th>Job</th>
+                    <th>Machine</th>
+                    <th>Kind</th>
                     <th>Status</th>
-                    <th>Result</th>
+                    <th>What Happened</th>
                     <th>Artifacts / PR</th>
                     <th>Actions</th>
                 </tr>
             </thead>
             <tbody id="jobsTable">
             </tbody>
-        </table>
+        </table></div>
     </div>
 
     <div class="card" id="messagingCard" style="display: none;">
@@ -162,6 +284,14 @@
         let jobsStore = [];
         let logSource = null;
         let latestAgentBridgeFingerprint = "";
+        let workersStore = [];
+        let selectedWorkerId = "";
+        let selectedQuickJob = "smoke";
+        let jobFilter = "all";
+        let projectsStore = [];
+        let selectedProject = null;
+        let selectedInspection = null;
+        let projectCursor = -1;
 
         function splitCSV(value) {
             return value.split(',').map(v => v.trim()).filter(Boolean);
@@ -169,6 +299,411 @@
 
         function shellQuote(value) {
             return `"${value.replace(/"/g, '\\"')}"`;
+        }
+
+        function isWorkerOnline(w) {
+            const lastSeen = new Date(w.last_seen);
+            return w.status === 'online' && ((new Date() - lastSeen) / 1000) <= 60;
+        }
+
+        function selectedWorker() {
+            return workersStore.find(w => w.id === selectedWorkerId) || workersStore.find(isWorkerOnline) || null;
+        }
+
+        function shortID(id) {
+            if (!id) return '-';
+            return id.replace(/^worker-/, 'worker ').replace(/^job-/, 'job ').slice(0, 14);
+        }
+
+        function workerForJob(job) {
+            return workersStore.find(w => w.id === job.worker_id) || null;
+        }
+
+        function jobMachineName(job) {
+            const worker = workerForJob(job);
+            if (worker && worker.node_name) return worker.node_name;
+            if (job.worker_name) return job.worker_name;
+            return 'Unknown machine';
+        }
+
+        function jobMachineDetail(job) {
+            const worker = workerForJob(job);
+            if (worker) return `${worker.os || 'unknown OS'} · ${Math.round((worker.total_ram || 0) / 1073741824)} GB RAM`;
+            if (job.worker_name) return 'Saved from job history';
+            return `Old job record: ${shortID(job.worker_id)}`;
+        }
+
+        function jobKind(job) {
+            if (job.task === 'test') return 'Machine check';
+            if (job.profile === 'CodexExec') return 'AI code work';
+            if (job.profile === 'GoTest') return 'Go tests';
+            if (job.profile === 'GodotExport') return 'Godot build';
+            return job.profile || job.task || 'Job';
+        }
+
+        function setJobFilter(filter) {
+            jobFilter = filter;
+            renderJobs();
+        }
+
+        function jobMatchesFilter(job) {
+            if (jobFilter === 'active') return ['PENDING', 'CLAIMED', 'RUNNING', 'CANCEL_REQUESTED'].includes(job.status);
+            if (jobFilter === 'failed') return job.status === 'FAILED';
+            if (jobFilter === 'completed') return job.status === 'COMPLETED';
+            return true;
+        }
+
+        function projectLabel(project) {
+            return [project.language || 'Unknown', project.private ? 'Private' : 'Public', project.default_branch || 'main'].join(' · ');
+        }
+
+        function renderProjectList() {
+            const list = document.getElementById('projectList');
+            const search = document.getElementById('projectSearch').value.trim().toLowerCase();
+            const visibility = document.getElementById('manualRepoToggle').checked || selectedQuickJob === 'smoke' ? 'none' : 'block';
+            list.style.display = visibility;
+            list.innerHTML = '';
+            if (visibility === 'none') return;
+            const matches = projectsStore.filter(p => {
+                const haystack = `${p.name} ${p.full_name} ${p.description || ''} ${p.language || ''}`.toLowerCase();
+                return !search || haystack.includes(search);
+            }).slice(0, 40);
+            if (matches.length === 0) {
+                const empty = createEl('div', 'No matching projects. Use manual URL or refresh GitHub.');
+                empty.className = 'muted';
+                empty.style.padding = '12px';
+                list.appendChild(empty);
+                return;
+            }
+            matches.forEach((project, index) => {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = `project-option ${index === projectCursor ? 'active' : ''}`;
+                btn.innerHTML = `<strong>${escapeHTML(project.name)}</strong><span>${escapeHTML(projectLabel(project))}</span>`;
+                btn.onmousedown = ev => ev.preventDefault();
+                btn.onclick = () => selectProject(project);
+                list.appendChild(btn);
+            });
+        }
+
+        function selectProject(project) {
+            selectedProject = project;
+            selectedInspection = project.inspection || null;
+            document.getElementById('projectSearch').value = project.name;
+            document.getElementById('quickRepo').value = project.clone_url;
+            document.getElementById('quickBase').value = project.default_sha || project.default_branch || 'main';
+            document.getElementById('quickBranch').value = suggestedBranch();
+            document.getElementById('projectList').style.display = 'none';
+            renderProjectIntelligence();
+            inspectSelectedProject(false);
+            updateQuickManifestPreview();
+        }
+
+        async function inspectSelectedProject(force) {
+            if (!selectedProject || document.getElementById('manualRepoToggle').checked) return;
+            const box = document.getElementById('projectIntelligence');
+            box.style.display = 'block';
+            box.textContent = 'Inspecting project safely...';
+            try {
+                const method = force ? 'POST' : 'GET';
+                const res = await fetch(`/api/projects/inspect?project_id=${encodeURIComponent(selectedProject.id)}${force ? '&refresh=true' : ''}`, { method });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || data.message || 'inspection failed');
+                selectedInspection = data;
+                document.getElementById('quickBase').value = data.default_sha || data.default_branch || selectedProject.default_branch || 'main';
+                renderProjectIntelligence();
+                renderDetectedActions();
+                updateQuickManifestPreview();
+            } catch (e) {
+                box.innerHTML = `<strong>${escapeHTML(selectedProject.name)}</strong><div class="muted">Could not inspect project: ${escapeHTML(e.message)}</div>`;
+            }
+        }
+
+        function renderProjectIntelligence() {
+            const box = document.getElementById('projectIntelligence');
+            if (!selectedProject || document.getElementById('manualRepoToggle').checked) {
+                box.style.display = 'none';
+                return;
+            }
+            box.style.display = 'block';
+            const summary = `${selectedProject.language || 'Unknown'} · ${selectedProject.private ? 'Private' : 'Public'} · ${selectedProject.default_branch || 'main'}`;
+            if (!selectedInspection) {
+                box.innerHTML = `<strong>${escapeHTML(selectedProject.name)}</strong><div class="muted">${escapeHTML(summary)}</div><button class="ghost-button" style="margin-top:8px;" onclick="inspectSelectedProject(true)">Inspect Project</button>`;
+                return;
+            }
+            const types = selectedInspection.project_types && selectedInspection.project_types.length ? selectedInspection.project_types.join(' · ') : 'Project type unknown';
+            const detected = (selectedInspection.detected_files || []).slice(0, 6).map(f => `<li>${escapeHTML(f)}</li>`).join('');
+            const warnings = (selectedInspection.warnings || []).map(w => `<li>${escapeHTML(w)}</li>`).join('');
+            box.innerHTML = `<strong>${escapeHTML(selectedProject.name)}</strong><div class="muted">${escapeHTML(types)} · ${escapeHTML(selectedInspection.default_branch || selectedProject.default_branch || 'main')}</div>${detected ? `<ul>${detected}</ul>` : ''}${warnings ? `<div style="color: var(--yellow); margin-top:8px;"><ul>${warnings}</ul></div>` : ''}<button class="ghost-button" style="margin-top:8px;" onclick="inspectSelectedProject(true)">Refresh Inspection</button>`;
+        }
+
+        function renderDetectedActions() {
+            if (!selectedInspection || !selectedInspection.available_actions) return;
+            const picker = document.querySelector('.job-picker');
+            picker.innerHTML = '';
+            const typeMap = {
+                codex: 'ai-fix',
+                'go-test': 'go-test',
+                'go-race': 'go-race',
+                'go-build': 'go-build',
+                'python-check': 'python-check',
+                'python-test': 'python-test',
+                'node-test': 'node-test',
+                'node-build': 'node-build',
+                'node-lint': 'node-lint',
+                'godot-export-windows': 'godot-export'
+            };
+            selectedInspection.available_actions.forEach(action => {
+                if (action.id === 'inspect') return;
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'job-card';
+                button.dataset.jobType = typeMap[action.id] || action.id;
+                button.innerHTML = `<strong>${escapeHTML(action.label)}</strong><span>${escapeHTML(action.description || '')}</span>`;
+                button.onclick = () => selectQuickJob(button.dataset.jobType);
+                picker.appendChild(button);
+            });
+            const first = picker.querySelector('.job-card');
+            if (first) first.click();
+        }
+
+        function suggestedBranch() {
+            const task = document.getElementById('quickPrompt') ? document.getElementById('quickPrompt').value : '';
+            const words = task.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 32) || selectedQuickJob || 'work';
+            const stamp = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 12);
+            return `forgegrid/${selectedQuickJob}-${words}-${stamp}`;
+        }
+
+        function toggleManualRepo() {
+            const manual = document.getElementById('manualRepoToggle').checked;
+            document.getElementById('quickRepoWrap').style.display = manual ? 'block' : 'none';
+            document.getElementById('projectPickerWrap').style.display = manual ? 'none' : 'block';
+            renderProjectList();
+        }
+
+        async function fetchProjects() {
+            try {
+                const res = await fetch('/api/projects');
+                if (!res.ok) throw new Error(await res.text());
+                const data = await res.json();
+                projectsStore = data.projects || [];
+                const state = document.getElementById('githubState');
+                if (data.connected) {
+                    state.textContent = `GitHub: connected as ${data.login || 'authenticated user'} · ${projectsStore.length} projects`;
+                    state.style.color = 'var(--green)';
+                } else {
+                    state.textContent = data.last_error || 'GitHub not connected - set GITHUB_TOKEN';
+                    state.style.color = 'var(--yellow)';
+                }
+                renderProjectList();
+            } catch (e) {
+                const state = document.getElementById('githubState');
+                state.textContent = `Project library unavailable: ${e.message}`;
+                state.style.color = 'var(--red)';
+            }
+        }
+
+        async function refreshProjects() {
+            const state = document.getElementById('githubState');
+            state.textContent = 'Refreshing GitHub projects...';
+            state.style.color = 'white';
+            try {
+                const res = await fetch('/api/projects/refresh', { method: 'POST' });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || data.message || 'GitHub refresh failed');
+                projectsStore = data.projects || [];
+                state.textContent = `GitHub: connected as ${data.login || 'authenticated user'} · ${projectsStore.length} projects`;
+                state.style.color = 'var(--green)';
+                renderProjectList();
+            } catch (e) {
+                state.textContent = e.message;
+                state.style.color = 'var(--red)';
+            }
+        }
+
+        function selectQuickJob(type) {
+            selectedQuickJob = type;
+            document.querySelectorAll('.job-card').forEach(card => {
+                card.classList.toggle('selected', card.dataset.jobType === type);
+            });
+            const repoJob = type !== 'smoke';
+            document.getElementById('quickRepo').closest('label').style.display = repoJob ? 'block' : 'none';
+            document.getElementById('quickBase').closest('label').style.display = repoJob ? 'block' : 'none';
+            document.getElementById('quickBranch').closest('label').style.display = repoJob ? 'block' : 'none';
+            document.getElementById('quickPromptWrap').style.display = type === 'ai-fix' ? 'block' : 'none';
+            document.getElementById('quickCommit').closest('label').style.display = type === 'ai-fix' ? 'block' : 'none';
+            document.getElementById('projectPickerWrap').style.display = repoJob && !document.getElementById('manualRepoToggle').checked ? 'block' : 'none';
+            document.getElementById('manualRepoToggle').closest('label').style.display = repoJob ? 'block' : 'none';
+            document.getElementById('quickRepoWrap').style.display = repoJob && document.getElementById('manualRepoToggle').checked ? 'block' : 'none';
+            const commit = document.getElementById('quickCommit');
+            commit.value = type === 'ai-fix' ? 'true' : 'false';
+            if (repoJob && selectedProject) {
+                document.getElementById('quickBranch').value = suggestedBranch();
+            }
+            document.getElementById('quickResult').textContent = '';
+            updateQuickManifestPreview();
+        }
+
+        function selectWorker(workerId) {
+            selectedWorkerId = workerId;
+            renderMachineList();
+            updateQuickManifestPreview();
+        }
+
+        function yamlQuote(value) {
+            return JSON.stringify(String(value || ''));
+        }
+
+        function quickRequirements(worker, caps) {
+            const labels = worker && worker.labels ? worker.labels.filter(l => l === 'trusted') : [];
+            return `      os: ${yamlQuote(worker ? worker.os : 'windows')}
+      labels: [${labels.map(yamlQuote).join(', ')}]
+      capabilities: [${caps.map(yamlQuote).join(', ')}]`;
+        }
+
+        function quickManifest() {
+            const worker = selectedWorker();
+            const repo = document.getElementById('quickRepo').value.trim();
+            const base = document.getElementById('quickBase').value.trim() || (selectedInspection && selectedInspection.default_sha) || 'main';
+            const branch = document.getElementById('quickBranch').value.trim() || 'forgegrid/work';
+            const commit = document.getElementById('quickCommit').value === 'true';
+            const prompt = document.getElementById('quickPrompt').value.trim();
+            let profile = 'GoTest';
+            let task = 'test';
+            let desc = 'Run project tests';
+            let caps = ['go'];
+            let params = '        package: "./..."';
+            let artefacts = '';
+            let timeout = 600;
+            if (selectedQuickJob === 'ai-fix') {
+                profile = 'CodexExec';
+                task = 'ai_improvement';
+                desc = 'Ask AI to improve code';
+                caps = projectValidationCaps();
+                const context = selectedInspection ? `\n\nForgeGrid detected: ${(selectedInspection.project_types || []).join(', ') || 'unknown project type'}. Available validation: ${(selectedInspection.available_actions || []).map(a => a.label).join(', ')}. Work only on branch ${branch}; do not push to main or master.` : '';
+                params = `        prompt: ${yamlQuote(prompt + context)}`;
+                timeout = 1800;
+            } else if (selectedQuickJob === 'godot-export') {
+                profile = 'GodotExport';
+                task = 'godot_export';
+                desc = 'Build Godot game';
+                caps = ['godot'];
+                params = `        preset: "Windows Desktop"
+        export_path: "build/game.exe"`;
+                artefacts = `
+    artefacts:
+      - "build/game.exe"`;
+                timeout = 1200;
+            } else if (selectedQuickJob === 'go-race') {
+                profile = 'GoRaceTest';
+                task = 'race_test';
+                desc = 'Run Go race test';
+                caps = ['go'];
+                params = '        package: "./..."';
+                timeout = 900;
+            } else if (selectedQuickJob === 'go-build') {
+                profile = 'GoBuild';
+                task = 'build';
+                desc = 'Build Go project';
+                caps = ['go'];
+                params = '        package: "./..."';
+            } else if (selectedQuickJob === 'python-check') {
+                profile = 'PythonCompile';
+                task = 'python_check';
+                desc = 'Check Python syntax';
+                caps = ['python'];
+                params = '        path: "."';
+                timeout = 300;
+            } else if (selectedQuickJob === 'python-test') {
+                profile = 'PythonUnittest';
+                task = 'python_test';
+                desc = 'Run Python tests';
+                caps = ['python'];
+                params = '        module: "discover"';
+            } else if (selectedQuickJob === 'node-test') {
+                profile = 'NodeTest';
+                task = 'node_test';
+                desc = 'Run Node tests';
+                caps = ['node'];
+                params = '';
+            } else if (selectedQuickJob === 'node-build') {
+                profile = 'NodeBuild';
+                task = 'node_build';
+                desc = 'Build Node project';
+                caps = ['node'];
+                params = '';
+            } else if (selectedQuickJob === 'node-lint') {
+                profile = 'NodeLint';
+                task = 'node_lint';
+                desc = 'Lint Node project';
+                caps = ['node'];
+                params = '';
+            }
+            const projectName = selectedProject && !document.getElementById('manualRepoToggle').checked ? selectedProject.name : 'Manual Repository';
+            return `project: ${yamlQuote(projectName)}
+repository:
+  url: ${yamlQuote(repo)}
+  base_commit: ${yamlQuote(base)}
+  branch: ${yamlQuote(branch)}
+  create_pr: false
+  pr_title: "ForgeGrid automated changes"
+  pr_body: "Automated development job from ForgeGrid."
+tasks:
+  ${task}:
+    description: ${yamlQuote(desc)}
+    requirements:
+${quickRequirements(worker, caps)}
+    execution:
+      profile: ${yamlQuote(profile)}
+      parameters:
+${params}
+      timeout_seconds: ${timeout}
+      changes:
+        commit: ${commit ? 'true' : 'false'}
+        push: false
+        commit_message: "ForgeGrid automated update"${artefacts}`;
+        }
+
+        function updateQuickManifestPreview() {
+            if (selectedQuickJob !== 'smoke') {
+                document.getElementById('manifestInput').value = quickManifest();
+                checkPushWarning();
+            }
+        }
+
+        function projectValidationCaps() {
+            const caps = ['codex'];
+            const types = selectedInspection && selectedInspection.project_types ? selectedInspection.project_types.map(t => t.toLowerCase()) : [];
+            if (types.includes('go')) caps.push('go');
+            if (types.includes('python')) caps.push('python');
+            if (types.includes('node')) caps.push('node');
+            if (types.includes('godot')) caps.push('godot');
+            return [...new Set(caps)];
+        }
+
+        async function submitQuickJob() {
+            const result = document.getElementById('quickResult');
+            const worker = selectedWorker();
+            if (!worker) {
+                result.style.color = 'var(--yellow)';
+                result.textContent = 'No online machine is selected.';
+                return;
+            }
+            if (selectedQuickJob === 'smoke') {
+                result.style.color = 'white';
+                result.textContent = `Sending a check job to ${worker.node_name}...`;
+                await runTestJob(worker.id);
+                result.style.color = 'var(--green)';
+                result.textContent = `Check job sent to ${worker.node_name}. Watch Recent Jobs below.`;
+                return;
+            }
+            if (!document.getElementById('quickRepo').value.trim()) {
+                result.style.color = 'var(--yellow)';
+                result.textContent = 'Add a real GitHub project URL first.';
+                return;
+            }
+            updateQuickManifestPreview();
+            await submitManifest(result);
         }
 
         function generateRunnerPolicy() {
@@ -321,12 +856,43 @@ tasks:`;
         document.addEventListener('DOMContentLoaded', () => {
             const input = document.getElementById('manifestInput');
             if (input) input.value = getTemplate('go-test');
+            ['quickRepo', 'quickBase', 'quickBranch', 'quickPrompt', 'quickCommit'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.addEventListener('input', updateQuickManifestPreview);
+            });
+            const projectSearch = document.getElementById('projectSearch');
+            projectSearch.addEventListener('input', () => {
+                selectedProject = null;
+                projectCursor = -1;
+                renderProjectList();
+            });
+            projectSearch.addEventListener('focus', renderProjectList);
+            projectSearch.addEventListener('keydown', ev => {
+                const list = Array.from(document.querySelectorAll('.project-option'));
+                if (ev.key === 'ArrowDown') {
+                    ev.preventDefault();
+                    projectCursor = Math.min(projectCursor + 1, list.length - 1);
+                    renderProjectList();
+                } else if (ev.key === 'ArrowUp') {
+                    ev.preventDefault();
+                    projectCursor = Math.max(projectCursor - 1, 0);
+                    renderProjectList();
+                } else if (ev.key === 'Enter' && projectCursor >= 0 && list[projectCursor]) {
+                    ev.preventDefault();
+                    list[projectCursor].click();
+                } else if (ev.key === 'Escape') {
+                    document.getElementById('projectList').style.display = 'none';
+                }
+            });
+            selectQuickJob('smoke');
+            toggleManualRepo();
+            fetchProjects();
             checkPushWarning();
         });
 
-        async function submitManifest() {
+        async function submitManifest(targetDiv) {
             const yamlStr = document.getElementById('manifestInput').value;
-            const resDiv = document.getElementById('manifestResult');
+            const resDiv = targetDiv || document.getElementById('manifestResult');
             
             // Validate required fields
             if (!yamlStr.match(/url:\s*['"]?[a-zA-Z0-9]/)) {
@@ -355,7 +921,7 @@ tasks:`;
                 if (res.ok) {
                     const data = await res.json();
                     resDiv.style.color = '#00ff00';
-                    resDiv.innerText = 'Job Dispatched: ' + JSON.stringify(data);
+                    resDiv.innerText = 'Job started. Watch Recent Jobs below.';
                     fetchJobs();
                 } else {
                     const err = await res.json();
@@ -489,6 +1055,13 @@ Then run:
         async function fetchWorkers() {
             const res = await fetch('/api/workers');
             const workers = await res.json();
+            workersStore = workers || [];
+            if (!selectedWorkerId || !workersStore.some(w => w.id === selectedWorkerId && isWorkerOnline(w))) {
+                const firstOnline = workersStore.find(isWorkerOnline);
+                selectedWorkerId = firstOnline ? firstOnline.id : '';
+            }
+            renderMachineList();
+            updateStats();
             const tbody = document.getElementById('workersTable');
             tbody.innerHTML = '';
             if (workers) {
@@ -536,21 +1109,72 @@ Then run:
                 });
             }
         }
+
+        function renderMachineList() {
+            const list = document.getElementById('machineList');
+            if (!list) return;
+            list.innerHTML = '';
+            if (workersStore.length === 0) {
+                list.appendChild(createEl('div', 'No machines are paired yet.'));
+                return;
+            }
+            workersStore.forEach(w => {
+                const online = isWorkerOnline(w);
+                const card = document.createElement('button');
+                card.type = 'button';
+                card.className = `machine-card ${selectedWorkerId === w.id ? 'selected' : ''} ${online ? '' : 'offline'}`;
+                card.onclick = () => selectWorker(w.id);
+                const caps = w.capabilities || [];
+                const labels = w.labels || [];
+                const currentJob = jobsStore.find(j => j.worker_id === w.id && ['RUNNING', 'CLAIMED', 'PENDING'].includes(j.status));
+                card.innerHTML = `
+                    <div class="machine-head">
+                        <div>
+                            <div class="machine-name">${escapeHTML(w.node_name)}</div>
+                            <div class="muted">${escapeHTML(w.os)} · ${Math.round((w.total_ram || 0) / 1073741824)} GB RAM</div>
+                        </div>
+                        <span class="pill ${online ? 'online' : 'offline'}">${online ? 'online' : 'offline'}</span>
+                    </div>
+                    <div style="margin-top: 8px;">${caps.length || labels.length ? [...labels, ...caps.map(c => 'can ' + c)].map(c => `<span class="pill">${escapeHTML(c)}</span>`).join('') : '<span class="muted">No special abilities advertised yet</span>'}</div>
+                    <div class="muted" style="margin-top: 8px;">${currentJob ? 'Working on ' + escapeHTML(currentJob.id) : 'Idle'}</div>
+                `;
+                list.appendChild(card);
+            });
+        }
+
+        function updateStats() {
+            const online = workersStore.filter(isWorkerOnline);
+            const ai = online.filter(w => (w.capabilities || []).includes('codex'));
+            const code = online.filter(w => (w.capabilities || []).some(c => ['go', 'node', 'godot'].includes(c)));
+            const active = jobsStore.filter(j => ['PENDING', 'CLAIMED', 'RUNNING'].includes(j.status));
+            document.getElementById('onlineCount').textContent = online.length;
+            document.getElementById('aiCount').textContent = ai.length;
+            document.getElementById('codeCount').textContent = code.length;
+            document.getElementById('activeJobCount').textContent = active.length;
+        }
         
         async function fetchJobs() {
             const res = await fetch('/api/jobs');
             const jobs = await res.json();
             jobsStore = jobs || [];
+            updateStats();
+            renderMachineList();
+            renderJobs();
+        }
+
+        function renderJobs() {
             const tbody = document.getElementById('jobsTable');
             tbody.innerHTML = '';
-            if (jobs) {
+            if (jobsStore) {
                 const retryChildren = {};
-                jobs.forEach(j => {
+                jobsStore.forEach(j => {
                     if (j.retry_of) {
                         retryChildren[j.retry_of] = (retryChildren[j.retry_of] || 0) + 1;
                     }
                 });
-                jobs.forEach(j => {
+                jobsStore.filter(jobMatchesFilter).forEach(j => {
+                    const machineName = jobMachineName(j);
+                    const machineDetail = jobMachineDetail(j);
                     let dateStr = '-';
                     if (j.start_time) {
                         const d = new Date(j.start_time);
@@ -570,31 +1194,62 @@ Then run:
                     if (j.stages && j.stages.length > 0) {
                         stagesHTML = '<div style="font-size:0.8em; margin-top:4px;">';
                         j.stages.forEach((s, idx) => {
-                            let icon = '⬜';
-                            if (s.status === 'COMPLETED') icon = '✅';
-                            else if (s.status === 'RUNNING') icon = '⏳';
-                            else if (s.status === 'FAILED') icon = '❌';
-                            stagesHTML += `${icon} ${escapeHTML(s.name || s.profile)} `;
+                            let marker = 'waiting';
+                            if (s.status === 'COMPLETED') marker = 'done';
+                            else if (s.status === 'RUNNING') marker = 'running';
+                            else if (s.status === 'FAILED') marker = 'failed';
+                            stagesHTML += `<span class="pill">${escapeHTML(marker)} ${escapeHTML(s.name || s.profile)}</span>`;
                         });
                         stagesHTML += '</div>';
                     }
 
                     const statusDisplay = escapeHTML(j.status) + stagesHTML;
+                    const resultText = (j.result || 'No result yet') + retryText + childText;
+                    const factsHTML = jobFactsHTML(j);
                     
                     tbody.innerHTML += `
                         <tr>
                             <td>${escapeHTML(dateStr)}</td>
-                            <td>${escapeHTML(j.id)}</td>
-                            <td>${escapeHTML(j.worker_id)}</td>
-                            <td>${escapeHTML(j.task)}</td>
+                            <td>
+                                <strong>${escapeHTML(shortID(j.id))}</strong>
+                                <details class="mini-details"><summary>full IDs</summary><code>${escapeHTML(j.id)}</code><code>${escapeHTML(j.worker_id)}</code></details>
+                            </td>
+                            <td><div class="job-machine">${escapeHTML(machineName)}</div><div class="muted">${escapeHTML(machineDetail)}</div></td>
+                            <td>${escapeHTML(jobKind(j))}</td>
                             <td>${statusDisplay}</td>
-                            <td>${escapeHTML((j.result || '-') + retryText + childText)} | ${logsHTML}${retryHTML}</td>
+                            <td class="job-result">${escapeHTML(resultText)} | ${logsHTML}${retryHTML}${factsHTML}</td>
                             <td>${[artifactHTML, prHTML].filter(Boolean).join(' | ') || '-'}</td>
                             <td><button onclick="deleteJob('${escapeHTML(j.id)}')" style="background: #ff4d4d;">Delete</button></td>
                         </tr>
                     `;
                 });
+                if (!tbody.innerHTML) {
+                    tbody.innerHTML = '<tr><td colspan="8" class="muted">No jobs match this filter.</td></tr>';
+                }
             }
+        }
+
+        function jobFactsHTML(job) {
+            const facts = [];
+            if (job.work_branch) facts.push(`<div><strong>Branch:</strong> ${escapeHTML(job.work_branch)}</div>`);
+            if (job.resolved_base) facts.push(`<div><strong>Base:</strong> ${escapeHTML(shortSha(job.resolved_base))}</div>`);
+            if (job.commit_sha) facts.push(`<div><strong>Commit:</strong> ${escapeHTML(shortSha(job.commit_sha))}</div>`);
+            if (job.failure_code) facts.push(`<div><strong>Failure:</strong> ${escapeHTML(job.failure_code)}</div>`);
+            if (job.workspace_retained) facts.push(`<div><strong>Workspace kept:</strong> ${escapeHTML(job.workspace_id || 'yes')}</div>`);
+            if (job.validation_results && job.validation_results.length) {
+                const vals = job.validation_results.map(v => `${v.status === 'COMPLETED' ? 'passed' : 'failed'} ${v.name}${v.duration ? ' (' + v.duration + ')' : ''}`).join(', ');
+                facts.push(`<div><strong>Validation:</strong> ${escapeHTML(vals)}</div>`);
+            }
+            if (job.changed_files && job.changed_files.length) {
+                const files = job.changed_files.slice(0, 6).map(f => `<li>${escapeHTML(f.status)} ${escapeHTML(f.path)}</li>`).join('');
+                const more = job.changed_files.length > 6 ? `<li>${job.changed_files.length - 6} more...</li>` : '';
+                facts.push(`<details class="mini-details"><summary>${job.changed_files.length} changed file${job.changed_files.length === 1 ? '' : 's'}</summary><ul class="file-list">${files}${more}</ul></details>`);
+            }
+            return facts.length ? `<div class="job-facts">${facts.join('')}</div>` : '';
+        }
+
+        function shortSha(value) {
+            return String(value || '').slice(0, 12);
         }
 
         async function deleteJob(jobId) {
@@ -947,5 +1602,6 @@ Then run:
         setInterval(fetchWorkers, 2000);
         setInterval(fetchJobs, 2000);
     </script>
+    </main>
 </body>
 </html>

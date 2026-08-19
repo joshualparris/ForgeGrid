@@ -17,9 +17,10 @@ func TestDirectorDispatch(t *testing.T) {
 	}
 
 	w := &models.WorkerState{
-		ID:     "worker-123",
-		OS:     "linux",
-		Status: "online",
+		ID:       "worker-123",
+		NodeName: "build-laptop",
+		OS:       "linux",
+		Status:   "online",
 	}
 	s.Mu.Lock()
 	s.Workers[w.ID] = w
@@ -58,8 +59,75 @@ tasks:
 		if j.WorkerID != "worker-123" {
 			t.Errorf("Expected job assigned to worker-123, got %s", j.WorkerID)
 		}
+		if j.WorkerName != "build-laptop" {
+			t.Errorf("Expected job worker name build-laptop, got %s", j.WorkerName)
+		}
 		if j.Profile != "GoTest" {
 			t.Errorf("Expected profile 'GoTest', got %s", j.Profile)
+		}
+		if j.ProjectName != "ForgeGrid" || j.TaskName != "build" {
+			t.Errorf("Expected project/task metadata, got %q/%q", j.ProjectName, j.TaskName)
+		}
+		if j.CreatedAt.IsZero() {
+			t.Error("Expected CreatedAt to be set")
+		}
+	}
+}
+
+func TestDirectorDoesNotAssignNewWorkToBusyWorker(t *testing.T) {
+	s, err := store.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	s.Mu.Lock()
+	s.Workers["busy"] = &models.WorkerState{
+		ID:                "busy",
+		NodeName:          "fast-but-busy",
+		OS:                "linux",
+		Status:            "online",
+		AvailableRAM:      32 * 1024 * 1024 * 1024,
+		LogicalProcessors: 16,
+	}
+	s.Workers["idle"] = &models.WorkerState{
+		ID:                "idle",
+		NodeName:          "steady-idle",
+		OS:                "linux",
+		Status:            "online",
+		AvailableRAM:      8 * 1024 * 1024 * 1024,
+		LogicalProcessors: 4,
+	}
+	s.Jobs["existing"] = &models.Job{
+		ID:       "existing",
+		WorkerID: "busy",
+		Status:   models.StatusRunning,
+	}
+	s.Mu.Unlock()
+
+	m, err := manifest.Parse(strings.NewReader(`
+project: "ForgeGrid"
+tasks:
+  build:
+    requirements:
+      os: "linux"
+    execution:
+      profile: "GoTest"
+`))
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if err := New(s).SubmitManifest(m); err != nil {
+		t.Fatalf("dispatch failed: %v", err)
+	}
+
+	for id, j := range s.Jobs {
+		if id == "existing" {
+			continue
+		}
+		if j.WorkerID != "idle" {
+			t.Fatalf("expected new job on idle worker, got %s", j.WorkerID)
+		}
+		if j.WorkerName != "steady-idle" {
+			t.Fatalf("expected worker name steady-idle, got %s", j.WorkerName)
 		}
 	}
 }

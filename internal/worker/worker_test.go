@@ -1,8 +1,10 @@
 package worker
 
 import (
+	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -86,9 +88,9 @@ func TestHardwareDetection(t *testing.T) {
 func TestValidateCapabilities(t *testing.T) {
 	w := New("TestNode", "./tmp-ws", true)
 	w.Capabilities = []string{"go", "non_existent_tool_12345"}
-	
+
 	valid, drift := w.ValidateCapabilities()
-	
+
 	// "go" might not be installed on test env, but we can mock or just check logic.
 	// Actually we expect non_existent_tool_12345 to ALWAYS be in drift.
 	hasDrift := false
@@ -97,11 +99,65 @@ func TestValidateCapabilities(t *testing.T) {
 			hasDrift = true
 		}
 	}
-	
+
 	// Avoid unused variable valid
 	_ = valid
-	
+
 	if !hasDrift {
 		t.Fatalf("Expected non_existent_tool_12345 to be detected as missing drift")
+	}
+}
+
+func TestLoadPolicyRestoresBootstrapPermission(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("LOCALAPPDATA", tmpDir)
+	t.Setenv("APPDATA", tmpDir)
+
+	if err := WritePolicy(Policy{
+		AllowedRepos:   []string{"https://github.com/example/repo.git"},
+		AllowPush:      true,
+		AllowBootstrap: true,
+		Labels:         []string{"trusted"},
+		Capabilities:   []string{"go"},
+	}); err != nil {
+		t.Fatalf("WritePolicy failed: %v", err)
+	}
+
+	w := New("TestNode", "./tmp-ws", true)
+	if !w.allowBootstrap {
+		t.Fatal("expected allowBootstrap to be restored from policy")
+	}
+	if !w.allowPush {
+		t.Fatal("expected allowPush to be restored from policy")
+	}
+	if !w.allowedRepos["https://github.com/example/repo.git"] {
+		t.Fatal("expected allowed repo to be restored from policy")
+	}
+}
+
+func TestRunAutoValidationRunsGoTests(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go not available")
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.test/validation\n\ngo 1.23\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "main_test.go"), []byte(`package validation
+
+import "testing"
+
+func TestValidation(t *testing.T) {}
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	results := runAutoValidation(context.Background(), root, []string{"go"})
+	if len(results) != 1 {
+		t.Fatalf("expected one validation result, got %#v", results)
+	}
+	if results[0].Name != "Go tests" || results[0].Status != "COMPLETED" {
+		t.Fatalf("unexpected validation result: %#v", results[0])
 	}
 }
