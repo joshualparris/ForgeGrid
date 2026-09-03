@@ -1,0 +1,28 @@
+{
+  "schema_version": "1",
+  "product": "ForgeGrid",
+  "version": "0.8.0",
+  "commit": "02155431612e",
+  "generated_at": "2026-08-19T04:48:14Z",
+  "minimum_coordinator_version": "0.8.0",
+  "minimum_worker_version": "0.8.0",
+  "protocol": "1",
+  "artifacts": [
+    {
+      "role": "worker",
+      "platform": "windows",
+      "architecture": "amd64",
+      "sha256": "86b4d820c289ec5f005d902115c55eed334a9693c529442ef4ac5705da146651",
+      "path": "Windows/ForgeGrid.exe",
+      "size": 13530624
+    },
+    {
+      "role": "worker",
+      "platform": "linux",
+      "architecture": "amd64",
+      "sha256": "682ce8bcbafb646f864a97994dabf81976059f649eddd19c24a9a9e3a37ad233",
+      "path": "Linux/forgegrid",
+      "size": 13077480
+    }
+  ]
+}

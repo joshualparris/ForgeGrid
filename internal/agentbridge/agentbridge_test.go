@@ -281,7 +281,7 @@ func TestIntegrationConcurrent(t *testing.T) {
 			defer wg.Done()
 			c, _ := NewClient(srv.URL, fmt.Sprintf("agent-%d", agentId), "secret", fp, false)
 			c.HTTPClient.Timeout = 60 * time.Second
-			inbox, err := c.GetInbox()
+			inbox, err := c.GetInbox(0, 0, false)
 			if err != nil {
 				t.Errorf("Failed to read inbox for agent %d: %v", agentId, err)
 				return
@@ -351,7 +351,7 @@ func TestIntegrationConcurrent(t *testing.T) {
 			}
 
 			c2, _ := NewClient(srv2.URL, "agent-1", "secret", fp, false)
-			inbox, err := c2.GetInbox()
+			inbox, err := c2.GetInbox(0, 0, false)
 			if err != nil {
 				t.Fatalf("GetInbox failed after restart: %v", err)
 			}
@@ -380,5 +380,32 @@ func TestIntegrationConcurrent(t *testing.T) {
 	}
 	if len(s3.messages) != 701 {
 		t.Fatalf("Expected 701 messages in s3, got %d", len(s3.messages))
+	}
+}
+
+func TestOptionalTaskIDForChat(t *testing.T) {
+	server, store, _ := setupTestServer(t)
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+
+	store.agents["fedora"] = AgentRegistration{Name: "fedora", TokenHash: "00b6241dddb1bc0bc657026c85cb001a0eeaee5715a4d4c9f031b8afc4ba7e1f"}
+	auth := "fedora:fedora-secret"
+
+	// Missing task_id for chat should succeed
+	req := httptest.NewRequest("POST", "/api/v1/agent-messages", strings.NewReader(`{"recipient":"fedora", "type":"chat", "body":"hello"}`))
+	req.Header.Set("Authorization", "Bearer "+auth)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Errorf("Expected 201 for chat without task_id, got %d", w.Code)
+	}
+
+	// Missing task_id for instruction should fail
+	req2 := httptest.NewRequest("POST", "/api/v1/agent-messages", strings.NewReader(`{"recipient":"fedora", "type":"instruction", "body":"hello"}`))
+	req2.Header.Set("Authorization", "Bearer "+auth)
+	w2 := httptest.NewRecorder()
+	mux.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 for instruction without task_id, got %d", w2.Code)
 	}
 }

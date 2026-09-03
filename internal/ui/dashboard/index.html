@@ -5,72 +5,1174 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ForgeGrid - Dashboard</title>
     <style>
-        body { font-family: 'Inter', sans-serif; background-color: #121212; color: #ffffff; padding: 20px; }
-        .card { background-color: #1e1e1e; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
-        h1, h2 { color: #4facfe; margin-top: 0; }
-        button { background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); border: none; color: white; padding: 8px 16px; border-radius: 4px; cursor: pointer; }
-        button:hover { opacity: 0.9; }
+        :root { color-scheme: dark; --bg: #101112; --panel: #1b1d1f; --panel-2: #23272a; --line: #34393e; --text: #f4f7f8; --muted: #a7b0b7; --blue: #37a7ff; --green: #41d37d; --red: #ff5b66; --yellow: #f4c84a; --orange: #f28b45; }
+        * { box-sizing: border-box; }
+        body { font-family: Inter, system-ui, -apple-system, Segoe UI, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 0; }
+        main { padding: 24px; max-width: 1720px; margin: 0 auto; }
+        .topbar { background: #17191b; border-bottom: 1px solid var(--line); padding: 16px 24px; position: sticky; top: 0; z-index: 4; }
+        .topbar h1 { margin: 0; color: var(--text); font-size: 24px; }
+        .topbar-meta { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px; color: var(--muted); font-size: 14px; }
+        .card { background-color: var(--panel); padding: 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #24282c; }
+        h1, h2 { color: var(--blue); margin-top: 0; }
+        h2 { font-size: 22px; }
+        h3 { margin: 0 0 10px; }
+        button { background: var(--blue); border: none; color: white; padding: 9px 14px; border-radius: 5px; cursor: pointer; font-weight: 700; }
+        button:hover { filter: brightness(1.08); }
+        button:disabled { cursor: not-allowed; opacity: 0.45; }
+        .ghost-button { background: #30353a; border: 1px solid #49515a; }
+        .danger-button { background: var(--red); }
+        .warn-button { background: #876500; }
+        .success-button { background: #159264; }
         table { width: 100%; border-collapse: collapse; margin-top: 10px; }
         th, td { text-align: left; padding: 10px; border-bottom: 1px solid #333; }
-        .status-online { color: #00ff00; }
-        .status-offline { color: #ff0000; }
+        .status-online { color: var(--green); }
+        .status-offline { color: var(--red); }
+        input, textarea, select { background: #333; color: white; border: 1px solid #555; padding: 8px; border-radius: 4px; }
+        .field-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+        .command-grid { display: grid; grid-template-columns: minmax(280px, 0.9fr) minmax(320px, 1.1fr); gap: 20px; align-items: start; }
+        .stats { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 12px; margin-bottom: 20px; }
+        .stat { background: var(--panel); border: 1px solid #24282c; border-radius: 8px; padding: 14px; }
+        .stat strong { display: block; font-size: 26px; margin-top: 4px; }
+        .muted { color: var(--muted); }
+        .machine-list { display: grid; gap: 10px; }
+        .machine-card { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 14px; cursor: pointer; }
+        .machine-card.selected { border-color: var(--blue); box-shadow: inset 0 0 0 1px var(--blue); }
+        .machine-card.offline { opacity: 0.62; }
+        .machine-head { display: flex; justify-content: space-between; gap: 10px; align-items: start; }
+        .machine-name { font-size: 18px; font-weight: 800; }
+        .pill { display: inline-flex; align-items: center; min-height: 24px; padding: 3px 8px; border-radius: 999px; background: #30353a; color: #dbe3e8; font-size: 12px; margin: 3px 4px 0 0; }
+        .pill.online { background: rgba(65, 211, 125, 0.14); color: var(--green); }
+        .pill.offline { background: rgba(255, 91, 102, 0.14); color: var(--red); }
+        .job-picker { display: grid; grid-template-columns: repeat(2, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; }
+        .job-card { text-align: left; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 14px; color: var(--text); min-height: 118px; }
+        .job-card.selected { border-color: var(--blue); box-shadow: inset 0 0 0 1px var(--blue); }
+        .job-card strong { display: block; font-size: 17px; margin-bottom: 6px; }
+        .job-card span { color: var(--muted); font-weight: 500; line-height: 1.35; }
+        .quick-form { display: grid; gap: 12px; }
+        .quick-form input, .quick-form textarea, .quick-form select { width: 100%; background: #282d31; }
+        .result-box { min-height: 28px; font-weight: 700; }
+        .advanced { margin-top: 18px; }
+        .advanced summary { cursor: pointer; color: var(--blue); font-weight: 800; margin-bottom: 12px; }
+        .table-wrap { overflow-x: auto; }
+        .job-id { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; }
+        .job-machine { font-weight: 800; }
+        .job-result { max-width: 520px; white-space: normal; }
+        .mini-details summary { color: var(--muted); cursor: pointer; font-size: 12px; margin-top: 6px; }
+        .mini-details code { display: block; color: #d7ffd7; overflow-wrap: anywhere; margin-top: 4px; }
+        .job-facts { display: grid; gap: 4px; margin-top: 8px; color: var(--muted); font-size: 12px; }
+        .job-facts strong { color: var(--text); }
+        .file-list { margin: 6px 0 0; padding-left: 18px; }
+        .file-list li { margin: 2px 0; }
+        .project-picker { position: relative; }
+        .project-list { display: none; position: absolute; left: 0; right: 0; top: calc(100% + 4px); background: #202428; border: 1px solid var(--line); border-radius: 8px; max-height: 320px; overflow: auto; z-index: 5; box-shadow: 0 14px 40px rgba(0,0,0,0.35); }
+        .project-option { display: block; width: 100%; text-align: left; background: transparent; border: 0; border-bottom: 1px solid #30353a; border-radius: 0; padding: 10px 12px; }
+        .project-option.active, .project-option:hover { background: #2c3338; filter: none; }
+        .project-option strong { display: block; }
+        .project-option span { color: var(--muted); font-weight: 500; }
+        .project-tools { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+        .intelligence { background: #151719; border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+        .intelligence ul { margin: 8px 0 0; padding-left: 18px; }
+        .setup-wizard { display: grid; gap: 16px; border-color: #2e5f7f; background: #151a1d; }
+        .setup-head { display: flex; justify-content: space-between; gap: 16px; align-items: start; flex-wrap: wrap; }
+        .setup-head p { margin: 6px 0 0; color: var(--muted); max-width: 760px; line-height: 1.45; }
+        .setup-steps { display: grid; grid-template-columns: repeat(3, minmax(220px, 1fr)); gap: 12px; }
+        .setup-step { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 14px; display: grid; gap: 8px; }
+        .setup-step.done { border-color: rgba(65, 211, 125, 0.7); }
+        .setup-step.attention { border-color: rgba(244, 200, 74, 0.8); }
+        .setup-step strong { font-size: 16px; }
+        .setup-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+        .update-list { display: grid; gap: 10px; margin-top: 12px; }
+        .update-row { display: grid; grid-template-columns: 1.2fr 1fr 1.6fr auto; gap: 10px; align-items: center; border-top: 1px solid var(--line); padding-top: 10px; }
+        .version-line { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+        .copy-box { display: grid; gap: 8px; }
+        .copy-box textarea { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; min-height: 92px; resize: vertical; }
+        .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.72); padding: 32px; z-index: 10; }
+        .modal-content { background: #1e1e1e; border: 1px solid #444; border-radius: 8px; padding: 20px; height: calc(100vh - 96px); display: flex; flex-direction: column; }
+        pre { background: #101010; color: #d7ffd7; padding: 12px; border-radius: 6px; overflow: auto; white-space: pre-wrap; }
+        @media (max-width: 900px) { main { padding: 14px; } .command-grid, .stats, .job-picker, .setup-steps { grid-template-columns: 1fr; } .topbar { position: static; } }
     </style>
 </head>
 <body>
-    <h1>ForgeGrid Dashboard</h1>
-    
+    <header class="topbar">
+        <h1>ForgeGrid Command Center</h1>
+        <div class="topbar-meta">
+            <span>Coordinator <strong id="coordIP">...</strong></span>
+            <span>Pairing code <strong id="pairingCode" style="color: var(--yellow);">None</strong></span>
+            <span><button onclick="generateCode()">New Pairing Code</button></span>
+        </div>
+    </header>
+
+    <main>
+    <section class="card setup-wizard" id="setupWizard">
+        <div class="setup-head">
+            <div>
+                <h2>Welcome To ForgeGrid</h2>
+                <p id="setupSummary">Checking what is ready...</p>
+            </div>
+            <div class="setup-actions">
+                <button onclick="startFirstRunSession()">Add Computer</button>
+                <button class="ghost-button" onclick="refreshProjects()">Connect GitHub</button>
+                <button class="ghost-button" onclick="dismissSetupWizard()">Hide</button>
+            </div>
+        </div>
+        <div class="setup-steps">
+            <div class="setup-step" id="setupStepGithub">
+                <strong>1. Connect GitHub</strong>
+                <span class="muted">Not checked yet.</span>
+                <details class="mini-details">
+                    <summary>Token setup</summary>
+                    <div class="copy-box">
+                        <textarea readonly>mkdir -p ~/.config/forgegrid/coordinator
+nano ~/.config/forgegrid/coordinator/github-token.txt
+chmod 600 ~/.config/forgegrid/coordinator/github-token.txt</textarea>
+                    </div>
+                </details>
+            </div>
+            <div class="setup-step" id="setupStepComputer">
+                <strong>2. Add A Computer</strong>
+                <span class="muted">No machines checked yet.</span>
+                <button onclick="startFirstRunSession()">Show Join Command</button>
+            </div>
+            <div class="setup-step" id="setupStepWork">
+                <strong>3. Send Work</strong>
+                <span class="muted">Waiting for a project and an online machine.</span>
+                <button class="success-button" onclick="scrollToWork()">Choose Work</button>
+            </div>
+        </div>
+        <pre id="setupJoinOutput" style="display: none;"></pre>
+    </section>
+
+    <section class="stats">
+        <div class="stat"><span class="muted">Online Machines</span><strong id="onlineCount">0</strong></div>
+        <div class="stat"><span class="muted">Ready For AI</span><strong id="aiCount">0</strong></div>
+        <div class="stat"><span class="muted">Ready For Code</span><strong id="codeCount">0</strong></div>
+        <div class="stat"><span class="muted">Active Jobs</span><strong id="activeJobCount">0</strong></div>
+    </section>
+
+    <section class="card">
+        <div class="setup-head">
+            <div>
+                <h2>Fleet Updates</h2>
+                <p id="updateSummary">Checking update bundle...</p>
+            </div>
+            <div class="setup-actions">
+                <button class="ghost-button" onclick="fetchUpdates()">Refresh</button>
+                <button onclick="queueUpdates(true)">Update All Idle Machines</button>
+            </div>
+        </div>
+        <div id="updateList" class="update-list"></div>
+    </section>
+
+    <section class="command-grid">
+        <div class="card">
+            <h2>Your Laptop Crew</h2>
+            <div id="machineList" class="machine-list"></div>
+        </div>
+
+        <div class="card">
+            <h2>Send Them Something To Do</h2>
+            <div class="job-picker">
+                <button class="job-card selected" data-job-type="smoke" onclick="selectQuickJob('smoke')"><strong>Check This Machine</strong><span>Fast built-in test. Use this first.</span></button>
+                <button class="job-card" data-job-type="go-test" onclick="selectQuickJob('go-test')"><strong>Run Project Tests</strong><span>Clone a Go repo and run its test suite.</span></button>
+                <button class="job-card" data-job-type="ai-fix" onclick="selectQuickJob('ai-fix')"><strong>Ask AI To Work On This Project</strong><span>Use the best available coding agent on your laptops.</span></button>
+                <button class="job-card" data-job-type="godot-export" onclick="selectQuickJob('godot-export')"><strong>Build Godot Game</strong><span>Export a Windows build from a Godot project.</span></button>
+            </div>
+
+            <div class="quick-form" id="quickJobForm">
+                <div class="project-tools">
+                    <span id="githubState" class="muted">GitHub not checked yet</span>
+                    <button class="ghost-button" onclick="refreshProjects()">Refresh GitHub Projects</button>
+                </div>
+                <label class="project-picker" id="projectPickerWrap">Project
+                    <input id="projectSearch" autocomplete="off" placeholder="Search your projects...">
+                    <div id="projectList" class="project-list"></div>
+                </label>
+                <div id="projectIntelligence" class="intelligence" style="display: none;"></div>
+                <label><input id="manualRepoToggle" type="checkbox" onchange="toggleManualRepo()"> Use repository URL manually</label>
+                <label id="quickRepoWrap">Manual repository URL
+                    <input id="quickRepo" placeholder="https://github.com/you/project.git">
+                </label>
+                <label>Branch or commit to start from
+                    <input id="quickBase" value="main">
+                </label>
+                <label>New work branch
+                    <input id="quickBranch" value="forgegrid/work">
+                </label>
+                <label id="quickPromptWrap">What should the AI do?
+                    <textarea id="quickPrompt" rows="4">Inspect this project, make one small useful improvement, and add or update a test if appropriate.</textarea>
+                </label>
+                <label id="aiAgentWrap">AI agent
+                    <select id="aiAgentChoice">
+                        <option value="auto">Automatic - best available</option>
+                        <option value="antigravity">Antigravity</option>
+                        <option value="codex">Codex</option>
+                    </select>
+                </label>
+                <label>Save changes?
+                    <select id="quickCommit">
+                        <option value="false">No, just run it</option>
+                        <option value="true">Yes, commit on the worker</option>
+                    </select>
+                </label>
+                <button class="success-button" onclick="submitQuickJob()">Start Selected Job</button>
+                <div id="quickResult" class="result-box"></div>
+            </div>
+        </div>
+    </section>
+
     <div class="card">
-        <h2>Coordinator Status</h2>
-        <p>IP Address: <span id="coordIP">...</span></p>
-        <p>Pairing Code: <strong id="pairingCode" style="font-size: 1.2em; color: #ffeb3b;">None</strong></p>
-        <button onclick="generateCode()">Generate Pairing Code</button>
+        <h2>Wi-Fi Setup</h2>
+        <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: end;">
+            <label>AgentBridge Port<br><input id="sessionAgentPort" value="9091" style="width: 120px;"></label>
+            <button onclick="startWifiSession()">Start Wi-Fi Session</button>
+        </div>
+        <pre id="sessionOutput" style="display: none;"></pre>
+        <div style="margin-top: 14px; display: flex; gap: 10px; flex-wrap: wrap; align-items: end;">
+            <label>Repair AgentBridge Identity<br><input id="repairAgentName" placeholder="thinkpad-antigravity" style="width: 260px;"></label>
+            <button onclick="repairAgentBridge()" style="background: #775500;">Generate Fresh Token</button>
+        </div>
+        <pre id="repairOutput" style="display: none;"></pre>
     </div>
 
     <div class="card">
         <h2>Connected Workers</h2>
-        <table>
+        <div class="table-wrap"><table>
             <thead>
                 <tr>
                     <th>Node Name</th>
                     <th>OS</th>
                     <th>CPU / RAM</th>
+                    <th>Labels / Capabilities</th>
                     <th>Status</th>
+                    <th>Last Seen</th>
+                    <th>Current Job</th>
+                    <th>Recent Messages</th>
                     <th>Actions</th>
                 </tr>
             </thead>
             <tbody id="workersTable">
             </tbody>
-        </table>
+        </table></div>
     </div>
+
+    <div class="card">
+        <h2>Runner Policy Setup</h2>
+        <div class="field-grid">
+            <label>Allowed Repositories<br><input id="policyRepos" style="width: 100%;" placeholder="git@github.com:you/game.git,git@github.com:you/app.git"></label>
+            <label>Labels<br><input id="policyLabels" style="width: 100%;" placeholder="trusted,linux-build"></label>
+            <label>Capabilities<br><input id="policyCaps" style="width: 100%;" placeholder="go,node,codex,godot,github-pr"></label>
+            <label>Allow Push<br><select id="policyPush" style="width: 100%;"><option value="false">No</option><option value="true">Yes</option></select></label>
+        </div>
+        <button onclick="generateRunnerPolicy()" style="margin-top: 12px; background: #555;">Generate Runner Policy Command</button>
+        <pre id="policyOutput" style="display: none;"></pre>
+    </div>
+    
+    <details class="card advanced">
+        <summary>Advanced: edit the raw job manifest</summary>
+        <h2>Submit Job Manifest</h2>
+        <div style="margin-bottom: 10px; display: flex; gap: 10px;">
+            <button onclick="loadTemplate('go-test')" style="background: #333; border: 1px solid #555; padding: 5px 10px;">Run Go Test Suite</button>
+            <button onclick="loadTemplate('godot-export')" style="background: #333; border: 1px solid #555; padding: 5px 10px;">Export Godot Game (Windows)</button>
+            <button onclick="loadTemplate('agent-task')" style="background: #333; border: 1px solid #555; padding: 5px 10px;">Agent: Implement Feature</button>
+            <button onclick="loadTemplate('push')" style="background: #ff4d4d; border: 1px solid #ff0000; font-weight: bold; padding: 5px 10px;">Push Changes</button>
+            <button onclick="loadTemplate('pipeline')" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); border: none; font-weight: bold; padding: 5px 10px; color: white;">Agent: Build + Test + Push</button>
+        </div>
+        <textarea id="manifestInput" rows="22" style="width: 100%; box-sizing: border-box; background: #333; color: white; border: 1px solid #555; padding: 10px; font-family: monospace;" oninput="checkPushWarning()"></textarea><br/>
+        <div id="pushWarning" style="display: none; color: #ffeb3b; background: rgba(255, 235, 59, 0.1); padding: 10px; border-left: 4px solid #ffeb3b; margin-top: 10px;">
+            <strong>WARNING:</strong> This manifest is configured to PUSH changes to the remote repository. Ensure you have authorization and that the remote branch is correct.
+        </div>
+        <button onclick="submitManifest()" style="margin-top: 10px; background: linear-gradient(135deg, #00b09b 0%, #96c93d 100%);">Submit Job Manifest</button>
+        <div id="manifestResult" style="margin-top: 10px; font-weight: bold;"></div>
+    </details>
     
     <div class="card">
         <h2>Recent Jobs</h2>
-        <table>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px;">
+            <button class="ghost-button" onclick="setJobFilter('all')">All</button>
+            <button class="ghost-button" onclick="setJobFilter('active')">Running</button>
+            <button class="ghost-button" onclick="setJobFilter('failed')">Failed</button>
+            <button class="ghost-button" onclick="setJobFilter('completed')">Completed</button>
+        </div>
+        <div class="table-wrap"><table>
             <thead>
                 <tr>
-                    <th>Job ID</th>
-                    <th>Worker ID</th>
-                    <th>Task</th>
+                    <th>When</th>
+                    <th>Job</th>
+                    <th>Machine</th>
+                    <th>Kind</th>
                     <th>Status</th>
-                    <th>Result</th>
+                    <th>What Happened</th>
+                    <th>Artifacts / PR</th>
+                    <th>Actions</th>
                 </tr>
             </thead>
             <tbody id="jobsTable">
             </tbody>
-        </table>
+        </table></div>
+    </div>
+
+    <div class="card" id="messagingCard" style="display: none;">
+        <h2>Messaging</h2>
+        <div id="messagingUnavailable" style="display: none; color: #ff4d4d;">AgentBridge is not configured or unavailable.</div>
+        <div id="messagingContainer" style="display: flex; height: 500px; gap: 20px;">
+            <div style="flex: 1; border-right: 1px solid #333; padding-right: 20px; overflow-y: auto;">
+                <h3>Conversations</h3>
+                <ul id="conversationList" style="list-style: none; padding: 0;">
+                </ul>
+            </div>
+            <div style="flex: 3; display: flex; flex-direction: column;">
+                <h3 id="currentConversationTitle">Select a conversation</h3>
+                <div id="messageHistory" style="flex: 1; overflow-y: auto; background: #121212; padding: 10px; border-radius: 4px; margin-bottom: 10px; display: flex; flex-direction: column;">
+                </div>
+                <div style="display: flex; gap: 10px;">
+                    <select id="messageTypeSelect">
+                        <option value="chat">Chat</option>
+                        <option value="instruction">Instruction</option>
+                        <option value="system">System</option>
+                    </select>
+                    <input type="text" id="taskIdInput" placeholder="Task ID (optional)" style="flex: 1; background: #333; color: white; border: 1px solid #555; padding: 5px;">
+                    <input type="text" id="messageInput" placeholder="Type a message..." style="flex: 3; background: #333; color: white; border: 1px solid #555; padding: 5px;">
+                    <button id="sendBtn" onclick="sendMessage()">Send</button>
+                </div>
+                <div id="sendError" style="color: #ff4d4d; margin-top: 5px;"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="logModal">
+        <div class="modal-content">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h2 id="logTitle">Job Logs</h2>
+                <button onclick="closeLogViewer()" style="background: #555;">Close</button>
+            </div>
+            <pre id="logOutput" style="flex: 1;"></pre>
+        </div>
     </div>
 
     <script>
+        let coordinatorIdentity = "";
+        let messagingAvailable = false;
+        let currentRecipient = null;
+        let agentNames = [];
+        let messagesStore = []; // Store raw messages
+        let jobsStore = [];
+        let logSource = null;
+        let latestAgentBridgeFingerprint = "";
+        let workersStore = [];
+        let selectedWorkerId = "";
+        let selectedQuickJob = "smoke";
+        let jobFilter = "all";
+        let projectsStore = [];
+        let updatesStore = null;
+        let selectedProject = null;
+        let selectedInspection = null;
+        let projectCursor = -1;
+        let latestSetupSession = null;
+
+        function splitCSV(value) {
+            return value.split(',').map(v => v.trim()).filter(Boolean);
+        }
+
+        function shellQuote(value) {
+            return `"${value.replace(/"/g, '\\"')}"`;
+        }
+
+        function isWorkerOnline(w) {
+            const lastSeen = new Date(w.last_seen);
+            return w.status === 'online' && ((new Date() - lastSeen) / 1000) <= 60;
+        }
+
+        function selectedWorker() {
+            return workersStore.find(w => w.id === selectedWorkerId) || workersStore.find(isWorkerOnline) || null;
+        }
+
+        function shortID(id) {
+            if (!id) return '-';
+            return id.replace(/^worker-/, 'worker ').replace(/^job-/, 'job ').slice(0, 14);
+        }
+
+        function workerForJob(job) {
+            return workersStore.find(w => w.id === job.worker_id) || null;
+        }
+
+        function jobMachineName(job) {
+            const worker = workerForJob(job);
+            if (worker && worker.node_name) return worker.node_name;
+            if (job.worker_name) return job.worker_name;
+            return 'Unknown machine';
+        }
+
+        function jobMachineDetail(job) {
+            const worker = workerForJob(job);
+            if (worker) return `${worker.os || 'unknown OS'} · ${Math.round((worker.total_ram || 0) / 1073741824)} GB RAM`;
+            if (job.worker_name) return 'Saved from job history';
+            return `Old job record: ${shortID(job.worker_id)}`;
+        }
+
+        function jobKind(job) {
+            if (job.task === 'test') return 'Machine check';
+            if (job.profile === 'CodexExec' || job.profile === 'AIAgent' || job.profile === 'AIAgentAuto') return 'AI code work';
+            if (job.profile === 'GoTest') return 'Go tests';
+            if (job.profile === 'GodotExport') return 'Godot build';
+            return job.profile || job.task || 'Job';
+        }
+
+        function humanCapability(cap) {
+            const names = {
+                'ai-agent': 'AI agent',
+                antigravity: 'Antigravity',
+                codex: 'Codex',
+                python: 'Python',
+                go: 'Go',
+                node: 'Node',
+                git: 'Git',
+                godot: 'Godot'
+            };
+            return names[cap] || cap;
+        }
+
+        function visibleCapabilities(worker) {
+            const caps = worker.capabilities || [];
+            return caps.filter(c => c !== 'ai-agent').map(humanCapability);
+        }
+
+        function machineCapabilityText(worker) {
+            const labels = worker.labels || [];
+            const caps = visibleCapabilities(worker);
+            const pieces = [];
+            if (labels.length) pieces.push(`Labels: ${labels.join(', ')}`);
+            pieces.push(caps.length ? `Can run: ${caps.join(', ')}` : 'Can run: nothing detected yet');
+            return pieces.join(' | ');
+        }
+
+        function capabilityPills(worker) {
+            const labels = worker.labels || [];
+            const caps = visibleCapabilities(worker);
+            const pills = labels.map(c => `<span class="pill">${escapeHTML(c)}</span>`);
+            if (caps.length) {
+                pills.push(`<span class="muted">Can run:</span>`);
+                caps.forEach(c => pills.push(`<span class="pill">${escapeHTML(c)}</span>`));
+            }
+            return pills.length ? pills.join('') : '<span class="muted">No usable tools detected yet</span>';
+        }
+
+        function workerVersionText(worker) {
+            const v = worker.version || {};
+            if (!v.version) return 'Legacy worker - version information unavailable';
+            const commit = v.commit ? ` · ${v.commit}` : '';
+            const proto = v.protocol ? ` · protocol ${v.protocol}` : '';
+            return `ForgeGrid ${v.version}${commit}${proto}`;
+        }
+
+        function setJobFilter(filter) {
+            jobFilter = filter;
+            renderJobs();
+        }
+
+        function jobMatchesFilter(job) {
+            if (jobFilter === 'active') return ['PENDING', 'CLAIMED', 'RUNNING', 'CANCEL_REQUESTED'].includes(job.status);
+            if (jobFilter === 'failed') return job.status === 'FAILED';
+            if (jobFilter === 'completed') return job.status === 'COMPLETED';
+            return true;
+        }
+
+        function projectLabel(project) {
+            return [project.language || 'Unknown', project.private ? 'Private' : 'Public', project.default_branch || 'main'].join(' · ');
+        }
+
+        function renderProjectList() {
+            const list = document.getElementById('projectList');
+            const search = document.getElementById('projectSearch').value.trim().toLowerCase();
+            const visibility = document.getElementById('manualRepoToggle').checked || selectedQuickJob === 'smoke' ? 'none' : 'block';
+            list.style.display = visibility;
+            list.innerHTML = '';
+            if (visibility === 'none') return;
+            const matches = projectsStore.filter(p => {
+                const haystack = `${p.name} ${p.full_name} ${p.description || ''} ${p.language || ''}`.toLowerCase();
+                return !search || haystack.includes(search);
+            }).slice(0, 40);
+            if (matches.length === 0) {
+                const empty = createEl('div', 'No matching projects. Use manual URL or refresh GitHub.');
+                empty.className = 'muted';
+                empty.style.padding = '12px';
+                list.appendChild(empty);
+                return;
+            }
+            matches.forEach((project, index) => {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = `project-option ${index === projectCursor ? 'active' : ''}`;
+                btn.innerHTML = `<strong>${escapeHTML(project.name)}</strong><span>${escapeHTML(projectLabel(project))}</span>`;
+                btn.onmousedown = ev => ev.preventDefault();
+                btn.onclick = () => selectProject(project);
+                list.appendChild(btn);
+            });
+        }
+
+        function selectProject(project) {
+            selectedProject = project;
+            selectedInspection = project.inspection || null;
+            document.getElementById('projectSearch').value = project.name;
+            document.getElementById('quickRepo').value = project.clone_url;
+            document.getElementById('quickBase').value = project.default_sha || project.default_branch || 'main';
+            document.getElementById('quickBranch').value = suggestedBranch();
+            document.getElementById('projectList').style.display = 'none';
+            renderProjectIntelligence();
+            inspectSelectedProject(false);
+            updateQuickManifestPreview();
+        }
+
+        async function inspectSelectedProject(force) {
+            if (!selectedProject || document.getElementById('manualRepoToggle').checked) return;
+            const box = document.getElementById('projectIntelligence');
+            box.style.display = 'block';
+            box.textContent = 'Inspecting project safely...';
+            try {
+                const method = force ? 'POST' : 'GET';
+                const res = await fetch(`/api/projects/inspect?project_id=${encodeURIComponent(selectedProject.id)}${force ? '&refresh=true' : ''}`, { method });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || data.message || 'inspection failed');
+                selectedInspection = data;
+                document.getElementById('quickBase').value = data.default_sha || data.default_branch || selectedProject.default_branch || 'main';
+                renderProjectIntelligence();
+                renderDetectedActions();
+                updateQuickManifestPreview();
+            } catch (e) {
+                box.innerHTML = `<strong>${escapeHTML(selectedProject.name)}</strong><div class="muted">Could not inspect project: ${escapeHTML(e.message)}</div>`;
+            }
+        }
+
+        function renderProjectIntelligence() {
+            const box = document.getElementById('projectIntelligence');
+            if (!selectedProject || document.getElementById('manualRepoToggle').checked) {
+                box.style.display = 'none';
+                return;
+            }
+            box.style.display = 'block';
+            const summary = `${selectedProject.language || 'Unknown'} · ${selectedProject.private ? 'Private' : 'Public'} · ${selectedProject.default_branch || 'main'}`;
+            if (!selectedInspection) {
+                box.innerHTML = `<strong>${escapeHTML(selectedProject.name)}</strong><div class="muted">${escapeHTML(summary)}</div><button class="ghost-button" style="margin-top:8px;" onclick="inspectSelectedProject(true)">Inspect Project</button>`;
+                return;
+            }
+            const types = selectedInspection.project_types && selectedInspection.project_types.length ? selectedInspection.project_types.join(' · ') : 'Project type unknown';
+            const detected = (selectedInspection.detected_files || []).slice(0, 6).map(f => `<li>${escapeHTML(f)}</li>`).join('');
+            const warnings = (selectedInspection.warnings || []).map(w => `<li>${escapeHTML(w)}</li>`).join('');
+            box.innerHTML = `<strong>${escapeHTML(selectedProject.name)}</strong><div class="muted">${escapeHTML(types)} · ${escapeHTML(selectedInspection.default_branch || selectedProject.default_branch || 'main')}</div>${detected ? `<ul>${detected}</ul>` : ''}${warnings ? `<div style="color: var(--yellow); margin-top:8px;"><ul>${warnings}</ul></div>` : ''}<button class="ghost-button" style="margin-top:8px;" onclick="inspectSelectedProject(true)">Refresh Inspection</button>`;
+        }
+
+        function renderDetectedActions() {
+            if (!selectedInspection || !selectedInspection.available_actions) return;
+            const picker = document.querySelector('.job-picker');
+            picker.innerHTML = '';
+            const typeMap = {
+                'ai-agent': 'ai-fix',
+                codex: 'ai-fix',
+                'go-test': 'go-test',
+                'go-race': 'go-race',
+                'go-build': 'go-build',
+                'python-check': 'python-check',
+                'python-test': 'python-test',
+                'node-test': 'node-test',
+                'node-build': 'node-build',
+                'node-lint': 'node-lint',
+                'godot-export-windows': 'godot-export'
+            };
+            selectedInspection.available_actions.forEach(action => {
+                if (action.id === 'inspect') return;
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'job-card';
+                button.dataset.jobType = typeMap[action.id] || action.id;
+                button.innerHTML = `<strong>${escapeHTML(action.label)}</strong><span>${escapeHTML(action.description || '')}</span>`;
+                button.onclick = () => selectQuickJob(button.dataset.jobType);
+                picker.appendChild(button);
+            });
+            const first = picker.querySelector('.job-card');
+            if (first) first.click();
+        }
+
+        function suggestedBranch() {
+            const task = document.getElementById('quickPrompt') ? document.getElementById('quickPrompt').value : '';
+            const words = task.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 32) || selectedQuickJob || 'work';
+            const stamp = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 12);
+            return `forgegrid/${selectedQuickJob}-${words}-${stamp}`;
+        }
+
+        function toggleManualRepo() {
+            const manual = document.getElementById('manualRepoToggle').checked;
+            const repoJob = selectedQuickJob !== 'smoke';
+            document.getElementById('manualRepoToggle').closest('label').style.display = repoJob ? 'block' : 'none';
+            document.getElementById('quickRepoWrap').style.display = repoJob && manual ? 'block' : 'none';
+            document.getElementById('projectPickerWrap').style.display = repoJob && !manual ? 'block' : 'none';
+            renderProjectList();
+        }
+
+        async function fetchProjects() {
+            try {
+                const res = await fetch('/api/projects');
+                if (!res.ok) throw new Error(await res.text());
+                const data = await res.json();
+                projectsStore = data.projects || [];
+                const state = document.getElementById('githubState');
+                if (data.connected) {
+                    state.textContent = `GitHub: connected as ${data.login || 'authenticated user'} · ${projectsStore.length} projects`;
+                    state.style.color = 'var(--green)';
+                } else {
+                    state.textContent = data.last_error || 'GitHub not connected - set GITHUB_TOKEN';
+                    state.style.color = 'var(--yellow)';
+                }
+                renderProjectList();
+                updateSetupWizard();
+            } catch (e) {
+                const state = document.getElementById('githubState');
+                state.textContent = `Project library unavailable: ${e.message}`;
+                state.style.color = 'var(--red)';
+                updateSetupWizard();
+            }
+        }
+
+        async function refreshProjects() {
+            const state = document.getElementById('githubState');
+            state.textContent = 'Refreshing GitHub projects...';
+            state.style.color = 'white';
+            try {
+                const res = await fetch('/api/projects/refresh', { method: 'POST' });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || data.message || 'GitHub refresh failed');
+                projectsStore = data.projects || [];
+                state.textContent = `GitHub: connected as ${data.login || 'authenticated user'} · ${projectsStore.length} projects`;
+                state.style.color = 'var(--green)';
+                renderProjectList();
+                updateSetupWizard();
+            } catch (e) {
+                state.textContent = e.message;
+                state.style.color = 'var(--red)';
+                updateSetupWizard();
+            }
+        }
+
+        function selectQuickJob(type) {
+            selectedQuickJob = type;
+            document.querySelectorAll('.job-card').forEach(card => {
+                card.classList.toggle('selected', card.dataset.jobType === type);
+            });
+            const repoJob = type !== 'smoke';
+            document.getElementById('quickRepo').closest('label').style.display = repoJob ? 'block' : 'none';
+            document.getElementById('quickBase').closest('label').style.display = repoJob ? 'block' : 'none';
+            document.getElementById('quickBranch').closest('label').style.display = repoJob ? 'block' : 'none';
+            document.getElementById('quickPromptWrap').style.display = type === 'ai-fix' ? 'block' : 'none';
+            document.getElementById('aiAgentWrap').style.display = type === 'ai-fix' ? 'block' : 'none';
+            document.getElementById('quickCommit').closest('label').style.display = type === 'ai-fix' ? 'block' : 'none';
+            document.getElementById('projectPickerWrap').style.display = repoJob && !document.getElementById('manualRepoToggle').checked ? 'block' : 'none';
+            document.getElementById('manualRepoToggle').closest('label').style.display = repoJob ? 'block' : 'none';
+            document.getElementById('quickRepoWrap').style.display = repoJob && document.getElementById('manualRepoToggle').checked ? 'block' : 'none';
+            const commit = document.getElementById('quickCommit');
+            commit.value = type === 'ai-fix' ? 'true' : 'false';
+            if (repoJob && selectedProject) {
+                document.getElementById('quickBranch').value = suggestedBranch();
+            }
+            document.getElementById('quickResult').textContent = '';
+            updateQuickManifestPreview();
+        }
+
+        function selectWorker(workerId) {
+            selectedWorkerId = workerId;
+            renderMachineList();
+            updateQuickManifestPreview();
+        }
+
+        function yamlQuote(value) {
+            return JSON.stringify(String(value || ''));
+        }
+
+        function quickRequirements(caps, os) {
+            return `      os: ${yamlQuote(os || '')}
+      labels: []
+      capabilities: [${caps.map(yamlQuote).join(', ')}]`;
+        }
+
+        function quickManifest() {
+            const worker = selectedWorker();
+            const repo = document.getElementById('quickRepo').value.trim();
+            const base = document.getElementById('quickBase').value.trim() || (selectedInspection && selectedInspection.default_sha) || 'main';
+            const branch = document.getElementById('quickBranch').value.trim() || 'forgegrid/work';
+            const commit = document.getElementById('quickCommit').value === 'true';
+            const prompt = document.getElementById('quickPrompt').value.trim();
+            let profile = 'GoTest';
+            let task = 'test';
+            let desc = 'Run project tests';
+            let caps = ['go'];
+            let params = '        package: "./..."';
+            let artefacts = '';
+            let timeout = 600;
+            if (selectedQuickJob === 'ai-fix') {
+                const agentChoice = document.getElementById('aiAgentChoice').value;
+                profile = agentChoice === 'antigravity' ? 'AIAgent' : (agentChoice === 'codex' ? 'CodexExec' : 'AIAgentAuto');
+                task = 'ai_improvement';
+                desc = 'Ask AI to work on this project';
+                caps = projectValidationCaps();
+                const context = selectedInspection ? `\n\nForgeGrid detected: ${(selectedInspection.project_types || []).join(', ') || 'unknown project type'}. Available validation: ${(selectedInspection.available_actions || []).map(a => a.label).join(', ')}. Work only on branch ${branch}; do not push to main or master.` : '';
+                params = `        prompt: ${yamlQuote(prompt + context)}`;
+                timeout = 1800;
+            } else if (selectedQuickJob === 'godot-export') {
+                profile = 'GodotExport';
+                task = 'godot_export';
+                desc = 'Build Godot game';
+                caps = ['godot'];
+                params = `        preset: "Windows Desktop"
+        export_path: "build/game.exe"`;
+                artefacts = `
+    artefacts:
+      - "build/game.exe"`;
+                timeout = 1200;
+            } else if (selectedQuickJob === 'go-race') {
+                profile = 'GoRaceTest';
+                task = 'race_test';
+                desc = 'Run Go race test';
+                caps = ['go'];
+                params = '        package: "./..."';
+                timeout = 900;
+            } else if (selectedQuickJob === 'go-build') {
+                profile = 'GoBuild';
+                task = 'build';
+                desc = 'Build Go project';
+                caps = ['go'];
+                params = '        package: "./..."';
+            } else if (selectedQuickJob === 'python-check') {
+                profile = 'PythonCompile';
+                task = 'python_check';
+                desc = 'Check Python syntax';
+                caps = ['python'];
+                params = '        path: "."';
+                timeout = 300;
+            } else if (selectedQuickJob === 'python-test') {
+                profile = 'PythonUnittest';
+                task = 'python_test';
+                desc = 'Run Python tests';
+                caps = ['python'];
+                params = '        module: "discover"';
+            } else if (selectedQuickJob === 'node-test') {
+                profile = 'NodeTest';
+                task = 'node_test';
+                desc = 'Run Node tests';
+                caps = ['node'];
+                params = '';
+            } else if (selectedQuickJob === 'node-build') {
+                profile = 'NodeBuild';
+                task = 'node_build';
+                desc = 'Build Node project';
+                caps = ['node'];
+                params = '';
+            } else if (selectedQuickJob === 'node-lint') {
+                profile = 'NodeLint';
+                task = 'node_lint';
+                desc = 'Lint Node project';
+                caps = ['node'];
+                params = '';
+            }
+            const projectName = selectedProject && !document.getElementById('manualRepoToggle').checked ? selectedProject.name : 'Manual Repository';
+            return `project: ${yamlQuote(projectName)}
+repository:
+  url: ${yamlQuote(repo)}
+  base_commit: ${yamlQuote(base)}
+  branch: ${yamlQuote(branch)}
+  create_pr: false
+  pr_title: "ForgeGrid automated changes"
+  pr_body: "Automated development job from ForgeGrid."
+tasks:
+  ${task}:
+    description: ${yamlQuote(desc)}
+    requirements:
+${quickRequirements(caps, selectedQuickJob === 'godot-export' ? 'windows' : '')}
+    execution:
+      profile: ${yamlQuote(profile)}
+      parameters:
+${params}
+      timeout_seconds: ${timeout}
+      changes:
+        commit: ${commit ? 'true' : 'false'}
+        push: false
+        commit_message: "ForgeGrid automated update"${artefacts}`;
+        }
+
+        function updateQuickManifestPreview() {
+            if (selectedQuickJob !== 'smoke') {
+                document.getElementById('manifestInput').value = quickManifest();
+                checkPushWarning();
+            }
+        }
+
+        function projectValidationCaps() {
+            const choice = document.getElementById('aiAgentChoice') ? document.getElementById('aiAgentChoice').value : 'auto';
+            const caps = [choice === 'antigravity' ? 'antigravity' : (choice === 'codex' ? 'codex' : 'ai-agent')];
+            const types = selectedInspection && selectedInspection.project_types ? selectedInspection.project_types.map(t => t.toLowerCase()) : [];
+            if (types.includes('go')) caps.push('go');
+            if (types.includes('python')) caps.push('python');
+            if (types.includes('node')) caps.push('node');
+            if (types.includes('godot')) caps.push('godot');
+            return [...new Set(caps)];
+        }
+
+        async function submitQuickJob() {
+            const result = document.getElementById('quickResult');
+            const worker = selectedWorker();
+            if (!worker) {
+                result.style.color = 'var(--yellow)';
+                result.textContent = 'No online machine is selected.';
+                return;
+            }
+            if (selectedQuickJob === 'smoke') {
+                result.style.color = 'white';
+                result.textContent = `Sending a check job to ${worker.node_name}...`;
+                await runTestJob(worker.id);
+                result.style.color = 'var(--green)';
+                result.textContent = `Check job sent to ${worker.node_name}. Watch Recent Jobs below.`;
+                return;
+            }
+            if (!document.getElementById('quickRepo').value.trim()) {
+                result.style.color = 'var(--yellow)';
+                result.textContent = 'Add a real GitHub project URL first.';
+                return;
+            }
+            updateQuickManifestPreview();
+            await submitManifest(result);
+        }
+
+        function generateRunnerPolicy() {
+            const repos = splitCSV(document.getElementById('policyRepos').value);
+            const labels = splitCSV(document.getElementById('policyLabels').value);
+            const caps = splitCSV(document.getElementById('policyCaps').value);
+            const allowPush = document.getElementById('policyPush').value === 'true';
+            const pushFlag = allowPush ? ' -allow-push' : '';
+            const cmd = `./forgegrid -mode worker -write-worker-policy -allowed-repos ${shellQuote(repos.join(','))}${pushFlag} -labels ${shellQuote(labels.join(','))} -capabilities ${shellQuote(caps.join(','))}`;
+            const json = JSON.stringify({ allowed_repos: repos, allow_push: allowPush, labels, capabilities: caps }, null, 2);
+            const output = document.getElementById('policyOutput');
+            output.style.display = 'block';
+            output.textContent = `Run this once on the runner:\n${cmd}\n\nEquivalent worker_policy.json:\n${json}`;
+        }
+
+        function getTemplate(type) {
+            let push = 'false';
+            let commit = 'false';
+            if (type === 'push') { push = 'true'; commit = 'true'; }
+            else if (type === 'agent-task') { commit = 'true'; }
+
+            const baseTemplate = `project: "MyProject"
+repository:
+  url: "https://github.com/example/repo.git"
+  base_commit: "master"
+  branch: "forgegrid/agent-work"
+  create_pr: ${push}
+  pr_title: "ForgeGrid automated changes"
+  pr_body: "Automated development job from ForgeGrid."
+tasks:`;
+
+            if (type === 'go-test') {
+                return baseTemplate + `
+  test:
+    description: "Run Go Test Suite"
+    requirements:
+      os: "windows"
+      capabilities: ["go"]
+    execution:
+      profile: "GoTest"
+      parameters:
+        package: "./..."
+      timeout_seconds: 600
+      changes:
+        commit: false
+        push: false`;
+            } else if (type === 'godot-export') {
+                return baseTemplate + `
+  build:
+    description: "Export Godot project"
+    requirements:
+      os: "windows"
+      capabilities: ["godot"]
+    execution:
+      profile: "GodotExport"
+      parameters:
+        preset: "Windows Desktop"
+        export_path: "build/game.exe"
+      timeout_seconds: 1200
+      changes:
+        commit: ${commit}
+        push: ${push}
+        commit_message: "Automated build"
+    artefacts:
+      - "build/game.exe"`;
+            } else if (type === 'agent-task') {
+                return baseTemplate + `
+  build:
+    description: "Agent: Implement Feature"
+    requirements:
+      os: "windows"
+      capabilities: ["codex"]
+    execution:
+      profile: "CodexExec"
+      parameters:
+        prompt: "Write a fun ASCII game and save it to the workspace."
+      timeout_seconds: 1800
+      changes:
+        commit: true
+        push: false
+        commit_message: "Implement feature"`;
+            } else if (type === 'pipeline') {
+                return baseTemplate + `
+  pipeline:
+    description: "Agent: Build + Test + Push"
+    requirements:
+      os: "windows"
+      capabilities: ["codex", "go"]
+    stages:
+      - name: "Agent"
+        profile: "CodexExec"
+        parameters:
+          prompt: "Write a new feature and save it."
+        timeout_seconds: 1800
+        changes:
+          commit: true
+          push: false
+          commit_message: "Implement feature"
+      - name: "Tests"
+        profile: "GoTest"
+        parameters:
+          package: "./..."
+        timeout_seconds: 600
+        changes:
+          commit: false
+          push: false
+      - name: "Push"
+        profile: "GoTest"
+        parameters:
+          package: "."
+        timeout_seconds: 60
+        changes:
+          commit: true
+          push: true
+          commit_message: "Tests passed, pushing"`;
+            } else {
+                return baseTemplate + `
+  build:
+    description: "Generic task"
+    requirements:
+      os: "linux"
+    execution:
+      profile: "GoTest"
+      parameters:
+        package: "./..."
+      timeout_seconds: 600
+      changes:
+        commit: ${commit}
+        push: ${push}
+        commit_message: "Automated changes"`;
+            }
+        }
+
+        function loadTemplate(type) {
+            const input = document.getElementById('manifestInput');
+            input.value = getTemplate(type);
+            checkPushWarning();
+        }
+
+        function checkPushWarning() {
+            const yamlStr = document.getElementById('manifestInput').value;
+            const pushWarning = document.getElementById('pushWarning');
+            if (yamlStr.includes('push: true')) {
+                pushWarning.style.display = 'block';
+            } else {
+                pushWarning.style.display = 'none';
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const input = document.getElementById('manifestInput');
+            if (input) input.value = getTemplate('go-test');
+            ['quickRepo', 'quickBase', 'quickBranch', 'quickPrompt', 'quickCommit'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.addEventListener('input', updateQuickManifestPreview);
+            });
+            const projectSearch = document.getElementById('projectSearch');
+            projectSearch.addEventListener('input', () => {
+                if (selectedQuickJob === 'smoke') {
+                    selectQuickJob('ai-fix');
+                }
+                selectedProject = null;
+                projectCursor = -1;
+                renderProjectList();
+            });
+            projectSearch.addEventListener('focus', () => {
+                if (selectedQuickJob === 'smoke') {
+                    selectQuickJob('ai-fix');
+                }
+                renderProjectList();
+            });
+            projectSearch.addEventListener('keydown', ev => {
+                const list = Array.from(document.querySelectorAll('.project-option'));
+                if (ev.key === 'ArrowDown') {
+                    ev.preventDefault();
+                    projectCursor = Math.min(projectCursor + 1, list.length - 1);
+                    renderProjectList();
+                } else if (ev.key === 'ArrowUp') {
+                    ev.preventDefault();
+                    projectCursor = Math.max(projectCursor - 1, 0);
+                    renderProjectList();
+                } else if (ev.key === 'Enter' && projectCursor >= 0 && list[projectCursor]) {
+                    ev.preventDefault();
+                    list[projectCursor].click();
+                } else if (ev.key === 'Escape') {
+                    document.getElementById('projectList').style.display = 'none';
+                }
+            });
+            selectQuickJob('smoke');
+            toggleManualRepo();
+            fetchProjects();
+            checkPushWarning();
+        });
+
+        async function submitManifest(targetDiv) {
+            const yamlStr = document.getElementById('manifestInput').value;
+            const resDiv = targetDiv || document.getElementById('manifestResult');
+            
+            // Validate required fields
+            if (!yamlStr.match(/url:\s*['"]?[a-zA-Z0-9]/)) {
+                resDiv.style.color = '#ffeb3b';
+                resDiv.innerText = 'Validation Failed: repository.url is missing or empty.';
+                return;
+            }
+            if (!yamlStr.match(/base_commit:\s*['"]?[a-zA-Z0-9]/)) {
+                resDiv.style.color = '#ffeb3b';
+                resDiv.innerText = 'Validation Failed: repository.base_commit is missing or empty.';
+                return;
+            }
+            if (yamlStr.includes('push: true') && !confirm('This job can push changes to a remote Git repository. Continue only if the target branch and worker allowlist are correct.')) {
+                resDiv.style.color = '#ffeb3b';
+                resDiv.innerText = 'Submission cancelled before push-capable dispatch.';
+                return;
+            }
+
+            resDiv.style.color = 'white';
+            resDiv.innerText = 'Submitting...';
+            try {
+                const res = await fetch('/api/jobs/manifest', {
+                    method: 'POST',
+                    body: yamlStr
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    resDiv.style.color = '#00ff00';
+                    resDiv.innerText = 'Job started. Watch Recent Jobs below.';
+                    fetchJobs();
+                } else {
+                    const err = await res.json();
+                    resDiv.style.color = '#ff4d4d';
+                    resDiv.innerText = 'Failed: ' + err.message + (err.detail ? ' - ' + err.detail : '');
+                }
+            } catch (e) {
+                resDiv.style.color = '#ff4d4d';
+                resDiv.innerText = 'Error: ' + e.message;
+            }
+        }
+
         async function fetchStatus() {
             const res = await fetch('/api/coordinator/status');
             const data = await res.json();
             document.getElementById('coordIP').innerText = data.ip;
+            coordinatorIdentity = data.identity;
+            updateSetupWizard();
+            initMessaging();
         }
 
         async function generateCode() {
             const res = await fetch('/api/pairing/code', { method: 'POST' });
             const data = await res.json();
             document.getElementById('pairingCode').innerText = data.code;
+        }
+
+        async function startWifiSession() {
+            const port = encodeURIComponent(document.getElementById('sessionAgentPort').value || '9091');
+            const output = document.getElementById('sessionOutput');
+            output.style.display = 'block';
+            output.textContent = 'Generating session...';
+            const res = await fetch(`/api/session/start?agent_port=${port}`, { method: 'POST' });
+            if (!res.ok) {
+                output.textContent = `Failed to start session: ${await res.text()}`;
+                return;
+            }
+            const data = await res.json();
+            latestSetupSession = data;
+            latestAgentBridgeFingerprint = data.agent_fingerprint || latestAgentBridgeFingerprint;
+            document.getElementById('pairingCode').innerText = data.pairing_code;
+            output.textContent =
+`Controller: ${data.controller_url}
+Controller fingerprint: ${data.controller_fingerprint}
+AgentBridge: ${data.agent_url}
+AgentBridge fingerprint: ${data.agent_fingerprint || '(unknown)'}
+Pairing code: ${data.pairing_code}
+
+Windows runner bootstrap:
+${data.windows_bootstrap}
+
+Reconnect existing runner:
+${data.reconnect_command}`;
+            updateSetupJoinOutput(data);
+        }
+
+        async function startFirstRunSession() {
+            await startWifiSession();
+            const output = document.getElementById('setupJoinOutput');
+            if (output) output.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+
+        function updateSetupJoinOutput(data) {
+            const output = document.getElementById('setupJoinOutput');
+            if (!output || !data) return;
+            output.style.display = 'block';
+            output.textContent =
+`On the other computer, run this:
+
+${data.windows_bootstrap}
+
+Pairing code: ${data.pairing_code}
+Coordinator: ${data.controller_url}
+
+Already paired? Start the worker with:
+${data.reconnect_command}`;
+        }
+
+        async function repairAgentBridge() {
+            const agentName = document.getElementById('repairAgentName').value.trim();
+            const output = document.getElementById('repairOutput');
+            output.style.display = 'block';
+            if (!agentName) {
+                output.textContent = 'Enter an AgentBridge identity first.';
+                return;
+            }
+            if (!confirm(`Generate a fresh token for ${agentName}? The old token will stop working.`)) {
+                output.textContent = 'Repair cancelled.';
+                return;
+            }
+            const res = await fetch('/api/dashboard/messaging/repair', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ agent_name: agentName })
+            });
+            if (!res.ok) {
+                output.textContent = `Repair failed: ${await res.text()}`;
+                return;
+            }
+            const data = await res.json();
+            const agentURL = `https://${document.getElementById('coordIP').innerText}:9091`;
+            const fp = latestAgentBridgeFingerprint || '<AGENTBRIDGE_FINGERPRINT>';
+            output.textContent =
+`Fresh token for ${data.agent_name}:
+${data.token}
+
+Configure on that runner:
+${data.token} | .\\ForgeGrid.exe agent-bridge configure-client -name ${data.agent_name} -url ${agentURL} -fingerprint ${fp} -token-stdin
+
+Then run:
+.\\ForgeGrid.exe doctor -coordinator-url https://${document.getElementById('coordIP').innerText}:8080 -agent-url ${agentURL}`;
         }
 
         async function runTestJob(workerId) {
@@ -82,53 +1184,709 @@
             fetchJobs();
         }
 
+        async function disconnectWorker(workerId) {
+            if (confirm("Are you sure you want to disconnect this worker?")) {
+                await fetch('/api/workers/disconnect', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ worker_id: workerId })
+                });
+                fetchWorkers();
+            }
+        }
+
+        async function setWorkerPolicy(workerId, patch) {
+            await fetch('/api/workers/policy', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ worker_id: workerId, ...patch })
+            });
+            fetchWorkers();
+        }
+
+        function escapeHTML(str) {
+            if (!str) return '';
+            return str.toString().replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
+
+        function createEl(tag, text) {
+            const el = document.createElement(tag);
+            if (text !== undefined && text !== null) {
+                el.appendChild(document.createTextNode(text));
+            }
+            return el;
+        }
+
         async function fetchWorkers() {
             const res = await fetch('/api/workers');
             const workers = await res.json();
+            workersStore = workers || [];
+            if (!selectedWorkerId || !workersStore.some(w => w.id === selectedWorkerId && isWorkerOnline(w))) {
+                const firstOnline = workersStore.find(isWorkerOnline);
+                selectedWorkerId = firstOnline ? firstOnline.id : '';
+            }
+            renderMachineList();
+            updateStats();
+            updateSetupWizard();
             const tbody = document.getElementById('workersTable');
             tbody.innerHTML = '';
             if (workers) {
                 workers.forEach(w => {
-                    const statusClass = w.status === 'online' ? 'status-online' : 'status-offline';
+                    const lastSeen = new Date(w.last_seen);
+                    const now = new Date();
+                    const diffSec = (now - lastSeen) / 1000;
+                    const isOffline = diffSec > 60;
+                    
+                    const statusClass = (w.status === 'online' && !isOffline) ? 'status-online' : 'status-offline';
+                    const statusText = isOffline ? 'OFFLINE (stale)' : w.status;
+                    
+                    let currentJob = '-';
+                    if (jobsStore) {
+                        const job = jobsStore.find(j => j.worker_id === w.id && (j.status === 'RUNNING' || j.status === 'CLAIMED' || j.status === 'PENDING'));
+                        if (job) currentJob = `${job.id} (${job.status})`;
+                    }
+                    
+                    let msgsHTML = '-';
+                    if (messagesStore) {
+                        const msgs = messagesStore.filter(m => m.sender === w.node_name || m.recipient === w.node_name).slice(-5);
+                        if (msgs.length > 0) {
+                            msgsHTML = msgs.map(m => `<div style="margin-bottom: 2px;"><small style="color: #aaa;">[${new Date(m.timestamp).toLocaleTimeString()}] ${m.sender === w.node_name ? 'To ' + m.recipient : 'From ' + m.sender}:</small> ${escapeHTML(m.action)}</div>`).join('');
+                        }
+                    }
+
                     tbody.innerHTML += `
                         <tr>
-                            <td>${w.node_name}</td>
-                            <td>${w.os}</td>
-                            <td>${w.cpu} / ${w.ram}GB</td>
-                            <td class="${statusClass}">${w.status}</td>
+                            <td>${escapeHTML(w.node_name)}</td>
+                            <td>${escapeHTML(w.os)}</td>
+                            <td>${escapeHTML(w.cpu_model || w.cpu)} / ${Math.round(w.total_ram / 1073741824)}GB</td>
+                            <td>${escapeHTML(machineCapabilityText(w))}<div class="version-line">${escapeHTML(workerVersionText(w))}</div></td>
+                            <td class="${statusClass}"><strong>${escapeHTML(statusText)}</strong>${w.drain ? ' / drain' : ''}${w.disabled ? ' / disabled' : ''}</td>
+                            <td>${lastSeen.toLocaleTimeString()}</td>
+                            <td>${escapeHTML(currentJob)}</td>
+                            <td style="max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${msgsHTML}</td>
                             <td>
-                                <button onclick="runTestJob('${w.id}')" ${w.status !== 'online' ? 'disabled' : ''}>Run Test Job</button>
+                                <button onclick="runTestJob('${escapeHTML(w.id)}')" ${w.status !== 'online' ? 'disabled' : ''}>Refresh Tools</button>
+                                <button onclick="setWorkerPolicy('${escapeHTML(w.id)}', { drain: ${!w.drain} })" style="background: #555;">${w.drain ? 'Undrain' : 'Drain'}</button>
+                                <button onclick="setWorkerPolicy('${escapeHTML(w.id)}', { disabled: ${!w.disabled} })" style="background: #775500;">${w.disabled ? 'Enable' : 'Disable'}</button>
+                                <button onclick="disconnectWorker('${escapeHTML(w.id)}')" style="background: #ff4d4d;">Disconnect</button>
                             </td>
                         </tr>
                     `;
                 });
             }
         }
+
+        function renderMachineList() {
+            const list = document.getElementById('machineList');
+            if (!list) return;
+            list.innerHTML = '';
+            if (workersStore.length === 0) {
+                list.appendChild(createEl('div', 'No machines are paired yet.'));
+                return;
+            }
+            workersStore.forEach(w => {
+                const online = isWorkerOnline(w);
+                const card = document.createElement('div');
+                card.tabIndex = 0;
+                card.role = 'button';
+                card.className = `machine-card ${selectedWorkerId === w.id ? 'selected' : ''} ${online ? '' : 'offline'}`;
+                card.onclick = () => selectWorker(w.id);
+                card.onkeydown = ev => {
+                    if (ev.key === 'Enter' || ev.key === ' ') {
+                        ev.preventDefault();
+                        selectWorker(w.id);
+                    }
+                };
+                const caps = w.capabilities || [];
+                const labels = w.labels || [];
+                const currentJob = jobsStore.find(j => j.worker_id === w.id && ['RUNNING', 'CLAIMED', 'CANCEL_REQUESTED'].includes(j.status));
+                card.innerHTML = `
+                    <div class="machine-head">
+                        <div>
+                            <div class="machine-name">${escapeHTML(w.node_name)}</div>
+                            <div class="muted">${escapeHTML(w.os)} · ${Math.round((w.total_ram || 0) / 1073741824)} GB RAM</div>
+                            <div class="version-line">${escapeHTML(workerVersionText(w))}</div>
+                        </div>
+                        <span class="pill ${online ? 'online' : 'offline'}">${online ? 'online' : 'offline'}</span>
+                    </div>
+                    <div style="margin-top: 8px;">${capabilityPills(w)}</div>
+                    <div class="setup-actions" style="margin-top: 8px;">
+                        <span class="muted">${currentJob ? 'Working on ' + escapeHTML(currentJob.id) : 'Idle'}</span>
+                        <button class="ghost-button" onclick="event.stopPropagation(); runTestJob('${escapeHTML(w.id)}')" ${online ? '' : 'disabled'}>Refresh tools</button>
+                    </div>
+                `;
+                list.appendChild(card);
+            });
+        }
+
+        async function fetchUpdates() {
+            const summary = document.getElementById('updateSummary');
+            const list = document.getElementById('updateList');
+            if (!summary || !list) return;
+            try {
+                const res = await fetch('/api/updates/status');
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || data.message || 'update status failed');
+                updatesStore = data;
+                const latest = data.manifest ? data.manifest.version : 'no bundle';
+                const current = data.coordinator ? data.coordinator.version : 'unknown';
+                summary.textContent = `Coordinator ${current}. Latest bundle: ${latest}.`;
+                if (data.manifest_error) {
+                    summary.textContent += ` ${data.manifest_error}`;
+                    summary.style.color = 'var(--yellow)';
+                } else {
+                    summary.style.color = 'var(--muted)';
+                }
+                renderUpdates();
+            } catch (e) {
+                updatesStore = null;
+                summary.textContent = `Update status unavailable: ${e.message}`;
+                summary.style.color = 'var(--red)';
+                list.innerHTML = '';
+            }
+        }
+
+        function renderUpdates() {
+            const list = document.getElementById('updateList');
+            if (!list) return;
+            const workers = updatesStore && updatesStore.workers ? updatesStore.workers : [];
+            if (workers.length === 0) {
+                list.innerHTML = '<span class="muted">No machines are paired yet.</span>';
+                return;
+            }
+            list.innerHTML = workers.map(w => {
+                const current = w.current && w.current.version ? `${w.current.version} (${w.current.commit || 'dev'})` : 'old build: version not reported';
+                const status = w.pending_request ? `${w.pending_request.status}: ${w.pending_request.message || ''}` : `${w.status}: ${w.reason || ''}`;
+                const canQueue = ['available', 'busy', 'queued'].includes(w.status) && w.artifact_present;
+                return `<div class="update-row">
+                    <div><strong>${escapeHTML(w.worker_name || w.worker_id)}</strong><div class="version-line">${escapeHTML(current)}</div></div>
+                    <div><span class="pill">${escapeHTML(w.latest_version || 'no bundle')}</span></div>
+                    <div>${escapeHTML(status)}</div>
+                    <div><button class="ghost-button" onclick="queueUpdates(false, '${escapeHTML(w.worker_id)}')" ${canQueue ? '' : 'disabled'}>Queue Update</button></div>
+                </div>`;
+            }).join('');
+        }
+
+        async function queueUpdates(all, workerId) {
+            const summary = document.getElementById('updateSummary');
+            summary.textContent = all ? 'Queueing updates for all idle machines...' : 'Queueing update...';
+            try {
+                const body = all ? { all: true, policy: 'idle' } : { worker_ids: [workerId], policy: 'idle' };
+                const res = await fetch('/api/updates/workers', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || data.message || 'queue failed');
+                await fetchUpdates();
+            } catch (e) {
+                summary.textContent = `Could not queue update: ${e.message}`;
+                summary.style.color = 'var(--red)';
+            }
+        }
+
+        function updateStats() {
+            const online = workersStore.filter(isWorkerOnline);
+            const ai = online.filter(w => (w.capabilities || []).some(c => ['ai-agent', 'antigravity', 'codex'].includes(c)));
+            const code = online.filter(w => (w.capabilities || []).some(c => ['go', 'node', 'godot'].includes(c)));
+            const active = jobsStore.filter(j => ['PENDING', 'CLAIMED', 'RUNNING'].includes(j.status));
+            document.getElementById('onlineCount').textContent = online.length;
+            document.getElementById('aiCount').textContent = ai.length;
+            document.getElementById('codeCount').textContent = code.length;
+            document.getElementById('activeJobCount').textContent = active.length;
+        }
+
+        function updateSetupWizard() {
+            const wizard = document.getElementById('setupWizard');
+            if (!wizard) return;
+            if (localStorage.getItem('forgegrid.setup.dismissed') === 'true') {
+                wizard.style.display = 'none';
+                return;
+            }
+            const online = workersStore.filter(isWorkerOnline);
+            const githubReady = projectsStore.length > 0;
+            const hasAI = online.some(w => (w.capabilities || []).some(c => ['ai-agent', 'antigravity', 'codex'].includes(c)));
+            setSetupStep('setupStepGithub', githubReady, githubReady ? `Ready: ${projectsStore.length} GitHub projects loaded.` : 'Add a GitHub token, then press Connect GitHub.');
+            setSetupStep('setupStepComputer', online.length > 0, online.length ? `Ready: ${online.map(w => w.node_name).join(', ')} online.` : 'Press Add Computer and run the join command on another laptop.');
+            setSetupStep('setupStepWork', githubReady && online.length > 0, githubReady && online.length > 0 ? (hasAI ? 'Ready: AI work is available.' : 'Ready for tests/builds. Add an AI-capable worker for AI jobs.') : 'Connect GitHub and add at least one online machine.');
+            document.getElementById('setupSummary').textContent = githubReady && online.length > 0
+                ? 'You are ready to choose a project and send work to a machine.'
+                : 'Finish these setup steps once, then ForgeGrid becomes a project command center.';
+            if (latestSetupSession) updateSetupJoinOutput(latestSetupSession);
+        }
+
+        function setSetupStep(id, done, text) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.classList.toggle('done', !!done);
+            el.classList.toggle('attention', !done);
+            const span = el.querySelector('.muted');
+            if (span) span.textContent = text;
+        }
+
+        function dismissSetupWizard() {
+            localStorage.setItem('forgegrid.setup.dismissed', 'true');
+            const wizard = document.getElementById('setupWizard');
+            if (wizard) wizard.style.display = 'none';
+        }
+
+        function scrollToWork() {
+            const target = document.querySelector('.command-grid');
+            if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
         
         async function fetchJobs() {
             const res = await fetch('/api/jobs');
             const jobs = await res.json();
+            jobsStore = jobs || [];
+            updateStats();
+            renderMachineList();
+            renderJobs();
+        }
+
+        function renderJobs() {
             const tbody = document.getElementById('jobsTable');
             tbody.innerHTML = '';
-            if (jobs) {
-                jobs.forEach(j => {
+            if (jobsStore) {
+                const retryChildren = {};
+                jobsStore.forEach(j => {
+                    if (j.retry_of) {
+                        retryChildren[j.retry_of] = (retryChildren[j.retry_of] || 0) + 1;
+                    }
+                });
+                jobsStore.filter(jobMatchesFilter).forEach(j => {
+                    const machineName = jobMachineName(j);
+                    const machineDetail = jobMachineDetail(j);
+                    let dateStr = '-';
+                    if (j.start_time) {
+                        const d = new Date(j.start_time);
+                        const day = String(d.getDate()).padStart(2, '0');
+                        const month = String(d.getMonth() + 1).padStart(2, '0');
+                        const year = d.getFullYear();
+                        const time = d.toLocaleTimeString();
+                        dateStr = `${day}/${month}/${year} ${time}`;
+                    }
+                    const artifactHTML = (j.artifacts || []).map(a => a.download_url ? `<a style="color:#4facfe;" href="${escapeHTML(a.download_url)}">${escapeHTML(a.path)} (${Math.round(a.size / 1024)}KB)</a>` : `${escapeHTML(a.path)} (${Math.round(a.size / 1024)}KB)`).join(', ');
+                    const prHTML = j.pr_url ? `<a style="color:#4facfe;" href="${escapeHTML(j.pr_url)}" target="_blank" rel="noopener">PR</a>` : '';
+                    const retryText = j.retry_of ? ` retry of ${j.retry_of}` : (j.max_retries ? ` retries ${j.retry_count || 0}/${j.max_retries}` : '');
+                    const childText = retryChildren[j.id] ? ` spawned ${retryChildren[j.id]} retry` : '';
+                    const logsHTML = `<button onclick="openLogViewer('${escapeHTML(j.id)}')" style="background:#333;border:1px solid #555;">Logs</button>`;
+                    const retryHTML = j.status === 'FAILED' ? `<button onclick="retryJob('${escapeHTML(j.id)}')" style="background:#555;border:1px solid #777;margin-left:4px;">Retry</button>` : '';
+                    let stagesHTML = '';
+                    if (j.stages && j.stages.length > 0) {
+                        stagesHTML = '<div style="font-size:0.8em; margin-top:4px;">';
+                        j.stages.forEach((s, idx) => {
+                            let marker = 'waiting';
+                            if (s.status === 'COMPLETED') marker = 'done';
+                            else if (s.status === 'RUNNING') marker = 'running';
+                            else if (s.status === 'FAILED') marker = 'failed';
+                            stagesHTML += `<span class="pill">${escapeHTML(marker)} ${escapeHTML(s.name || s.profile)}</span>`;
+                        });
+                        stagesHTML += '</div>';
+                    }
+
+                    const statusDisplay = escapeHTML(j.status) + stagesHTML;
+                    const resultText = (j.result || 'No result yet') + retryText + childText;
+                    const factsHTML = jobFactsHTML(j);
+                    
                     tbody.innerHTML += `
                         <tr>
-                            <td>${j.id}</td>
-                            <td>${j.worker_id}</td>
-                            <td>${j.task}</td>
-                            <td>${j.status}</td>
-                            <td>${j.result || '-'}</td>
+                            <td>${escapeHTML(dateStr)}</td>
+                            <td>
+                                <strong>${escapeHTML(shortID(j.id))}</strong>
+                                <details class="mini-details"><summary>full IDs</summary><code>${escapeHTML(j.id)}</code><code>${escapeHTML(j.worker_id)}</code></details>
+                            </td>
+                            <td><div class="job-machine">${escapeHTML(machineName)}</div><div class="muted">${escapeHTML(machineDetail)}</div></td>
+                            <td>${escapeHTML(jobKind(j))}</td>
+                            <td>${statusDisplay}</td>
+                            <td class="job-result">${escapeHTML(resultText)} | ${logsHTML}${retryHTML}${factsHTML}</td>
+                            <td>${[artifactHTML, prHTML].filter(Boolean).join(' | ') || '-'}</td>
+                            <td><button onclick="deleteJob('${escapeHTML(j.id)}')" style="background: #ff4d4d;">Delete</button></td>
                         </tr>
                     `;
                 });
+                if (!tbody.innerHTML) {
+                    tbody.innerHTML = '<tr><td colspan="8" class="muted">No jobs match this filter.</td></tr>';
+                }
+            }
+        }
+
+        function jobFactsHTML(job) {
+            const facts = [];
+            if (job.work_branch) facts.push(`<div><strong>Branch:</strong> ${escapeHTML(job.work_branch)}</div>`);
+            if (job.resolved_base) facts.push(`<div><strong>Base:</strong> ${escapeHTML(shortSha(job.resolved_base))}</div>`);
+            if (job.commit_sha) facts.push(`<div><strong>Commit:</strong> ${escapeHTML(shortSha(job.commit_sha))}</div>`);
+            if (job.failure_code) facts.push(`<div><strong>Failure:</strong> ${escapeHTML(job.failure_code)}</div>`);
+            if (job.workspace_retained) facts.push(`<div><strong>Workspace kept:</strong> ${escapeHTML(job.workspace_id || 'yes')}</div>`);
+            if (job.validation_results && job.validation_results.length) {
+                const vals = job.validation_results.map(v => `${v.status === 'COMPLETED' ? 'passed' : 'failed'} ${v.name}${v.duration ? ' (' + v.duration + ')' : ''}`).join(', ');
+                facts.push(`<div><strong>Validation:</strong> ${escapeHTML(vals)}</div>`);
+            }
+            if (job.changed_files && job.changed_files.length) {
+                const files = job.changed_files.slice(0, 6).map(f => `<li>${escapeHTML(f.status)} ${escapeHTML(f.path)}</li>`).join('');
+                const more = job.changed_files.length > 6 ? `<li>${job.changed_files.length - 6} more...</li>` : '';
+                facts.push(`<details class="mini-details"><summary>${job.changed_files.length} changed file${job.changed_files.length === 1 ? '' : 's'}</summary><ul class="file-list">${files}${more}</ul></details>`);
+            }
+            return facts.length ? `<div class="job-facts">${facts.join('')}</div>` : '';
+        }
+
+        function shortSha(value) {
+            return String(value || '').slice(0, 12);
+        }
+
+        async function deleteJob(jobId) {
+            if (!confirm(`Are you sure you want to delete job ${jobId}?`)) return;
+            try {
+                const res = await fetch(`/api/jobs/${jobId}`, { method: 'DELETE' });
+                if (res.ok) {
+                    fetchJobs();
+                } else {
+                    const data = await res.json();
+                    alert(`Failed to delete: ${data.message}`);
+                }
+            } catch (e) {
+                alert(`Error deleting job: ${e.message}`);
+            }
+        }
+
+        async function retryJob(jobId) {
+            if (!confirm(`Are you sure you want to manually retry job ${jobId}?`)) return;
+            const res = await fetch(`/api/jobs/${jobId}/retry`, { method: 'POST' });
+            if (res.ok) {
+                fetchJobs();
+            } else {
+                const err = await res.json();
+                alert('Retry failed: ' + err.message);
+            }
+        }
+
+        async function openLogViewer(jobId) {
+            closeLogViewer();
+            document.getElementById('logTitle').textContent = `Job Logs: ${jobId}`;
+            const output = document.getElementById('logOutput');
+            output.textContent = '';
+            document.getElementById('logModal').style.display = 'block';
+            try {
+                const res = await fetch(`/api/jobs/${jobId}`);
+                if (res.ok) {
+                    const job = await res.json();
+                    if (job.logs) {
+                        try { output.textContent = atob(job.logs); } catch (e) { output.textContent = job.logs; }
+                    }
+                }
+            } catch (e) {
+                output.textContent += `\nFailed to load existing logs: ${e.message}`;
+            }
+            logSource = new EventSource(`/api/jobs/${jobId}/logs/stream`);
+            logSource.addEventListener('logs', ev => {
+                output.textContent += ev.data.replace(/\\n/g, '\n');
+                output.scrollTop = output.scrollHeight;
+            });
+            logSource.addEventListener('done', ev => {
+                output.textContent += `\n[${ev.data}]`;
+                closeLogSource();
+            });
+            logSource.onerror = () => {
+                output.textContent += '\n[log stream closed]';
+                closeLogSource();
+            };
+        }
+
+        function closeLogSource() {
+            if (logSource) {
+                logSource.close();
+                logSource = null;
+            }
+        }
+
+        function closeLogViewer() {
+            closeLogSource();
+            const modal = document.getElementById('logModal');
+            if (modal) modal.style.display = 'none';
+        }
+
+        async function initMessaging() {
+            try {
+                const res = await fetch('/api/dashboard/messaging/status');
+                if (res.ok) {
+                    const status = await res.json();
+                    if (status.available) {
+                        messagingAvailable = true;
+                        document.getElementById('messagingCard').style.display = 'block';
+                        document.getElementById('messagingContainer').style.display = 'flex';
+                        fetchAgents();
+                        fetchMessages();
+                        setInterval(fetchMessages, 3000);
+                        return;
+                    }
+                }
+            } catch (e) {}
+            document.getElementById('messagingCard').style.display = 'block';
+            document.getElementById('messagingUnavailable').style.display = 'block';
+            document.getElementById('messagingContainer').style.display = 'none';
+        }
+
+        async function fetchAgents() {
+            try {
+                const res = await fetch('/api/dashboard/messaging/agents');
+                if (res.ok) {
+                    agentNames = await res.json() || [];
+                }
+            } catch (e) {}
+        }
+
+        async function fetchMessages() {
+            if (!messagingAvailable) return;
+            try {
+                const res = await fetch('/api/dashboard/messages?limit=1000&include_outgoing=true&status=pending,acknowledged,completed,failed');
+                if (res.ok) {
+                    messagesStore = await res.json() || [];
+                    renderConversations();
+                    renderMessageHistory();
+                }
+            } catch (e) {}
+        }
+
+        function renderConversations() {
+            const list = document.getElementById('conversationList');
+            list.innerHTML = ''; 
+
+            const convos = new Set(['#all-agents', ...agentNames]);
+            messagesStore.forEach(m => {
+                convos.add(m.recipient === '#all-agents' ? '#all-agents' : (m.sender === coordinatorIdentity ? m.recipient : m.sender));
+            });
+
+            Array.from(convos).sort().forEach(c => {
+                const li = document.createElement('li');
+                li.style.padding = '8px';
+                li.style.cursor = 'pointer';
+                li.style.borderBottom = '1px solid #333';
+                if (c === currentRecipient) {
+                    li.style.backgroundColor = '#333';
+                }
+                
+                let unread = 0;
+                messagesStore.forEach(m => {
+                    const isIncoming = m.sender !== coordinatorIdentity;
+                    const isForConvo = m.recipient === '#all-agents' ? c === '#all-agents' : (m.sender === c || m.recipient === c);
+                    if (isForConvo && isIncoming && m.status === 'pending') {
+                        unread++;
+                    }
+                });
+
+                const nameSpan = createEl('span', c);
+                li.appendChild(nameSpan);
+
+                if (unread > 0) {
+                    const unreadBadge = createEl('span', ` (${unread})`);
+                    unreadBadge.style.color = '#ffeb3b';
+                    li.appendChild(unreadBadge);
+                }
+
+                li.onclick = () => {
+                    currentRecipient = c;
+                    document.getElementById('currentConversationTitle').textContent = c;
+                    renderConversations();
+                    renderMessageHistory();
+                };
+                list.appendChild(li);
+            });
+        }
+
+        async function loadDelivery(msgId, el) {
+            try {
+                const res = await fetch(`/api/dashboard/messages/${msgId}/delivery`);
+                if (res.ok) {
+                    const details = await res.json();
+                    el.innerHTML = '';
+                    if (details.receipts) {
+                        let total = 0, ack = 0, comp = 0, fail = 0;
+                        const ul = document.createElement('ul');
+                        ul.style.listStyle = 'none';
+                        ul.style.padding = '0';
+                        for (const [agent, receipt] of Object.entries(details.receipts)) {
+                            total++;
+                            if (receipt.status === 'acknowledged') ack++;
+                            if (receipt.status === 'completed') comp++;
+                            if (receipt.status === 'failed') fail++;
+                            const li = createEl('li', `${agent}: ${receipt.status}`);
+                            ul.appendChild(li);
+                        }
+                        el.appendChild(createEl('div', `${total} recipients, ${ack} acknowledged, ${comp} completed, ${fail} failed`));
+                        const detailBtn = document.createElement('button');
+                        detailBtn.textContent = 'Toggle Details';
+                        detailBtn.style.padding = '2px 5px';
+                        detailBtn.style.fontSize = '0.8em';
+                        detailBtn.style.marginTop = '5px';
+                        const detailContainer = document.createElement('div');
+                        detailContainer.style.display = 'none';
+                        detailContainer.appendChild(ul);
+                        detailBtn.onclick = () => {
+                            detailContainer.style.display = detailContainer.style.display === 'none' ? 'block' : 'none';
+                        };
+                        el.appendChild(detailBtn);
+                        el.appendChild(detailContainer);
+                    } else {
+                        el.appendChild(createEl('span', details.status));
+                    }
+                }
+            } catch (e) {}
+        }
+
+        async function acknowledgeMsg(id) {
+            await fetch(`/api/dashboard/messages/${id}/acknowledge`, { method: 'POST' });
+            fetchMessages();
+        }
+
+        function renderMessageHistory() {
+            const hist = document.getElementById('messageHistory');
+            hist.innerHTML = '';
+            
+            if (!currentRecipient) {
+                hist.appendChild(createEl('div', 'Select a conversation to view history.'));
+                return;
+            }
+
+            const convoMsgs = messagesStore.filter(m => {
+                if (currentRecipient === '#all-agents') return m.recipient === '#all-agents';
+                return (m.sender === currentRecipient && m.recipient !== '#all-agents') || (m.recipient === currentRecipient);
+            }).sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+            if (convoMsgs.length === 0) {
+                hist.appendChild(createEl('div', 'No messages yet.'));
+                return;
+            }
+
+            convoMsgs.forEach(m => {
+                const div = document.createElement('div');
+                div.style.padding = '10px';
+                div.style.marginBottom = '10px';
+                div.style.borderRadius = '5px';
+                div.style.maxWidth = '80%';
+                
+                const isOutgoing = m.sender === coordinatorIdentity;
+                
+                if (isOutgoing) {
+                    div.style.alignSelf = 'flex-end';
+                    div.style.backgroundColor = '#1976d2';
+                } else {
+                    div.style.alignSelf = 'flex-start';
+                    div.style.backgroundColor = '#333';
+                }
+
+                const header = document.createElement('div');
+                header.style.fontSize = '0.8em';
+                header.style.color = '#ccc';
+                header.style.marginBottom = '5px';
+                header.appendChild(createEl('span', `[${m.type}] ${m.sender} - ${new Date(m.created_at).toLocaleString()}`));
+                if (m.task_id) {
+                    header.appendChild(createEl('span', ` | Task: ${m.task_id}`));
+                }
+                div.appendChild(header);
+
+                const body = createEl('div', m.body);
+                body.style.whiteSpace = 'pre-wrap';
+                div.appendChild(body);
+
+                const footer = document.createElement('div');
+                footer.style.fontSize = '0.8em';
+                footer.style.color = '#aaa';
+                footer.style.marginTop = '5px';
+
+                if (isOutgoing) {
+                    if (m.recipient === '#all-agents') {
+                        const statusContainer = document.createElement('div');
+                        const loadBtn = document.createElement('button');
+                        loadBtn.textContent = 'Load Delivery Status';
+                        loadBtn.style.padding = '2px 5px';
+                        loadBtn.style.fontSize = '0.8em';
+                        loadBtn.onclick = () => loadDelivery(m.id, statusContainer);
+                        statusContainer.appendChild(loadBtn);
+                        footer.appendChild(statusContainer);
+                    } else {
+                        footer.appendChild(createEl('span', `Status: ${m.status}`));
+                    }
+                } else {
+                    footer.appendChild(createEl('span', `Status: ${m.status}`));
+                    if (m.status === 'pending') {
+                        const ackBtn = document.createElement('button');
+                        ackBtn.textContent = 'Acknowledge';
+                        ackBtn.style.marginLeft = '10px';
+                        ackBtn.style.padding = '2px 5px';
+                        ackBtn.style.fontSize = '0.8em';
+                        ackBtn.onclick = () => acknowledgeMsg(m.id);
+                        footer.appendChild(ackBtn);
+                    }
+                }
+                
+                if (m.result) {
+                    const resDiv = createEl('div', `Result: ${JSON.stringify(m.result)}`);
+                    resDiv.style.marginTop = '5px';
+                    resDiv.style.color = '#4facfe';
+                    footer.appendChild(resDiv);
+                }
+
+                div.appendChild(footer);
+                hist.appendChild(div);
+            });
+            hist.scrollTop = hist.scrollHeight;
+        }
+
+        let currentIdempotencyKey = '';
+        let lastMessageState = '';
+
+        async function sendMessage() {
+            if (!currentRecipient) return;
+            const type = document.getElementById('messageTypeSelect').value;
+            const taskId = document.getElementById('taskIdInput').value;
+            const body = document.getElementById('messageInput').value;
+            const errorDiv = document.getElementById('sendError');
+            
+            errorDiv.textContent = '';
+            
+            if (!body) return;
+
+            const currentState = JSON.stringify({recipient: currentRecipient, task_id: taskId, type: type, body: body});
+            if (currentState !== lastMessageState || !currentIdempotencyKey) {
+                currentIdempotencyKey = 'ui-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+                lastMessageState = currentState;
+            }
+            
+            try {
+                const res = await fetch('/api/dashboard/messages', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        recipient: currentRecipient,
+                        task_id: taskId,
+                        type: type,
+                        body: body,
+                        idempotency_key: currentIdempotencyKey
+                    })
+                });
+
+                if (res.ok) {
+                    document.getElementById('messageInput').value = '';
+                    currentIdempotencyKey = '';
+                    lastMessageState = '';
+                    fetchMessages();
+                } else {
+                    const txt = await res.text();
+                    errorDiv.textContent = `Send failed: ${res.status} ${txt}`;
+                }
+            } catch (e) {
+                errorDiv.textContent = `Send failed: ${e.message}`;
             }
         }
 
         // Auto-refresh loops
         fetchStatus();
+        fetchUpdates();
         setInterval(fetchWorkers, 2000);
         setInterval(fetchJobs, 2000);
+        setInterval(fetchUpdates, 10000);
     </script>
+    </main>
 </body>
 </html>

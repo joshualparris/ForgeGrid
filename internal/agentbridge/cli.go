@@ -1,9 +1,6 @@
 package agentbridge
 
 import (
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -154,21 +151,8 @@ func registerCmd(args []string) {
 		log.Fatal("Agent name required")
 	}
 
-	store, err := NewStore()
+	secret, err := RegisterAgentWithNewToken(*name)
 	if err != nil {
-		log.Fatalf("Store error: %v", err)
-	}
-
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		log.Fatalf("Failed to generate token: %v", err)
-	}
-	secret := hex.EncodeToString(b)
-
-	hash := sha256.Sum256([]byte(secret))
-	hashStr := hex.EncodeToString(hash[:])
-
-	if err := store.RegisterAgent(*name, hashStr); err != nil {
 		log.Fatalf("Register error: %v", err)
 	}
 
@@ -184,7 +168,29 @@ type ClientConfig struct {
 	Fingerprint string `json:"fingerprint"`
 }
 
-func getConfigPath() string {
+func SaveClientConfig(path string, cfg ClientConfig) error {
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	return writeSecureConfig(path, b)
+}
+
+func LoadClientConfig(path string) (*ClientConfig, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var cfg ClientConfig
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse config: %w", err)
+	}
+	if cfg.Name == "" || cfg.Token == "" || cfg.URL == "" || cfg.Fingerprint == "" {
+		return nil, fmt.Errorf("missing required fields in agentbridge config")
+	}
+	return &cfg, nil
+}
+func GetConfigPath() string {
 	if runtime.GOOS == "windows" {
 		localAppData := os.Getenv("LOCALAPPDATA")
 		if localAppData == "" {
@@ -239,13 +245,8 @@ func configureClientCmd(args []string) {
 		Fingerprint: *fp,
 	}
 
-	path := getConfigPath()
-	b, err := json.Marshal(cfg)
-	if err != nil {
-		log.Fatalf("Failed to marshal config: %v", err)
-	}
-
-	if err := writeSecureConfig(path, b); err != nil {
+	path := GetConfigPath()
+	if err := SaveClientConfig(path, cfg); err != nil {
 		log.Fatalf("Failed to save config: %v", err)
 	}
 
@@ -254,7 +255,7 @@ func configureClientCmd(args []string) {
 }
 
 func resetClientCmd(args []string) {
-	os.Remove(getConfigPath())
+	os.Remove(GetConfigPath())
 	fmt.Println("Client configuration reset.")
 }
 
@@ -269,7 +270,7 @@ func getClient(fs *flag.FlagSet) *Client {
 
 	// Try loading from config if values not provided via flags
 	if *name == "" || token == "" {
-		b, err := os.ReadFile(getConfigPath())
+		b, err := os.ReadFile(GetConfigPath())
 		if err == nil {
 			var cfg ClientConfig
 			if json.Unmarshal(b, &cfg) == nil {
@@ -335,7 +336,7 @@ func inboxCmd(args []string) {
 	fs := flag.NewFlagSet("inbox", flag.ExitOnError)
 	client := getClient(fs)
 
-	msgs, err := client.GetInbox()
+	msgs, err := client.GetInbox(0, 0, false)
 	if err != nil {
 		log.Fatalf("Inbox error: %v", err)
 	}
@@ -364,21 +365,16 @@ func completeCmd(args []string) {
 	fs := flag.NewFlagSet("complete", flag.ExitOnError)
 	id := fs.String("message-id", "", "Message ID")
 	resFile := fs.String("result-file", "", "Result JSON file")
+	resStdin := fs.Bool("result-stdin", false, "Read result JSON from standard input")
 	client := getClient(fs)
 
 	if *id == "" {
 		log.Fatal("--message-id required")
 	}
 
-	var res json.RawMessage
-	if *resFile != "" {
-		b, err := os.ReadFile(*resFile)
-		if err != nil {
-			log.Fatalf("Read error: %v", err)
-		}
-		res = json.RawMessage(b)
-	} else {
-		res = json.RawMessage(`{"status":"ok"}`)
+	res, err := readResultJSON(*resFile, *resStdin, json.RawMessage(`{"status":"ok"}`))
+	if err != nil {
+		log.Fatalf("Read error: %v", err)
 	}
 
 	msg, err := client.Complete(*id, res)
@@ -392,21 +388,16 @@ func failCmd(args []string) {
 	fs := flag.NewFlagSet("fail", flag.ExitOnError)
 	id := fs.String("message-id", "", "Message ID")
 	resFile := fs.String("result-file", "", "Result JSON file")
+	resStdin := fs.Bool("result-stdin", false, "Read result JSON from standard input")
 	client := getClient(fs)
 
 	if *id == "" {
 		log.Fatal("--message-id required")
 	}
 
-	var res json.RawMessage
-	if *resFile != "" {
-		b, err := os.ReadFile(*resFile)
-		if err != nil {
-			log.Fatalf("Read error: %v", err)
-		}
-		res = json.RawMessage(b)
-	} else {
-		res = json.RawMessage(`{"status":"failed"}`)
+	res, err := readResultJSON(*resFile, *resStdin, json.RawMessage(`{"status":"failed"}`))
+	if err != nil {
+		log.Fatalf("Read error: %v", err)
 	}
 
 	msg, err := client.Fail(*id, res)
@@ -414,4 +405,29 @@ func failCmd(args []string) {
 		log.Fatalf("Fail error: %v", err)
 	}
 	fmt.Printf("Message %s failed.\n", msg.ID)
+}
+
+func readResultJSON(resultFile string, resultStdin bool, fallback json.RawMessage) (json.RawMessage, error) {
+	if resultFile != "" && resultStdin {
+		return nil, fmt.Errorf("--result-file and --result-stdin cannot be used together")
+	}
+	if resultFile != "" {
+		b, err := os.ReadFile(resultFile)
+		if err != nil {
+			return nil, err
+		}
+		return json.RawMessage(b), nil
+	}
+	if resultStdin {
+		b, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return nil, err
+		}
+		b = []byte(strings.TrimSpace(string(b)))
+		if len(b) == 0 {
+			return nil, fmt.Errorf("stdin result cannot be empty")
+		}
+		return json.RawMessage(b), nil
+	}
+	return fallback, nil
 }
