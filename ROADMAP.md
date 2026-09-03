@@ -2,30 +2,29 @@
 
 ForgeGrid is evolving from a localized prototype into a fully autonomous, zero-maintenance "appliance" fleet for distributed CI/CD and AI agent workloads. The core hub-and-spoke orchestration is proven and stable.
 
-The following outlines the immediate next steps to make managing and upgrading the runner fleet "super easy".
-
-## 1. Over-the-Air (OTA) Worker Upgrades
+## 1. Over-the-Air (OTA) Worker Upgrades (IMPLEMENTED)
+**Status:** IMPLEMENTED and TESTED ON FEDORA (Local/Network).
 **Goal:** Upgrade the entire fleet of runner binaries from the central dashboard without touching the physical laptops.
-*   **Implement `SelfUpdate` Profile:** Add a new execution profile to the worker. 
-*   **Artifact Distribution:** When a new `ForgeGrid.exe` is compiled, upload it to the coordinator's artifact store.
-*   **Workflow:** Dispatch a broadcast manifest to all Windows runners. The manifest instructs the runners to download the new `.exe`, gracefully kill their current process, and swap the executable.
-*   **Auto-Restart:** Rely on the Windows Service Manager (SCM) to instantly restart the runner with the newly dropped binary.
+*   **Implement `SelfUpdate` Profile:** Done.
+*   **Artifact Distribution:** Done. 
+*   **Workflow:** Done (Transactional updates with rollback and health verification).
+*   **Auto-Restart:** Done (Worker updates its own binary securely and restarts).
 
-## 2. Environment Bootstrapping & Parity
-**Goal:** Ensure workers always have the correct CLI tools required by their capabilities so jobs don't fail with "executable not found".
-*   **Implement `BootstrapEnvironment` Profile:** A task profile that can automatically install or update dependencies.
-*   **Package Management Integration:** Use `winget` or `chocolatey` on Windows runners to automatically install `go`, `node`, `godot`, and AI agents like `codex` or `antigravity`.
-*   **PATH Management:** Ensure the worker process reloads its environment variables dynamically if a new tool is installed during a bootstrap job.
+## 2. Environment Bootstrapping & Parity (IMPLEMENTED)
+**Status:** IMPLEMENTED.
+**Goal:** Ensure workers always have the correct CLI tools required by their capabilities.
+*   **Implement `BootstrapEnvironment` Profile:** Done. Profile exists and checks for `allowBootstrap`.
+*   **Package Management Integration:** Done.
+*   **PATH Management:** Done.
 
-## 3. One-Click UI Job Templates
+## 3. One-Click UI Job Templates (IMPLEMENTED)
+**Status:** IMPLEMENTED.
 **Goal:** Move away from raw YAML manifest entry in the dashboard and provide standard, clickable playbooks.
-*   **Template Library:** Add specific buttons to the web UI for common workflows:
-    *   *Build & Export Godot Game (Windows)*
-    *   *Run Go Test Suite*
-    *   *Agent: Implement Feature (Codex/Antigravity)*
-*   **Dynamic Forms:** Allow users to simply select a repository and branch from a dropdown, and the UI will generate and submit the correct manifest behind the scenes.
+*   **Template Library:** Done (ASCII game, Go Test Suite, etc.).
+*   **Dynamic Forms:** Done.
 
-## 4. Enhanced Messaging & Telemetry
-**Goal:** Improve visibility into exactly what the runners are doing, especially when executing autonomous agent tasks.
-*   **Real-time Output:** Stream stdout/stderr from executing jobs back to the coordinator in real-time rather than waiting for the job to complete.
-*   **Deep Agent Integration:** Standardize the AgentBridge payloads so that AI agents (like Antigravity) running on the workers can stream their thoughts and git commits directly into the ForgeGrid dashboard's messaging tab.
+## 4. Enhanced Messaging & Telemetry (PARTIALLY IMPLEMENTED)
+**Status:** PARTIALLY IMPLEMENTED / IN PROGRESS.
+**Goal:** Improve visibility into exactly what the runners are doing.
+*   **Real-time Output:** Done.
+*   **Deep Agent Integration:** Done (AgentBridge communications layer implemented and tested on Fedora).

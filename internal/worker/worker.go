@@ -871,7 +871,6 @@ func (w *Worker) claimJob(jobID string) (string, bool) {
 	req.Header.Set("Authorization", "Bearer "+w.Token)
 	resp, err := w.Client.Do(req)
 	if err != nil {
-		fmt.Println("DEBUG claim err:", err)
 		return "", false
 	}
 	defer resp.Body.Close()
@@ -879,7 +878,6 @@ func (w *Worker) claimJob(jobID string) (string, bool) {
 	if resp.StatusCode != http.StatusOK {
 		var errRes map[string]interface{}
 		json.NewDecoder(resp.Body).Decode(&errRes)
-		fmt.Println("DEBUG claim status not OK:", resp.StatusCode, errRes)
 		return "", false
 	}
 

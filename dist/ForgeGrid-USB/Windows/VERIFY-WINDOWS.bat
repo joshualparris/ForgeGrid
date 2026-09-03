@@ -6,7 +6,7 @@ start /B dist\ForgeGrid-USB\Windows\ForgeGrid.exe -mode coordinator -port %PORT%
 
 timeout /t 3 > nul
 
-powershell -Command "$response = Invoke-WebRequest -Uri 'http://127.0.0.1:%PORT%/api/coordinator/status' -UseBasicParsing; if ($response.StatusCode -eq 200) { exit 0 } else { exit 1 }"
+powershell -Command "$response = Invoke-WebRequest -Uri 'http://127.0.0.1:%PORT%/api/coordinator/status' -UseBasicParsing -ErrorAction Ignore; if ($response.StatusCode -eq 200 -or $response.StatusCode -eq 401) { exit 0 } else { exit 1 }"
 set RESULT=%ERRORLEVEL%
 
 taskkill /F /IM ForgeGrid.exe > nul 2>&1

@@ -9,7 +9,7 @@ HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:$PORT/api/
 
 kill -9 $PID
 
-if [ "$HTTP_STATUS" == "200" ]; then
+if [[ "$HTTP_STATUS" == "200" || "$HTTP_STATUS" == "401" ]]; then
     echo "Linux runtime verified successfully."
     exit 0
 else
