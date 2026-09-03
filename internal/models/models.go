@@ -120,6 +120,9 @@ type Job struct {
 	ChangedFiles      []ChangedFile      `json:"changed_files,omitempty"`
 	ValidationResults []ValidationResult `json:"validation_results,omitempty"`
 
+	AgentRequested    string `json:"agent_requested,omitempty"`
+	AgentActual       string `json:"agent_actual,omitempty"`
+
 	Challenge string `json:"challenge,omitempty"` // For test task
 }
 

@@ -96,7 +96,7 @@ func TestInspectProjectReturnsCachedInspectionWithoutGitHubToken(t *testing.T) {
 	if !hasString(inspection.ProjectTypes, "Go") {
 		t.Fatalf("expected cached Go inspection, got %#v", inspection.ProjectTypes)
 	}
-	if inspection.AvailableActions[0].ID != "ai-agent" || inspection.AvailableActions[0].Profile != "AIAgentAuto" {
+	if inspection.AvailableActions[0].ID != "ai-agent" || inspection.AvailableActions[0].Profile != "ai" {
 		t.Fatalf("expected cached Codex action to normalize, got %#v", inspection.AvailableActions[0])
 	}
 }

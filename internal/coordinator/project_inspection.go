@@ -111,10 +111,10 @@ func normalizeInspectionActions(inspection *models.ProjectInspection) {
 		action := &inspection.AvailableActions[i]
 		if action.ID == "codex" || action.Profile == "CodexExec" && action.Label == "Work on with Codex" {
 			action.ID = "ai-agent"
-			action.Label = "Ask AI To Work On This Project"
-			action.Description = "Describe a coding task in plain English"
-			action.Profile = "AIAgentAuto"
-			action.RequiredCapabilities = []string{"ai-agent"}
+			action.Label = "Work on with AI"
+			action.Description = "Describe a coding task in plain English for an AI agent"
+			action.Profile = "ai" // Not a real profile anymore, indicates AI job
+			action.RequiredCapabilities = []string{"agent:auto"}
 		}
 	}
 }

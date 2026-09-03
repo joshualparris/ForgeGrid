@@ -47,6 +47,14 @@ func (d *Director) SubmitManifest(m *manifest.Manifest) error {
 		}
 		stages := bindAgentProfiles(task.Stages, worker)
 
+		agentRequested := "auto"
+		for _, cap := range task.Requirements.Capabilities {
+			if strings.HasPrefix(cap, "agent:") {
+				agentRequested = strings.TrimPrefix(cap, "agent:")
+				break
+			}
+		}
+
 		job := &models.Job{
 			ID:             jobID,
 			WorkerID:       assignedWorker,
@@ -64,6 +72,7 @@ func (d *Director) SubmitManifest(m *manifest.Manifest) error {
 			Artefacts:      append([]string{}, task.Artefacts...),
 			RequiredLabels: append([]string{}, task.Requirements.Labels...),
 			RequiredCaps:   append([]string{}, task.Requirements.Capabilities...),
+			AgentRequested: agentRequested,
 			MaxRetries:     stages[0].MaxRetries,
 			RepositoryURL:  m.Repository.URL,
 			BaseCommit:     m.Repository.BaseCommit,
@@ -103,14 +112,11 @@ func bindAgentProfiles(stages []manifest.Execution, worker *models.WorkerState) 
 		return out
 	}
 	for i := range out {
-		if out[i].Profile != "AIAgentAuto" {
+		if out[i].Profile != "ai" {
 			continue
 		}
-		if containsAll(worker.Capabilities, []string{"antigravity"}) {
-			out[i].Profile = "AIAgent"
-		} else if containsAll(worker.Capabilities, []string{"codex"}) {
-			out[i].Profile = "CodexExec"
-		}
+		// If an action has profile "ai", it doesn't need to be swapped to CodexExec.
+		// The scheduler and worker logic will handle "ai" jobs.
 	}
 	return out
 }
@@ -209,8 +215,20 @@ func workerEligible(w *models.WorkerState, req manifest.Requirements) bool {
 
 func workerHasCapabilities(have, want []string) bool {
 	for _, cap := range want {
-		if cap == "ai-agent" {
-			if !containsAny(have, []string{"ai-agent", "antigravity", "codex"}) {
+		if strings.HasPrefix(cap, "agent:") {
+			if cap == "agent:auto" {
+				// Must have at least one agent
+				hasAnyAgent := false
+				for _, h := range have {
+					if strings.HasPrefix(h, "agent:") {
+						hasAnyAgent = true
+						break
+					}
+				}
+				if !hasAnyAgent {
+					return false
+				}
+			} else if !containsAll(have, []string{cap}) {
 				return false
 			}
 			continue
@@ -229,7 +247,21 @@ func missingValues(have, want []string) []string {
 	}
 	var missing []string
 	for _, v := range want {
-		if v == "ai-agent" && containsAny(have, []string{"ai-agent", "antigravity", "codex"}) {
+		if strings.HasPrefix(v, "agent:") {
+			if v == "agent:auto" {
+				hasAnyAgent := false
+				for _, h := range have {
+					if strings.HasPrefix(h, "agent:") {
+						hasAnyAgent = true
+						break
+					}
+				}
+				if !hasAnyAgent {
+					missing = append(missing, v)
+				}
+			} else if !set[v] {
+				missing = append(missing, v)
+			}
 			continue
 		}
 		if !set[v] {
@@ -254,9 +286,9 @@ func containsAny(have, want []string) bool {
 
 func humanCapability(cap string) string {
 	names := map[string]string{
-		"codex":       "Codex",
-		"antigravity": "Antigravity",
-		"ai-agent":    "AI agent",
+		"agent:codex":       "Codex",
+		"agent:antigravity": "Antigravity",
+		"agent:auto":        "Auto AI Agent",
 		"python":      "Python",
 		"go":          "Go",
 		"node":        "Node",

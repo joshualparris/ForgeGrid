@@ -100,13 +100,6 @@ var Profiles = map[string]Profile{
 		Subcommand:     []string{"--headless", "--export-release"},
 		ArgKeys:        []string{"preset", "export_path"},
 	},
-	"CodexExec": {
-		Name:           "CodexExec",
-		Executable:     "codex",
-		MaxTimeoutSecs: 3600,
-		Subcommand:     []string{"exec", "--sandbox", "workspace-write"},
-		ArgKeys:        []string{"prompt"},
-	},
 	"BootstrapEnvironment": {
 		Name:           "BootstrapEnvironment",
 		Executable:     "winget",

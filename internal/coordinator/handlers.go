@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -829,7 +830,7 @@ func (c *Coordinator) handleListJobs(w http.ResponseWriter, r *http.Request) {
 		}
 		var jobs []models.Job
 		for _, j := range c.Store.Jobs {
-			if j.WorkerID == workerID && (j.Status == models.StatusPending || j.Status == models.StatusCancelRequested) {
+			if (j.WorkerID == workerID || j.WorkerID == "") && (j.Status == models.StatusPending || j.Status == models.StatusCancelRequested) {
 				jobs = append(jobs, *j)
 			}
 		}
@@ -1004,15 +1005,45 @@ func (c *Coordinator) handleJobAction(w http.ResponseWriter, r *http.Request) {
 			// Worker claiming the job
 			token := r.Header.Get("Authorization")
 			token = strings.TrimPrefix(token, "Bearer ")
-			worker, ok := c.Store.Workers[job.WorkerID]
+			
+			var claimReq struct {
+				WorkerID string `json:"worker_id"`
+			}
+			json.NewDecoder(r.Body).Decode(&claimReq)
+			
+			reqWorkerID := claimReq.WorkerID
+			if reqWorkerID == "" {
+				reqWorkerID = r.URL.Query().Get("worker_id")
+			}
+			
+			// Backward compatibility: If old worker didn't send worker_id, but the job is explicitly assigned, try using the job's assigned worker.
+			if reqWorkerID == "" && job.WorkerID != "" {
+				reqWorkerID = job.WorkerID
+			}
+
+			// Do not allow unauthenticated/unknown workers to claim pool jobs
+			if reqWorkerID == "" {
+				writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Missing worker identity", "")
+				return
+			}
+			
+			worker, ok := c.Store.Workers[reqWorkerID]
 			if !ok || worker.TokenHash != hashToken(token) {
 				writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Unauthorized", "")
+				return
+			}
+			if job.WorkerID != "" && job.WorkerID != reqWorkerID {
+				writeError(w, http.StatusConflict, "CONFLICT", "Job assigned to another worker", "")
 				return
 			}
 			if job.Status != models.StatusPending {
 				writeError(w, http.StatusConflict, "CONFLICT", "Job is not pending", "")
 				return
 			}
+			
+			job.WorkerID = reqWorkerID
+			job.WorkerName = worker.NodeName
+			
 			// Atomically assign AttemptID
 			job.AttemptID = "attempt-" + cryptoRandomHex(16)
 			job.Status = models.StatusClaimed
@@ -1235,4 +1266,28 @@ func (c *Coordinator) markProjectUsed(cloneURL string) {
 			return
 		}
 	}
+}
+
+func (c *Coordinator) handleBatchComputeTest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed", "")
+		return
+	}
+	c.Store.Mu.Lock()
+	defer c.Store.Mu.Unlock()
+	
+	for i := 0; i < 100; i++ {
+		jobID := "job-compute-" + cryptoRandomHex(8)
+		job := &models.Job{
+			ID:          jobID,
+			Task:        "compute.test",
+			Status:      models.StatusPending,
+			CreatedAt:   time.Now(),
+			Parameters:  map[string]string{"input": strconv.Itoa(100000 + i)},
+		}
+		c.Store.Jobs[job.ID] = job
+	}
+	c.Store.Save()
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "submitted 100 compute.test jobs"})
 }

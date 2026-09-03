@@ -4,9 +4,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"log"
 	"net/http"
@@ -15,10 +19,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"forgegrid/internal/agent"
 	"forgegrid/internal/execution"
 	"forgegrid/internal/gitworkspace"
 	"forgegrid/internal/models"
@@ -258,22 +264,15 @@ func DetectCapabilities() []string {
 		{"python", pythonOK},
 		{"go", commandOK("go", "version")},
 		{"node", commandOK("node", "--version")},
-		{"antigravity", antigravityOK},
-		{"codex", commandOK("codex", "--version")},
+		{"agent:antigravity", antigravityOK},
+		{"agent:codex", commandOK("codex", "--version")},
 		{"godot", godotOK},
 	}
 	var caps []string
-	hasAgent := false
 	for _, check := range checks {
 		if check.ok() {
 			caps = append(caps, check.name)
-			if check.name == "antigravity" || check.name == "codex" {
-				hasAgent = true
-			}
 		}
-	}
-	if hasAgent {
-		caps = append(caps, "ai-agent")
 	}
 	return caps
 }
@@ -863,7 +862,9 @@ func (w *Worker) cancelJob(jobID string) {
 }
 
 func (w *Worker) claimJob(jobID string) (string, bool) {
-	reqBody := map[string]interface{}{}
+	reqBody := map[string]interface{}{
+		"worker_id": w.WorkerID,
+	}
 	body, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequest("POST", fmt.Sprintf("%s/api/jobs/%s/claim", w.CoordinatorURL, jobID), bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -922,6 +923,7 @@ type jobResultMetadata struct {
 	WorkspaceRetained bool
 	ChangedFiles      []models.ChangedFile
 	ValidationResults []models.ValidationResult
+	AgentActual       string
 }
 
 func (w *Worker) updateJobStatusFull(jobID, attemptID string, status models.JobStatus, result string, logs []byte, seq int, artifacts []models.Artifact, pushedBranch, prURL string, stages []models.JobStage, currentStage int, meta jobResultMetadata) {
@@ -970,6 +972,9 @@ func addJobResultMetadata(reqBody map[string]interface{}, meta jobResultMetadata
 	}
 	if meta.ValidationResults != nil {
 		reqBody["validation_results"] = meta.ValidationResults
+	}
+	if meta.AgentActual != "" {
+		reqBody["agent_actual"] = meta.AgentActual
 	}
 }
 
@@ -1185,6 +1190,74 @@ func (w *Worker) executeJob(job models.Job) {
 		result := hex.EncodeToString(h[:])
 		logs = append(logs, []byte(fmt.Sprintf("Calculated SHA-256: %s\n", result))...)
 		w.updateJobStatus(job.ID, job.AttemptID, models.StatusCompleted, result, logs, logSeq)
+	} else if job.Task == "compute.test" {
+		inputStr := job.Parameters["input"]
+		input, _ := strconv.Atoi(inputStr)
+		start := time.Now()
+		
+		// Deterministic small CPU calculation
+		// e.g. sum of primes up to input
+		sum := 0
+		for i := 2; i <= input; i++ {
+			isPrime := true
+			for j := 2; j*j <= i; j++ {
+				if i%j == 0 {
+					isPrime = false
+					break
+				}
+			}
+			if isPrime {
+				sum += i
+			}
+		}
+		
+		finish := time.Now()
+		duration := finish.Sub(start)
+		
+		resultStr := fmt.Sprintf("Result: %d, Start: %s, Finish: %s, Duration: %s, Worker: %s", sum, start.Format(time.RFC3339), finish.Format(time.RFC3339), duration.String(), w.NodeName)
+		logs := []byte(resultStr + "\n")
+		w.updateJobStatus(job.ID, job.AttemptID, models.StatusCompleted, fmt.Sprintf("%d", sum), logs, logSeq)
+	} else if job.Task == "mandelbrot" {
+		start := time.Now()
+		width, _ := strconv.Atoi(job.Parameters["width"])
+		startY, _ := strconv.Atoi(job.Parameters["startY"])
+		endY, _ := strconv.Atoi(job.Parameters["endY"])
+
+		img := image.NewRGBA(image.Rect(0, 0, width, endY-startY))
+		for py := startY; py < endY; py++ {
+			for px := 0; px < width; px++ {
+				x0 := float64(px)/float64(width)*3.5 - 2.5
+				y0 := float64(py)/1200.0*2.0 - 1.0
+
+				x, y := 0.0, 0.0
+				iteration := 0
+				max_iteration := 1000
+
+				for x*x+y*y <= 2*2 && iteration < max_iteration {
+					xtemp := x*x - y*y + x0
+					y = 2*x*y + y0
+					x = xtemp
+					iteration++
+				}
+
+				c := color.RGBA{0, 0, 0, 255}
+				if iteration < max_iteration {
+					c = color.RGBA{uint8(iteration % 256), uint8((iteration * 5) % 256), uint8((iteration * 10) % 256), 255}
+				}
+				img.Set(px, py-startY, c)
+			}
+		}
+
+		var buf bytes.Buffer
+		png.Encode(&buf, img)
+		b64 := base64.StdEncoding.EncodeToString(buf.Bytes())
+
+		finish := time.Now()
+		duration := finish.Sub(start)
+		
+		resultStr := fmt.Sprintf("Result: Base64PNGFragment, Start: %s, Finish: %s, Duration: %s, Worker: %s", start.Format(time.RFC3339), finish.Format(time.RFC3339), duration.String(), w.NodeName)
+		logs := []byte(resultStr + "\n")
+		w.updateJobStatus(job.ID, job.AttemptID, models.StatusCompleted, b64, logs, logSeq)
 	} else if job.Task == "execute" {
 		var workDir string
 		var gm *gitworkspace.Manager
@@ -1348,16 +1421,22 @@ func (w *Worker) executeJob(job models.Job) {
 			w.updateJobStatusWithMetadata(job.ID, job.AttemptID, models.StatusRunning, "", output, logSeq, nil, "", "", job.Stages, job.CurrentStage)
 			logSeq++
 
-			profile, err := execution.GetProfile(stage.Profile)
-			if err != nil {
-				stage.Status = models.StatusFailed
-				stage.Result = err.Error()
-				job.Stages[i] = stage
-				finalResult = fmt.Sprintf("stage %d error: %v", i+1, err)
-				finalStatus = models.StatusFailed
-				break
+			isAgentTask := stage.Profile == "ai"
+			var profile execution.Profile
+			var err error
+			
+			if !isAgentTask {
+				profile, err = execution.GetProfile(stage.Profile)
+				if err != nil {
+					stage.Status = models.StatusFailed
+					stage.Result = err.Error()
+					job.Stages[i] = stage
+					finalResult = fmt.Sprintf("stage %d error: %v", i+1, err)
+					finalStatus = models.StatusFailed
+					break
+				}
 			}
-			if profile.Name == "BootstrapEnvironment" && !w.allowBootstrap {
+			if !isAgentTask && profile.Name == "BootstrapEnvironment" && !w.allowBootstrap {
 				errStr := "worker not allowed to bootstrap environment. start worker with FORGEGRID_ALLOW_BOOTSTRAP=true"
 				stage.Status = models.StatusFailed
 				stage.Result = errStr
@@ -1368,15 +1447,103 @@ func (w *Worker) executeJob(job models.Job) {
 			}
 
 			timeoutSeconds := stage.TimeoutSeconds
-			if timeoutSeconds == 0 || timeoutSeconds > profile.MaxTimeoutSecs {
+			if !isAgentTask && (timeoutSeconds == 0 || timeoutSeconds > profile.MaxTimeoutSecs) {
 				timeoutSeconds = profile.MaxTimeoutSecs
+			}
+			if isAgentTask && timeoutSeconds == 0 {
+				timeoutSeconds = 3600 // Default 1 hour for agents
 			}
 			timeout := time.Duration(timeoutSeconds) * time.Second
 
 			execCtx, execCancel := context.WithTimeout(ctx, timeout)
 
-			executor := execution.NewExecutor()
-			stageOut, err := executor.Execute(execCtx, profile, stage.Parameters, stage.Tools, workDir)
+			var stageOut []byte
+			if isAgentTask {
+				// Handle agent provider execution
+				agentID := job.AgentRequested
+				if agentID == "" || agentID == "auto" {
+					// Fallback to auto selection based on capabilities if not chosen
+					agentID = w.chooseAutoAgent()
+				}
+				job.AgentActual = agentID
+				resultMeta.AgentActual = agentID
+				
+				provider, err := agent.GetProvider(agentID)
+				if err != nil {
+					finalResult = "agent not found"
+					finalStatus = models.StatusFailed
+					stage.Status = models.StatusFailed
+					stage.Result = err.Error()
+					output = append(output, []byte(fmt.Sprintf("\nProvider error: %v", err))...)
+					job.Stages[i] = stage
+					execCancel()
+					break
+				}
+				
+				req := agent.AgentRequest{
+					Task:                job.Task,
+					Repository:          job.RepositoryURL,
+					ProjectName:         job.ProjectName,
+					Workspace:           workDir,
+					BaseBranch:          job.BaseBranch,
+					BaseSHA:             job.BaseCommit,
+					WorkBranch:          branchName,
+					SafetyInstructions:  agent.StandardSafetyInstructions(),
+				}
+				
+				if stage.Parameters["prompt"] != "" {
+					req.Task = stage.Parameters["prompt"]
+				} else if job.Description != "" {
+					req.Task = job.Description
+				}
+				
+				inv, err := provider.BuildInvocation(req)
+				if err != nil {
+					finalResult = "invocation error"
+					finalStatus = models.StatusFailed
+					stage.Status = models.StatusFailed
+					stage.Result = err.Error()
+					output = append(output, []byte(fmt.Sprintf("\nInvocation error: %v", err))...)
+					job.Stages[i] = stage
+					execCancel()
+					break
+				}
+				
+				cmd := exec.CommandContext(execCtx, inv.Executable, inv.Args...)
+				cmd.Dir = workDir
+				
+				// Standard environment mapping
+				cmd.Env = os.Environ()
+				
+				var outBytes, errBytes bytes.Buffer
+				cmd.Stdout = &outBytes
+				cmd.Stderr = &errBytes
+				
+				started := time.Now()
+				err = cmd.Run()
+				ended := time.Now()
+				
+				execResult := agent.ExecutionResult{
+					ExitCode: cmd.ProcessState.ExitCode(),
+					Duration: ended.Sub(started),
+					Stdout:   outBytes.Bytes(),
+					Stderr:   errBytes.Bytes(),
+					Error:    err,
+				}
+				
+				agentResult := provider.InterpretResult(execResult)
+				
+				stageOut = append(stageOut, outBytes.Bytes()...)
+				stageOut = append(stageOut, errBytes.Bytes()...)
+				stageOut = append(stageOut, []byte(fmt.Sprintf("\n[%s] %s\n", provider.DisplayName(), agentResult.Message))...)
+				
+				if agentResult.Status != "COMPLETED" {
+					err = fmt.Errorf("%s", agentResult.Message)
+				}
+			} else {
+				executor := execution.NewExecutor()
+				stageOut, err = executor.Execute(execCtx, profile, stage.Parameters, stage.Tools, workDir)
+			}
 			output = append(output, stageOut...)
 
 			if err != nil {
@@ -1429,7 +1596,7 @@ func (w *Worker) executeJob(job models.Job) {
 		}
 
 		if gm == nil {
-			w.updateJobStatusWithMetadata(job.ID, job.AttemptID, finalStatus, finalResult, output, logSeq, nil, "", "", job.Stages, job.CurrentStage)
+			w.updateJobStatusFull(job.ID, job.AttemptID, finalStatus, finalResult, output, logSeq, nil, "", "", job.Stages, job.CurrentStage, resultMeta)
 		}
 	} else {
 		w.updateJobStatus(job.ID, job.AttemptID, models.StatusFailed, "unknown task", []byte("Unsupported task type\n"), logSeq)
@@ -1513,4 +1680,26 @@ func packageScriptExists(path, script string) bool {
 		return false
 	}
 	return strings.TrimSpace(pkg.Scripts[script]) != ""
+}
+
+func (w *Worker) chooseAutoAgent() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	// Deterministic policy: Antigravity > Codex
+	var hasAntigravity, hasCodex bool
+	for _, cap := range w.Capabilities {
+		if cap == "agent:antigravity" {
+			hasAntigravity = true
+		}
+		if cap == "agent:codex" {
+			hasCodex = true
+		}
+	}
+	if hasAntigravity {
+		return "antigravity"
+	}
+	if hasCodex {
+		return "codex"
+	}
+	return "fake" // Fallback for tests
 }

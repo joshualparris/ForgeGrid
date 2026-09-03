@@ -411,7 +411,7 @@ chmod 600 ~/.config/forgegrid/coordinator/github-token.txt</textarea>
 
         function jobKind(job) {
             if (job.task === 'test') return 'Machine check';
-            if (job.profile === 'CodexExec' || job.profile === 'AIAgent' || job.profile === 'AIAgentAuto') return 'AI code work';
+            if (job.profile === 'CodexExec' || job.profile === 'AIAgent' || job.profile === 'AIAgentAuto' || job.profile === 'ai') return 'AI code work';
             if (job.profile === 'GoTest') return 'Go tests';
             if (job.profile === 'GodotExport') return 'Godot build';
             return job.profile || job.task || 'Job';
@@ -419,9 +419,9 @@ chmod 600 ~/.config/forgegrid/coordinator/github-token.txt</textarea>
 
         function humanCapability(cap) {
             const names = {
-                'ai-agent': 'AI agent',
-                antigravity: 'Antigravity',
-                codex: 'Codex',
+                'agent:auto': 'AI Agent (Auto)',
+                'agent:antigravity': 'Antigravity',
+                'agent:codex': 'Codex',
                 python: 'Python',
                 go: 'Go',
                 node: 'Node',
@@ -433,7 +433,7 @@ chmod 600 ~/.config/forgegrid/coordinator/github-token.txt</textarea>
 
         function visibleCapabilities(worker) {
             const caps = worker.capabilities || [];
-            return caps.filter(c => c !== 'ai-agent').map(humanCapability);
+            return caps.filter(c => !c.startsWith('agent:') || c === 'agent:auto' || c === 'agent:antigravity' || c === 'agent:codex').map(humanCapability);
         }
 
         function machineCapabilityText(worker) {
@@ -707,7 +707,7 @@ chmod 600 ~/.config/forgegrid/coordinator/github-token.txt</textarea>
             let timeout = 600;
             if (selectedQuickJob === 'ai-fix') {
                 const agentChoice = document.getElementById('aiAgentChoice').value;
-                profile = agentChoice === 'antigravity' ? 'AIAgent' : (agentChoice === 'codex' ? 'CodexExec' : 'AIAgentAuto');
+                profile = 'ai';
                 task = 'ai_improvement';
                 desc = 'Ask AI to work on this project';
                 caps = projectValidationCaps();
@@ -804,7 +804,7 @@ ${params}
 
         function projectValidationCaps() {
             const choice = document.getElementById('aiAgentChoice') ? document.getElementById('aiAgentChoice').value : 'auto';
-            const caps = [choice === 'antigravity' ? 'antigravity' : (choice === 'codex' ? 'codex' : 'ai-agent')];
+            const caps = [`agent:${choice}`];
             const types = selectedInspection && selectedInspection.project_types ? selectedInspection.project_types.map(t => t.toLowerCase()) : [];
             if (types.includes('go')) caps.push('go');
             if (types.includes('python')) caps.push('python');
@@ -907,9 +907,9 @@ tasks:`;
     description: "Agent: Implement Feature"
     requirements:
       os: "windows"
-      capabilities: ["codex"]
+      capabilities: ["agent:codex"]
     execution:
-      profile: "CodexExec"
+      profile: "ai"
       parameters:
         prompt: "Write a fun ASCII game and save it to the workspace."
       timeout_seconds: 1800
@@ -923,10 +923,10 @@ tasks:`;
     description: "Agent: Build + Test + Push"
     requirements:
       os: "windows"
-      capabilities: ["codex", "go"]
+      capabilities: ["agent:codex", "go"]
     stages:
       - name: "Agent"
-        profile: "CodexExec"
+        profile: "ai"
         parameters:
           prompt: "Write a new feature and save it."
         timeout_seconds: 1800
@@ -1487,7 +1487,12 @@ Then run:
                     }
 
                     const statusDisplay = escapeHTML(j.status) + stagesHTML;
-                    const resultText = (j.result || 'No result yet') + retryText + childText;
+                    let resultText = (j.result || 'No result yet') + retryText + childText;
+                    if (j.agent_requested || j.agent_actual) {
+                        const req = j.agent_requested || 'auto';
+                        const act = j.agent_actual ? j.agent_actual : '(pending)';
+                        resultText += `<br><span class="muted">Agent: requested ${escapeHTML(req)} &rarr; used ${escapeHTML(act)}</span>`;
+                    }
                     const factsHTML = jobFactsHTML(j);
                     
                     tbody.innerHTML += `

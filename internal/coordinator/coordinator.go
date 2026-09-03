@@ -123,6 +123,7 @@ func (c *Coordinator) Start(port string) error {
 	mux.HandleFunc("/api/updates/worker", c.handleWorkerUpdatePoll)
 	mux.HandleFunc("/api/updates/report", c.handleWorkerUpdateReport)
 	mux.HandleFunc("/api/jobs/test", adminAuth(c.handleTestJob))
+	mux.HandleFunc("/api/jobs/batch-compute-test", adminAuth(c.handleBatchComputeTest))
 	mux.HandleFunc("/api/jobs", c.handleListJobs)
 	mux.HandleFunc("/api/jobs/", c.handleJobAction)
 	mux.HandleFunc("/api/jobs/manifest", adminAuth(c.handleManifest))

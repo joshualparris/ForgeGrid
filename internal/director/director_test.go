@@ -227,7 +227,7 @@ func TestDirectorAutoAIAgentChoosesIdleAntigravityPythonWorker(t *testing.T) {
 		Status:            "online",
 		AvailableRAM:      8 * 1024 * 1024 * 1024,
 		LogicalProcessors: 4,
-		Capabilities:      []string{"git", "python", "antigravity", "ai-agent"},
+		Capabilities:      []string{"git", "python", "agent:antigravity", "agent:auto"},
 	}
 	s.Workers["probook"] = &models.WorkerState{
 		ID:                "probook",
@@ -236,7 +236,7 @@ func TestDirectorAutoAIAgentChoosesIdleAntigravityPythonWorker(t *testing.T) {
 		Status:            "online",
 		AvailableRAM:      16 * 1024 * 1024 * 1024,
 		LogicalProcessors: 12,
-		Capabilities:      []string{"git", "go", "node", "codex", "ai-agent"},
+		Capabilities:      []string{"git", "go", "node", "agent:codex", "agent:auto"},
 	}
 	s.Jobs["busy"] = &models.Job{ID: "busy", WorkerID: "probook", Status: models.StatusRunning}
 	s.Mu.Unlock()
@@ -246,9 +246,9 @@ project: "Whispering-Wilds"
 tasks:
   ai_improvement:
     requirements:
-      capabilities: ["ai-agent", "python"]
+      capabilities: ["agent:auto", "python"]
     execution:
-      profile: "AIAgentAuto"
+      profile: "ai"
       parameters:
         prompt: "make a safe change"
       changes:
@@ -273,8 +273,8 @@ tasks:
 	if job.WorkerID != "thinkpad" {
 		t.Fatalf("expected ThinkPad, got %s", job.WorkerID)
 	}
-	if job.Profile != "AIAgent" {
-		t.Fatalf("expected AIAgent profile, got %s", job.Profile)
+	if job.Profile != "ai" {
+		t.Fatalf("expected ai profile, got %s", job.Profile)
 	}
 }
 
@@ -285,12 +285,12 @@ func TestDirectorEligibilityExplainsMissingAgentValidationAndBusy(t *testing.T) 
 	}
 
 	s.Mu.Lock()
-	s.Workers["thinkpad"] = &models.WorkerState{ID: "thinkpad", NodeName: "ThinkPad-Lenovo", OS: "windows", Status: "online", Capabilities: []string{"antigravity", "ai-agent"}}
-	s.Workers["probook"] = &models.WorkerState{ID: "probook", NodeName: "probook", OS: "windows", Status: "online", Capabilities: []string{"codex", "ai-agent", "python"}}
+	s.Workers["thinkpad"] = &models.WorkerState{ID: "thinkpad", NodeName: "ThinkPad-Lenovo", OS: "windows", Status: "online", Capabilities: []string{"agent:antigravity", "agent:auto"}}
+	s.Workers["probook"] = &models.WorkerState{ID: "probook", NodeName: "probook", OS: "windows", Status: "online", Capabilities: []string{"agent:codex", "agent:auto", "python"}}
 	s.Jobs["busy"] = &models.Job{ID: "busy", WorkerID: "probook", Status: models.StatusRunning}
 	s.Mu.Unlock()
 
-	req := manifest.Requirements{Capabilities: []string{"ai-agent", "python"}}
+	req := manifest.Requirements{Capabilities: []string{"agent:auto", "python"}}
 	explanation := New(s).ExplainEligibility(req)
 	if !strings.Contains(explanation, "ThinkPad-Lenovo: Python not available") {
 		t.Fatalf("missing ThinkPad explanation: %s", explanation)
@@ -307,7 +307,7 @@ func TestDirectorExplicitCodexDoesNotUseAntigravityOnlyWorker(t *testing.T) {
 	}
 
 	s.Mu.Lock()
-	s.Workers["thinkpad"] = &models.WorkerState{ID: "thinkpad", NodeName: "ThinkPad-Lenovo", OS: "windows", Status: "online", Capabilities: []string{"antigravity", "ai-agent", "python"}}
+	s.Workers["thinkpad"] = &models.WorkerState{ID: "thinkpad", NodeName: "ThinkPad-Lenovo", OS: "windows", Status: "online", Capabilities: []string{"agent:antigravity", "agent:auto", "python"}}
 	s.Mu.Unlock()
 
 	m, err := manifest.Parse(strings.NewReader(`
@@ -315,9 +315,9 @@ project: "Whispering-Wilds"
 tasks:
   ai_improvement:
     requirements:
-      capabilities: ["codex", "python"]
+      capabilities: ["agent:codex", "python"]
     execution:
-      profile: "CodexExec"
+      profile: "ai"
       parameters:
         prompt: "make a safe change"
 `))
