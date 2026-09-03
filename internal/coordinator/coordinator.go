@@ -125,7 +125,7 @@ func (c *Coordinator) Start(port string) error {
 	mux.HandleFunc("/api/jobs/test", adminAuth(c.handleTestJob))
 	mux.HandleFunc("/api/jobs", c.handleListJobs)
 	mux.HandleFunc("/api/jobs/", c.handleJobAction)
-	mux.HandleFunc("/api/jobs/manifest", adminAuth(c.handleManifest))
+	mux.HandleFunc("/api/jobs/manifest", c.submitAuth(c.handleManifest))
 
 	// Serve UI
 	dashboardFS, err := fs.Sub(ui.DashboardFS, "dashboard")

@@ -1236,3 +1236,36 @@ func (c *Coordinator) markProjectUsed(cloneURL string) {
 		}
 	}
 }
+
+func (c *Coordinator) submitAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if c.isAdminRequest(r) {
+			next(w, r)
+			return
+		}
+
+		token := r.Header.Get("Authorization")
+		token = strings.TrimPrefix(token, "Bearer ")
+
+		if token != "" {
+			c.Store.Mu.Lock()
+			validWorker := false
+			for _, worker := range c.Store.Workers {
+				if worker.TokenHash == hashToken(token) {
+					validWorker = true
+					break
+				}
+			}
+			c.Store.Mu.Unlock()
+
+			if validWorker {
+				next(w, r)
+				return
+			}
+		}
+
+		w.Header().Set("WWW-Authenticate", "Basic realm=\"ForgeGrid Dashboard\"")
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	}
+}
+

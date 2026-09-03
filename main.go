@@ -35,6 +35,9 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "runner" {
 		os.Exit(runner.Run(os.Args[2:]))
 	}
+	if len(os.Args) > 1 && os.Args[1] == "submit" {
+		os.Exit(coordinator.SubmitManifest(os.Args[2:]))
+	}
 	if len(os.Args) > 1 && os.Args[1] == "service" {
 		if len(os.Args) < 3 {
 			fmt.Println("Usage: forgegrid service <install|uninstall|start|stop|status> [worker options for install]")
