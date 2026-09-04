@@ -567,11 +567,14 @@ func (c *Coordinator) updateViewLocked(worker *models.WorkerState, m *fgupdate.M
 		view.Reason = "Machine is working; update will wait until it is idle"
 		return view
 	}
-	if fgupdate.NeedsUpdate(worker.Version.Version, m.Version) {
+	if fgupdate.NeedsUpdate(worker.Version.Version, worker.Version.Commit, m.Version, m.Commit) {
 		view.Status = fgupdate.StatusAvailable
-		if worker.Version.Version == "" {
+		switch {
+		case worker.Version.Version == "":
 			view.Reason = fmt.Sprintf("%s is a legacy worker; update to %s to enable version, compatibility and capability reporting", worker.NodeName, m.Version)
-		} else {
+		case worker.Version.Version == m.Version && worker.Version.Commit != m.Commit:
+			view.Reason = fmt.Sprintf("%s is on %s at an older commit; update to bring it to %s", worker.NodeName, worker.Version.Version, m.Commit)
+		default:
 			view.Reason = fmt.Sprintf("%s can update to %s", worker.NodeName, m.Version)
 		}
 		return view

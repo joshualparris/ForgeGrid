@@ -158,10 +158,31 @@ func SelectArtifact(m *Manifest, role, platform, arch string) (Artifact, bool) {
 	return Artifact{}, false
 }
 
-func NeedsUpdate(current, latest string) bool {
-	current = strings.TrimSpace(current)
-	latest = strings.TrimSpace(latest)
-	return latest != "" && (current == "" || current != latest)
+// NeedsUpdate reports whether a worker on (currentVersion, currentCommit)
+// should be offered the manifest's (latestVersion, latestCommit).
+//
+// Comparing the semantic version alone is not enough: ForgeGrid has shipped
+// several commits in a row under the same "0.8.0" version, so a worker on a
+// stale commit would otherwise be reported as already current. A worker is
+// only ever called current when its version AND commit both positively
+// match the manifest; missing commit information on either side fails
+// conservatively toward "needs update" rather than being treated as a match.
+func NeedsUpdate(currentVersion, currentCommit, latestVersion, latestCommit string) bool {
+	currentVersion = strings.TrimSpace(currentVersion)
+	latestVersion = strings.TrimSpace(latestVersion)
+	currentCommit = strings.TrimSpace(currentCommit)
+	latestCommit = strings.TrimSpace(latestCommit)
+
+	if latestVersion == "" {
+		return false
+	}
+	if currentVersion == "" || currentVersion != latestVersion {
+		return true
+	}
+	if currentCommit == "" || latestCommit == "" {
+		return true
+	}
+	return currentCommit != latestCommit
 }
 
 func CurrentWorkerArtifact(m *Manifest) (Artifact, bool) {
