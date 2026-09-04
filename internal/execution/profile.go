@@ -100,6 +100,39 @@ var Profiles = map[string]Profile{
 		Subcommand:     []string{"--headless", "--export-release"},
 		ArgKeys:        []string{"preset", "export_path"},
 	},
+	// The Version profiles are deliberately trivial, read-only, side-effect
+	// free checks (no ArgKeys, no user-controlled arguments) used to prove a
+	// capability the coordinator believes a worker has is actually real, by
+	// running the tool through a genuine ForgeGrid job rather than trusting
+	// the heartbeat-reported capability list alone.
+	"GitVersion": {
+		Name:           "GitVersion",
+		Executable:     "git",
+		MaxTimeoutSecs: 30,
+		Subcommand:     []string{"--version"},
+		ArgKeys:        []string{},
+	},
+	"PythonVersion": {
+		Name:           "PythonVersion",
+		Executable:     "python",
+		MaxTimeoutSecs: 30,
+		Subcommand:     []string{"--version"},
+		ArgKeys:        []string{},
+	},
+	"GoVersion": {
+		Name:           "GoVersion",
+		Executable:     "go",
+		MaxTimeoutSecs: 30,
+		Subcommand:     []string{"version"},
+		ArgKeys:        []string{},
+	},
+	"NodeVersion": {
+		Name:           "NodeVersion",
+		Executable:     "node",
+		MaxTimeoutSecs: 30,
+		Subcommand:     []string{"--version"},
+		ArgKeys:        []string{},
+	},
 	"BootstrapEnvironment": {
 		Name:           "BootstrapEnvironment",
 		Executable:     "winget",

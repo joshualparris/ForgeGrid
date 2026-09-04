@@ -5,6 +5,43 @@ import (
 	"testing"
 )
 
+func TestVersionProfilesAreReadOnlyAndTakeNoArguments(t *testing.T) {
+	for name, wantExecutable := range map[string]string{
+		"GitVersion":    "git",
+		"PythonVersion": "python",
+		"GoVersion":     "go",
+		"NodeVersion":   "node",
+	} {
+		p, ok := Profiles[name]
+		if !ok {
+			t.Fatalf("expected profile %s to be registered", name)
+		}
+		if p.Executable != wantExecutable {
+			t.Fatalf("%s: expected executable %q, got %q", name, wantExecutable, p.Executable)
+		}
+		if len(p.ArgKeys) != 0 {
+			t.Fatalf("%s: version-check profiles must not accept caller-supplied arguments, got ArgKeys=%v", name, p.ArgKeys)
+		}
+		if p.AcceptsTools {
+			t.Fatalf("%s: version-check profiles must not accept the tools list", name)
+		}
+		// Mock pinning so this test doesn't depend on what's installed on
+		// whatever machine happens to run go test.
+		pinnedExecutables[name] = wantExecutable
+		profile, err := GetProfile(name)
+		if err != nil {
+			t.Fatalf("GetProfile(%s) failed: %v", name, err)
+		}
+		args, err := BuildArgs(profile, nil, nil)
+		if err != nil {
+			t.Fatalf("BuildArgs(%s) failed: %v", name, err)
+		}
+		if len(args) != len(p.Subcommand) {
+			t.Fatalf("%s: expected exactly the fixed subcommand %v, got %v", name, p.Subcommand, args)
+		}
+	}
+}
+
 func TestBootstrapEnvironmentProfile(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("BootstrapEnvironment is Windows-only")
