@@ -34,6 +34,7 @@ type Task struct {
 type Requirements struct {
 	MinRAMGB     int      `yaml:"min_ram_gb"`
 	OS           string   `yaml:"os"`
+	Architecture string   `yaml:"architecture"`
 	MinCores     int      `yaml:"min_cores"`
 	Labels       []string `yaml:"labels"`
 	Capabilities []string `yaml:"capabilities"`

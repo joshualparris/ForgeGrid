@@ -132,6 +132,114 @@ tasks:
 	}
 }
 
+func TestDirectorArchitectureRequirementExcludesMismatchedWorker(t *testing.T) {
+	s, err := store.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+
+	amd64Worker := &models.WorkerState{
+		ID:                "worker-amd64",
+		NodeName:          "Laptop-amd64",
+		OS:                "windows",
+		Architecture:      "amd64",
+		Status:            "online",
+		LogicalProcessors: 4,
+	}
+	x86Worker := &models.WorkerState{
+		ID:                "worker-386",
+		NodeName:          "Laptop10",
+		OS:                "windows",
+		Architecture:      "386",
+		Status:            "online",
+		LogicalProcessors: 2,
+	}
+	s.Mu.Lock()
+	s.Workers[amd64Worker.ID] = amd64Worker
+	s.Workers[x86Worker.ID] = x86Worker
+	s.Mu.Unlock()
+
+	dir := New(s)
+
+	yamlData := `
+project: "ForgeGrid"
+tasks:
+  build:
+    requirements:
+      os: "windows"
+      architecture: "amd64"
+    execution:
+      profile: "GoTest"
+      parameters:
+        package: "./..."
+`
+	m, err := manifest.Parse(strings.NewReader(yamlData))
+	if err != nil {
+		t.Fatalf("Failed to parse manifest: %v", err)
+	}
+
+	if err := dir.SubmitManifest(m); err != nil {
+		t.Fatalf("expected the amd64 worker to be eligible, got error: %v", err)
+	}
+
+	s.Mu.RLock()
+	defer s.Mu.RUnlock()
+	if len(s.Jobs) != 1 {
+		t.Fatalf("expected exactly 1 job, got %d", len(s.Jobs))
+	}
+	for _, j := range s.Jobs {
+		if j.WorkerID != "worker-amd64" {
+			t.Fatalf("architecture requirement did not exclude the 386 worker: job went to %s", j.WorkerID)
+		}
+	}
+}
+
+func TestDirectorArchitectureRequirementFailsClosedWhenUnsupported(t *testing.T) {
+	s, err := store.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+
+	// Only a 386 worker is online; nothing here can satisfy an amd64
+	// requirement, and the job must not be silently handed to it anyway.
+	s.Mu.Lock()
+	s.Workers["worker-386"] = &models.WorkerState{
+		ID:                "worker-386",
+		NodeName:          "Laptop10",
+		OS:                "windows",
+		Architecture:      "386",
+		Status:            "online",
+		LogicalProcessors: 2,
+	}
+	s.Mu.Unlock()
+
+	dir := New(s)
+
+	yamlData := `
+project: "ForgeGrid"
+tasks:
+  build:
+    requirements:
+      architecture: "amd64"
+    execution:
+      profile: "GoTest"
+`
+	m, err := manifest.Parse(strings.NewReader(yamlData))
+	if err != nil {
+		t.Fatalf("Failed to parse manifest: %v", err)
+	}
+
+	if err := dir.SubmitManifest(m); err == nil {
+		t.Fatalf("expected an unsupported-architecture task to fail rather than be silently assigned to the 386 worker")
+	}
+
+	s.Mu.RLock()
+	defer s.Mu.RUnlock()
+	if len(s.Jobs) != 0 {
+		t.Fatalf("expected no job to be created, got %d", len(s.Jobs))
+	}
+}
+
 func TestDirectorDispatchNoWorker(t *testing.T) {
 	ws := t.TempDir()
 	s, err := store.NewStore(ws)

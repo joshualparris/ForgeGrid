@@ -160,6 +160,9 @@ func (d *Director) workerIneligibleReasons(w *models.WorkerState, req manifest.R
 	if req.OS != "" && w.OS != req.OS {
 		reasons = append(reasons, fmt.Sprintf("needs %s, this is %s", req.OS, w.OS))
 	}
+	if req.Architecture != "" && w.Architecture != req.Architecture {
+		reasons = append(reasons, fmt.Sprintf("needs %s, this is %s", req.Architecture, w.Architecture))
+	}
 	if req.MinCores > 0 && w.LogicalProcessors < req.MinCores {
 		reasons = append(reasons, fmt.Sprintf("needs %d CPU threads", req.MinCores))
 	}
@@ -199,6 +202,9 @@ func workerEligible(w *models.WorkerState, req manifest.Requirements) bool {
 		return false
 	}
 	if req.OS != "" && w.OS != req.OS {
+		return false
+	}
+	if req.Architecture != "" && w.Architecture != req.Architecture {
 		return false
 	}
 	if req.MinCores > 0 && w.LogicalProcessors < req.MinCores {
