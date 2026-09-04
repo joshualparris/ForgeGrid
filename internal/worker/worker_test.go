@@ -190,6 +190,34 @@ func TestValidateCapabilities(t *testing.T) {
 	}
 }
 
+// TestValidateCapabilitiesReportsFullDetectionWhenNoAllowlistIsConfigured
+// guards the behavior every real DadLAN worker actually relies on: none of
+// them are started with -capabilities, so w.capabilityAllow is empty, and
+// ValidateCapabilities must report exactly what DetectCapabilities finds -
+// unfiltered - rather than silently reporting nothing just because no
+// allowlist was configured. This was verified against two live workers
+// (one reporting zero tools, one reporting a partial set) and in both
+// cases the reported capabilities matched a direct machine-PATH probe run
+// under the same account the worker service runs as.
+func TestValidateCapabilitiesReportsFullDetectionWhenNoAllowlistIsConfigured(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.Setenv("XDG_DATA_HOME", tmpDir)
+	os.Setenv("LOCALAPPDATA", tmpDir)
+	os.Setenv("APPDATA", tmpDir)
+	os.Unsetenv("FORGEGRID_CAPABILITIES")
+	w := New("TestNode", "./tmp-ws", true)
+	// capabilityAllow is intentionally left unset, matching real deployments:
+	// no real DadLAN worker is started with -capabilities.
+	valid, drift := w.ValidateCapabilities()
+	if len(drift) != 0 {
+		t.Fatalf("expected no drift when no allowlist is configured, got %#v", drift)
+	}
+	detected := DetectCapabilities()
+	if !sameStringSet(valid, detected) {
+		t.Fatalf("expected ValidateCapabilities() to equal raw DetectCapabilities() when unfiltered, got valid=%#v detected=%#v", valid, detected)
+	}
+}
+
 func TestDetectCapabilitiesIncludesGitAndAIAgentWhenAvailable(t *testing.T) {
 	caps := DetectCapabilities()
 	if _, err := exec.LookPath("git"); err == nil && !hasWorkerString(caps, "git") {
