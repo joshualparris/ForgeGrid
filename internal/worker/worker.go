@@ -48,17 +48,44 @@ type Worker struct {
 	Insecure       bool
 	Fingerprint    string
 
-	mu              sync.Mutex
-	activeJobs      map[string]context.CancelFunc
-	stopOnce        sync.Once
-	stopCh          chan struct{}
-	loopsDone       sync.WaitGroup
-	allowedRepos    map[string]bool
-	allowPush       bool
-	allowBootstrap  bool
-	Labels          []string
-	Capabilities    []string
-	capabilityAllow []string
+	mu                sync.Mutex
+	activeJobs        map[string]context.CancelFunc
+	stopOnce          sync.Once
+	stopCh            chan struct{}
+	loopsDone         sync.WaitGroup
+	allowedRepos      map[string]bool
+	allowPush         bool
+	allowBootstrap    bool
+	Labels            []string
+	Capabilities      []string
+	capabilityAllow   []string
+	pendingUpdateIDs  map[string]bool
+}
+
+// tryBeginUpdate claims update id for this worker process, returning false
+// if a stageUpdate goroutine for that same update is already in flight.
+// Without this, a poll response that arrives while an earlier stageUpdate
+// call for the same id hasn't yet reported "running" back to the
+// coordinator could otherwise launch a second, concurrent staging attempt.
+func (w *Worker) tryBeginUpdate(id string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.pendingUpdateIDs == nil {
+		w.pendingUpdateIDs = make(map[string]bool)
+	}
+	if w.pendingUpdateIDs[id] {
+		return false
+	}
+	w.pendingUpdateIDs[id] = true
+	return true
+}
+
+// endUpdate releases the claim taken by tryBeginUpdate. It is safe to call
+// even if the update was never claimed (a plain failed no-op).
+func (w *Worker) endUpdate(id string) {
+	w.mu.Lock()
+	delete(w.pendingUpdateIDs, id)
+	w.mu.Unlock()
 }
 
 type WorkerCredentials struct {
@@ -1013,6 +1040,9 @@ func (w *Worker) pollUpdateRequest() {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil || body.Update == nil {
 		return
 	}
+	if !w.tryBeginUpdate(body.Update.ID) {
+		return
+	}
 	go w.stageUpdate(*body.Update)
 }
 
@@ -1035,6 +1065,12 @@ func (w *Worker) reportUpdate(updateID, status, message string, rollbackReady bo
 }
 
 func (w *Worker) stageUpdate(req fgupdate.Request) {
+	// os.Exit(0) below (on the success path) skips deferred calls, which is
+	// correct here: the process is being replaced, so there is nothing left
+	// to release the claim for. Every failure path returns normally instead
+	// of exiting, so this defer is what frees the id for a future retry.
+	defer w.endUpdate(req.ID)
+
 	w.mu.Lock()
 	if len(w.activeJobs) > 0 {
 		w.mu.Unlock()
@@ -1046,7 +1082,7 @@ func (w *Worker) stageUpdate(req fgupdate.Request) {
 	source := req.Artifact.Path
 	if source == "" && strings.HasPrefix(req.Artifact.URL, "file://") {
 		if u, err := url.Parse(req.Artifact.URL); err == nil {
-			source = u.Path
+			source = filePathFromFileURL(u.Path)
 		}
 	}
 	if source == "" {
@@ -1140,6 +1176,21 @@ func (w *Worker) stageUpdate(req fgupdate.Request) {
 	w.reportUpdate(req.ID, "running", "Update staged. Launching updater helper...", false)
 	log.Printf("[Update] Worker exiting for replacement")
 	os.Exit(0)
+}
+
+// filePathFromFileURL corrects a path taken from url.URL.Path for a
+// file:// URI. Go's net/url leaves a leading "/" in front of a Windows
+// drive letter (file:///C:/dev/x -> "/C:/dev/x"), which Windows' path APIs
+// reject outright ("The given path's format is not supported."). Strip
+// that leading slash only when it precedes a drive letter; a genuine
+// Unix path (e.g. "/home/user/x") is left untouched.
+func filePathFromFileURL(p string) string {
+	if len(p) >= 3 && p[0] == '/' && p[2] == ':' {
+		if c := p[1]; (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+			return p[1:]
+		}
+	}
+	return p
 }
 
 func copyFile(src, dst string, perm os.FileMode) error {

@@ -52,3 +52,4 @@ build_test
 dist/ForgeGrid-USB/C:/
 dist/ForgeGrid-USB/Linux/forgegrid
 dist/ForgeGrid-USB/Windows/ForgeGrid.exe
+dist/ForgeGrid-USB/Windows/ForgeGrid-x86.exe

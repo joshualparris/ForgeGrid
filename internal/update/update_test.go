@@ -35,6 +35,45 @@ func TestValidateManifestSelectsWorkerArtifact(t *testing.T) {
 	}
 }
 
+func TestSelectArtifactIsArchitectureSpecific(t *testing.T) {
+	m := &Manifest{
+		SchemaVersion: "1",
+		Product:       "ForgeGrid",
+		Version:       "0.9.0",
+		Artifacts: []Artifact{
+			{Role: "worker", Platform: "windows", Architecture: "amd64", SHA256: sum([]byte("amd64")), Path: "x"},
+			{Role: "worker", Platform: "windows", Architecture: "386", SHA256: sum([]byte("386")), Path: "y"},
+		},
+	}
+
+	amd64Artifact, ok := SelectArtifact(m, "worker", "windows", "amd64")
+	if !ok || amd64Artifact.SHA256 != sum([]byte("amd64")) {
+		t.Fatalf("expected amd64 artifact, got %+v ok=%v", amd64Artifact, ok)
+	}
+	x86Artifact, ok := SelectArtifact(m, "worker", "windows", "386")
+	if !ok || x86Artifact.SHA256 != sum([]byte("386")) {
+		t.Fatalf("expected 386 artifact, got %+v ok=%v", x86Artifact, ok)
+	}
+	if _, ok := SelectArtifact(m, "worker", "windows", "arm64"); ok {
+		t.Fatalf("expected no artifact for unsupported architecture arm64")
+	}
+}
+
+func TestValidateManifestRejectsDuplicateArtifacts(t *testing.T) {
+	m := &Manifest{
+		SchemaVersion: "1",
+		Product:       "ForgeGrid",
+		Version:       "0.9.0",
+		Artifacts: []Artifact{
+			{Role: "worker", Platform: "windows", Architecture: "amd64", SHA256: sum([]byte("a")), URL: "file:///a"},
+			{Role: "worker", Platform: "windows", Architecture: "amd64", SHA256: sum([]byte("b")), URL: "file:///b"},
+		},
+	}
+	if err := ValidateManifest(m, ""); err == nil {
+		t.Fatalf("expected duplicate artifact to be rejected")
+	}
+}
+
 func TestValidateManifestRejectsUnsafeArtifacts(t *testing.T) {
 	tests := []struct {
 		name     string

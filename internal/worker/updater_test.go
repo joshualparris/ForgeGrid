@@ -3,6 +3,7 @@ package worker
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -97,5 +98,42 @@ func TestRecoveryStates(t *testing.T) {
 	b, _ = os.ReadFile(primary)
 	if string(b) != "backup" {
 		t.Fatalf("Primary is not backup")
+	}
+}
+
+func TestRollbackReportsFailureInsteadOfImplyingRecovery(t *testing.T) {
+	tmp := t.TempDir()
+	os.Setenv("USERPROFILE", tmp)
+	os.Setenv("HOME", tmp)
+
+	updateDir := filepath.Join(getWorkerDataDir(), "updates")
+	os.MkdirAll(updateDir, 0755)
+
+	primary := filepath.Join(tmp, "primary.exe")
+	os.WriteFile(primary, []byte("candidate-that-failed-health-check"), 0755)
+
+	tx := &UpdateTransaction{
+		ID:               "tx-456",
+		CurrentState:     "VERIFYING_NEW_WORKER",
+		OldBinaryPath:    primary,
+		BackupBinaryPath: filepath.Join(tmp, "does-not-exist-backup.exe"),
+		LifecycleMode:    "portable",
+		RestartDeadline:  time.Now().Add(60 * time.Second),
+	}
+
+	tx.RollbackReason = "health check failed"
+	rollback(tx)
+
+	if tx.CurrentState != "ROLLBACK_FAILED" {
+		t.Fatalf("expected CurrentState to honestly report ROLLBACK_FAILED when the backup is missing, got %q", tx.CurrentState)
+	}
+	if !strings.Contains(tx.RollbackReason, "restore from backup failed") {
+		t.Fatalf("expected RollbackReason to explain the restore failure, got %q", tx.RollbackReason)
+	}
+	// The primary must be left untouched (still the failed candidate) rather
+	// than silently deleted, since we could not put a verified binary back.
+	b, err := os.ReadFile(primary)
+	if err != nil || string(b) != "candidate-that-failed-health-check" {
+		t.Fatalf("primary binary was modified despite a failed restore: content=%q err=%v", b, err)
 	}
 }

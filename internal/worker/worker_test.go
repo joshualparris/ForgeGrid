@@ -11,6 +11,43 @@ import (
 	"testing"
 )
 
+func TestFilePathFromFileURL(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"windows drive letter", "/C:/dev/6 Laptops/ForgeGrid/update-candidate.exe", "C:/dev/6 Laptops/ForgeGrid/update-candidate.exe"},
+		{"lowercase drive letter", "/d:/temp/x.exe", "d:/temp/x.exe"},
+		{"unix path untouched", "/home/user/forgegrid", "/home/user/forgegrid"},
+		{"too short untouched", "/C", "/C"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := filePathFromFileURL(tc.in); got != tc.want {
+				t.Fatalf("filePathFromFileURL(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTryBeginUpdateRejectsDuplicateInFlightID(t *testing.T) {
+	w := &Worker{}
+	if !w.tryBeginUpdate("update-1") {
+		t.Fatalf("expected first claim of update-1 to succeed")
+	}
+	if w.tryBeginUpdate("update-1") {
+		t.Fatalf("expected second concurrent claim of update-1 to be rejected")
+	}
+	if !w.tryBeginUpdate("update-2") {
+		t.Fatalf("expected a different update id to be claimable independently")
+	}
+	w.endUpdate("update-1")
+	if !w.tryBeginUpdate("update-1") {
+		t.Fatalf("expected update-1 to be claimable again after endUpdate")
+	}
+}
+
 func TestWorkerCredentials(t *testing.T) {
 	// Setup custom home dir to avoid polluting user space during tests
 	tmpDir := t.TempDir()

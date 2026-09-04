@@ -169,14 +169,54 @@ func RunUpdater() {
 	}
 }
 
-func swapBinaries(tx *UpdateTransaction) error {
-	// Backup was already created by stageUpdate, so we just atomically replace the primary
-	// If the old process is dead, this is an atomic replace on Windows/Linux.
-	if err := os.Rename(tx.NewBinaryPath, tx.OldBinaryPath); err != nil {
-		return fmt.Errorf("rename candidate to primary: %w", err)
+// safeReplace puts the file at newPath into place at destPath. A direct
+// os.Rename(newPath, destPath) can fail on Windows with
+// ERROR_SHARING_VIOLATION/ERROR_ACCESS_DENIED if anything (a lingering AV
+// scan, a not-yet-released handle from the process that just exited) still
+// holds destPath open, even briefly. Moving the existing file out of the
+// way first, then renaming the replacement in, avoids requiring a
+// rename-over-existing to succeed at all; if the final rename fails, the
+// original file is restored so destPath is never left missing.
+func safeReplace(newPath, destPath string) error {
+	replacedPath := destPath + ".replaced"
+	hadExisting := false
+	if _, err := os.Stat(destPath); err == nil {
+		hadExisting = true
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat %s: %w", destPath, err)
 	}
-	_ = os.Chmod(tx.OldBinaryPath, 0755)
+	if hadExisting {
+		if err := os.Remove(replacedPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("clear stale %s: %w", replacedPath, err)
+		}
+		if err := os.Rename(destPath, replacedPath); err != nil {
+			return fmt.Errorf("move existing %s aside: %w", destPath, err)
+		}
+	}
+	if err := os.Rename(newPath, destPath); err != nil {
+		if hadExisting {
+			if restoreErr := os.Rename(replacedPath, destPath); restoreErr != nil {
+				return fmt.Errorf("rename %s to %s failed (%v), and restoring the original failed too: %w", newPath, destPath, err, restoreErr)
+			}
+		}
+		return fmt.Errorf("rename %s to %s: %w", newPath, destPath, err)
+	}
+	if err := os.Chmod(destPath, 0755); err != nil {
+		return fmt.Errorf("chmod %s: %w", destPath, err)
+	}
+	if hadExisting {
+		if err := os.Remove(replacedPath); err != nil {
+			return fmt.Errorf("remove stale %s after successful replace: %w", replacedPath, err)
+		}
+	}
 	return nil
+}
+
+func swapBinaries(tx *UpdateTransaction) error {
+	// stageUpdate already made a verified backup copy of the primary before
+	// the old process exited, so it's safe to move the primary itself aside
+	// here rather than deleting/overwriting it in place.
+	return safeReplace(tx.NewBinaryPath, tx.OldBinaryPath)
 }
 
 func startCandidateWorker(tx *UpdateTransaction) error {
@@ -203,12 +243,25 @@ func rollback(tx *UpdateTransaction) {
 	tx.CurrentState = "ROLLING_BACK"
 	writeTx(tx)
 
-	os.Rename(tx.BackupBinaryPath, tx.OldBinaryPath)
-	_ = os.Chmod(tx.OldBinaryPath, 0755)
+	if err := safeReplace(tx.BackupBinaryPath, tx.OldBinaryPath); err != nil {
+		tx.CurrentState = "ROLLBACK_FAILED"
+		tx.RollbackReason = tx.RollbackReason + " | restore from backup failed: " + err.Error()
+		writeTx(tx)
+		log.Printf("[Update] Rollback FAILED to restore the previous binary: %v", err)
+		return
+	}
 
 	log.Printf("[Update] Restarting previous worker...")
-	GetLifecycle(tx.LifecycleMode).Start(tx)
+	if err := GetLifecycle(tx.LifecycleMode).Start(tx); err != nil {
+		tx.CurrentState = "ROLLBACK_FAILED"
+		tx.RollbackReason = tx.RollbackReason + " | restart of restored binary failed: " + err.Error()
+		writeTx(tx)
+		log.Printf("[Update] Rollback FAILED to restart the previous worker: %v", err)
+		return
+	}
 
+	tx.CurrentState = "ROLLED_BACK"
+	writeTx(tx)
 	log.Printf("[Update] Rollback initiated. Waiting for previous worker to verify...")
 }
 
