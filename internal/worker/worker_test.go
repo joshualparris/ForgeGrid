@@ -71,6 +71,49 @@ func TestWorkerCredentials(t *testing.T) {
 	}
 }
 
+func TestLoadCredsPersistsNameOverHostname(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.Setenv("XDG_DATA_HOME", tmpDir)
+	os.Setenv("LOCALAPPDATA", tmpDir)
+	os.Setenv("APPDATA", tmpDir)
+	ResetCredentials()
+
+	// Simulate credentials saved with a custom name
+	creds := WorkerCredentials{
+		WorkerID:       "worker-456",
+		NodeName:       "Custom-Name",
+	}
+	path := getWorkerCredsPath()
+	os.MkdirAll(filepath.Dir(path), 0700)
+	b, _ := json.MarshalIndent(creds, "", "  ")
+	os.WriteFile(path, b, 0600)
+
+	hostname, _ := os.Hostname()
+
+	// 1. Worker created with default OS hostname
+	w1 := New(hostname, "./tmp-ws", true)
+	w1.LoadCreds()
+	if w1.NodeName != "Custom-Name" {
+		t.Fatalf("Expected NodeName to be restored from creds to Custom-Name, got %s", w1.NodeName)
+	}
+
+	// 2. Worker created with "Unnamed-Node" (fallback test)
+	w2 := New("Unnamed-Node", "./tmp-ws", true)
+	w2.LoadCreds()
+	if w2.NodeName != "Custom-Name" {
+		t.Fatalf("Expected NodeName to be restored from creds, got %s", w2.NodeName)
+	}
+
+	// 3. Worker created with an explicit custom override (not the hostname and not Unnamed)
+	// Currently, LoadCreds overrides ONLY if NodeName matches defaults, so explicit explicit custom
+	// is NOT overridden by LoadCreds. Let's verify that behavior.
+	w3 := New("Different-Custom", "./tmp-ws", true)
+	w3.LoadCreds()
+	if w3.NodeName != "Different-Custom" {
+		t.Fatalf("Expected NodeName to remain Different-Custom if explicitly provided and not default, got %s", w3.NodeName)
+	}
+}
+
 func TestHardwareDetection(t *testing.T) {
 	w := New("TestNode", "./tmp-ws", true)
 	info, err := w.getHardwareInfo()

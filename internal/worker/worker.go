@@ -381,8 +381,11 @@ func (w *Worker) LoadCreds() error {
 	w.WorkerID = creds.WorkerID
 	w.Token = creds.Token
 	w.CoordinatorURL = creds.CoordinatorURL
-	if w.NodeName == "Unnamed-Node" || w.NodeName == "" {
-		w.NodeName = creds.NodeName
+	hostname, _ := os.Hostname()
+	if w.NodeName == "Unnamed-Node" || w.NodeName == "" || w.NodeName == hostname {
+		if creds.NodeName != "" {
+			w.NodeName = creds.NodeName
+		}
 	}
 	w.Insecure = creds.Insecure
 	w.Fingerprint = creds.Fingerprint

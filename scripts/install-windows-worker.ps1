@@ -36,7 +36,10 @@ param (
     [Parameter(Mandatory=$false)]
     [string]$AllowedRepos,
 
-    [switch]$AllowPush
+    [switch]$AllowPush,
+
+    [Parameter(Mandatory=$false)]
+    [string]$Name
 )
 
 $ErrorActionPreference = "Stop"
@@ -61,6 +64,7 @@ if ($Code) { $ArgsList += "-code", $Code }
 if ($Fingerprint) { $ArgsList += "-fingerprint", $Fingerprint }
 if ($AllowedRepos) { $ArgsList += "-allowed-repos", $AllowedRepos }
 if ($AllowPush) { $ArgsList += "-allow-push" }
+if ($Name) { $ArgsList += "-name", $Name }
 
 # 3. Stop and Uninstall existing service if present
 Write-Host "Ensuring clean slate..."

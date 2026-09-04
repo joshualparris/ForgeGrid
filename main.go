@@ -49,7 +49,11 @@ func main() {
 
 	mode := flag.String("mode", "", "coordinator or worker")
 	port := flag.String("port", "8080", "coordinator port")
-	nodeName := flag.String("name", "Unnamed-Node", "name of this node")
+	defaultName := "Unnamed-Node"
+	if h, err := os.Hostname(); err == nil && h != "" {
+		defaultName = h
+	}
+	nodeName := flag.String("name", defaultName, "name of this node")
 	coordIP := flag.String("coordinator", "", "IP of the coordinator (worker mode)")
 	code := flag.String("code", "", "pairing code (worker mode)")
 	insecure := flag.Bool("insecure", false, "Disable TLS (DEVELOPMENT ONLY)")
