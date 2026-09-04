@@ -1,121 +1,179 @@
 # ForgeGrid / DadLAN Fleet — Status and Remaining Work
 
-_Last updated: 2026-09-04, branch `forgegrid-consolidation`, HEAD `69a74f6616f0772e21d1c65b2781d3f6f653be2d`._
+_Last updated: 2026-09-04, branch `forgegrid-consolidation`, HEAD `a93fc3600d3c` (code) /
+verify against `git log -1` for the true current HEAD — this file is updated at each
+milestone, not on every commit._
 
 This document is the current, verified state of the DadLAN ForgeGrid rollout and
-everything still left to do. Everything under "Current State" below was checked
-against the live coordinator API or a real worker job — nothing here is
-aspirational. Everything under "Remaining Work" is not done yet.
+everything still left to do. Everything under "Current State" was checked against the
+live coordinator API, a real worker job, or a real cross-compile/test run — nothing
+here is aspirational. Everything under "Remaining Work" is not done yet.
 
 ## Current State
 
-**Coordinator:** running on AVANCE-WS7 (Fedora), `forgegrid -mode coordinator -port 8080`.
+**Coordinator:** running on AVANCE-WS7 (Fedora), `forgegrid -mode coordinator -port 8080`,
+rebuilt and restarted from the current HEAD (all 11 workers reconnected automatically,
+no reinstall needed — worker credentials persist across coordinator restarts).
 
-**Fleet:** 11/11 expected workers online (JParrisDesktop + Laptop01–10). Verified live via
-`/api/workers` and, for every worker, a real dispatched-and-`COMPLETED` challenge job
-through the coordinator (not Action1 output, not assumed):
+**Fleet:** 11/11 expected workers online (JParrisDesktop + Laptop01–10), each verified with
+a real, `COMPLETED`, coordinator-issued challenge job (not Action1 output, not assumed).
 
-| Worker | Arch | Commit running | Notes |
-|---|---|---|---|
-| JParrisDesktop | amd64 | `8ebf341621c8` | i5-9400, GTX 1660, git+node detected |
-| Laptop01 | amd64 | `8ebf341621c8` | Ryzen 5 5600U, git/python/go/node detected |
-| Laptop02 | amd64 | `a2a475978f28` | oldest build in the fleet — canary #2 target |
-| Laptop03 | amd64 | `0640a220d246` | canary #1 target |
-| Laptop04 | amd64 | `6255bca43cf3` | |
-| Laptop05 | amd64 | `6255bca43cf3` | |
-| Laptop06 | amd64 | `6255bca43cf3` | |
-| Laptop07 | amd64 | `6255bca43cf3` | SMB to this host needs IP-based mount; mDNS resolution is unreliable (see Risks) |
-| Laptop08 | amd64 | `6255bca43cf3` | |
-| Laptop09 | amd64 | `6255bca43cf3` | very old hardware (Celeron T3500, 4GB RAM); works, but slow — do not aggressively re-touch it |
-| Laptop10 | **386** | `6255bca43cf3` | 32-bit; proves architecture-specific artifact selection is required and working |
+**Two commits still awaiting independent (Codex) review, both tagged `[PENDING CODEX REVIEW]`,
+untouched since they were written — `8ebf341` and `69a74f6`.** No self-update has been
+applied to any real worker. Laptop02 and Laptop03 remain untouched pending that review;
+this boundary has been respected throughout everything below.
 
-Aggregate fleet hardware (from real worker heartbeat data, not estimated):
+### Hardware + capability census (real data, pulled live from `/api/workers`)
+
+| Worker | Cores/Threads | RAM (total/avail) | Arch | Capabilities (verified) | Tier |
+|---|---|---|---|---|---|
+| Laptop01 | 6c/12t | 16.4GB / ~4-12GB | amd64 | git, python, go, node | **HEAVY** |
+| JParrisDesktop | 6c/6t | 17.1GB / ~12GB | amd64 | git, node | **HEAVY** |
+| Laptop02 | 2c/4t | 8.5GB | amd64 | git, python, go, node | MEDIUM (capability-rich) |
+| Laptop04 | 2c/4t | 8.5GB | amd64 | none detected | MEDIUM |
+| Laptop07 | 4c/4t | 8.5GB | amd64 | none detected | MEDIUM |
+| Laptop03 | 4c/4t | 8.0GB | amd64 | none detected | MEDIUM |
+| Laptop05 | 2c/4t | 8.4GB | amd64 | none detected | MEDIUM |
+| Laptop06 | 2c/2t | 8.4GB | amd64 | none detected | LIGHT |
+| Laptop08 | 2c/2t | 8.0GB | amd64 | none detected | LIGHT |
+| Laptop09 | 2c/2t | 4.2GB | amd64 | none detected | LEGACY/LOW-SPEC |
+| Laptop10 | 2c/2t | 3.2GB | **386** | none detected | LEGACY/LOW-SPEC |
+
+Tiering is derived from `logical_threads*10 + total_ram_gb` (the same shape of score the
+director's scheduler already uses), not from machine names.
+
+**Capability detection was investigated, not assumed, and found honest.** Probed Laptop03
+(zero capabilities) and JParrisDesktop (partial: git+node, not python/go) directly via
+Action1 running as the same `LocalSystem` account the ForgeGrid worker service runs as: in
+both cases the machine-wide `PATH` genuinely contained (or didn't contain) exactly what
+ForgeGrid reported. **This is not a ForgeGrid detection bug.** Most DadLAN laptops simply
+don't have dev tools installed system-wide; Windows services never see per-user `PATH`
+regardless. `DetectCapabilities()`/`ValidateCapabilities()` re-run every heartbeat (~5s), so
+nothing here is stale either. One regression test added locking in the (already-correct)
+"no allowlist configured → report everything detected" behavior every real worker relies on.
+
+**Only 2 of 11 workers can currently run Python at all** (Laptop01, Laptop02) — relevant to
+the PartyAI proposal below.
+
+### Aggregate fleet hardware
+
 **34 physical cores / 46 logical threads / ~99 GB RAM** across the 11 workers, plus
 AVANCE-WS7 itself (i5-10500T, 6c/12t, 24GB, coordinator only, not a worker) for
-**~40 cores / ~58 threads / ~123 GB** total. Storage capacity and GPU inventory across
-the fleet have **not** been independently verified by this document's author and
-should not be treated as authoritative until a real hardware census is run through
-ForgeGrid itself.
+**~40 cores / ~58 threads / ~123 GB** total. Storage capacity and GPU inventory across the
+fleet have **not** been independently verified through ForgeGrid itself and should not be
+treated as authoritative.
 
-**Two commits awaiting independent (Codex) review, both tagged `[PENDING CODEX REVIEW]`:**
+### Resource-aware scheduling — already existed, now architecture-aware
 
-- `8ebf341` — Windows-safe binary replacement (`safeReplace`, no more rename-over-existing),
-  honest rollback (checks every filesystem/start error, reports `ROLLBACK_FAILED` instead of
-  implying recovery), a duplicate-update guard (`tryBeginUpdate`/`endUpdate` keyed by update
-  ID), a fix for a real bug in `file://` artifact-URL handling on Windows (confirmed broken,
-  then fixed, then reverified against a live worker), and `GOOS=windows GOARCH=386` added to
-  `build.sh` for Laptop10-class hardware.
-- `69a74f6` — the regenerated `dist/ForgeGrid-USB` release bundle built from that exact
-  `8ebf341` revision (built *after* committing the code, so the manifest's embedded commit
-  is truthful, not stale). Windows amd64, Windows 386, and Linux amd64 artifacts; every
-  hash independently re-verified with `sha256sum` against `update-manifest.json` and
-  `CHECKSUMS.txt`.
+`internal/director` was already a real, working scheduler (`SelectWorker`/`workerEligible`)
+supporting min CPU threads, min available RAM, OS, labels, and capabilities, all against
+live heartbeat data, failing closed (no job created) when nothing qualifies. It was missing
+architecture. Added `Requirements.Architecture` and wired it through eligibility exactly
+like OS. **Proven live on the real fleet, not just in tests:**
 
-The live coordinator already detects this manifest (`/api/updates/status` no longer reports
-"no update manifest found"), and dashboard eligibility was checked for Laptop03 (selects the
-amd64 artifact) and Laptop10 (selects the 386 artifact) **without changing either machine**.
+| Proof | Requirement | Job ID | Selected worker | Correctly excluded |
+|---|---|---|---|---|
+| Architecture | `architecture: amd64` | `job-c60e4a05e766522670c10ec931668445` | Laptop01 | Laptop10 (386) |
+| RAM | `min_ram_gb: 8` | `job-6b884b96752234bede2f552115fe9e68` | JParrisDesktop (17GB) | Laptop09 (4GB), Laptop10 (3GB) |
+| Capability | `capabilities: [go]` | `job-092d42c41c1f7a4d11a61126d130ea19` | Laptop01 | the 9 workers without `go` |
+| Unsupported | `architecture: arm64` | *(none created)* | — | HTTP 503, `no eligible online worker found`, per-worker reasons listed |
+| No requirements | *(none)* | `job-e05d796a6dc2cbc9220fc0abe4906834` | Laptop01 (highest score) | — |
 
-**No self-update has been applied to any real worker yet.** Laptop02 and Laptop03 are
-untouched pending the review below.
+The architecture/RAM/capability proof jobs all legitimately `FAILED` at execution (no
+`go.mod` in an empty workspace — `GoBuild` with no repository configured), which is expected
+and still valid evidence: the failure logs show `go` genuinely ran (`go: go.mod file not
+found...`), proving both correct worker selection **and** that the reported capability was
+real, not just correct scheduling in isolation.
+
+**Known current limitation, not fixed (out of scope for this round):** the scheduler always
+picks the *highest*-scoring eligible worker. There is no way yet to request "prefer a light
+machine for light work" — only minimum thresholds. The unconstrained proof job above landed
+on Laptop01 (a heavy machine) for exactly this reason. Worth knowing before the PartyAI
+low-spec-compatibility lane is built.
+
+Added `GitVersion`/`PythonVersion`/`GoVersion`/`NodeVersion` execution profiles (trivial,
+read-only, no arguments) so a reported capability can be proven with a real job in the
+future — **not yet exercised on the live fleet**, because doing so would require pushing a
+new binary to a worker, which crosses the "no re-onboarding / no bulk-update" boundary this
+session was told to hold. They'll prove themselves the next time a worker legitimately gets
+a binary update (e.g., after the Laptop03/Laptop02 canaries).
+
+### `NeedsUpdate()` truthfulness — fixed and proven live
+
+Previously compared only the semantic version string; since several commits in a row have
+all shipped as "0.8.0", the dashboard called stale-commit workers "current". Now compares
+version **and** commit, failing conservatively (→ needs update) when either commit is
+unknown. **Proven live:** after rebuilding and restarting the coordinator, `/api/updates/status`
+now correctly reports Laptop02, Laptop03, and Laptop10 as `available` with the honest reason
+*"is on 0.8.0 at an older commit"* — previously all three were wrongly labelled `current`.
+This does not change queuing behavior (`handleQueueWorkerUpdates` already matched on artifact
+compatibility, not `NeedsUpdate`), so it never blocked the canaries — only the dashboard label
+was wrong, and that's now fixed.
 
 ## Remaining Work, In Order
 
-1. **Codex review of `8ebf341`/`69a74f6`.** A structured review prompt has been prepared
-   covering: Windows-safe replacement, rollback honesty, duplicate-update prevention,
-   `file://` path handling, amd64/386 selection and fail-closed behavior for unsupported
-   architectures, and manifest/hash truthfulness. Verdict must be one of `APPROVED FOR
-   LAPTOP03 CANARY`, `CHANGES REQUIRED`, or `BLOCKED`. **Nothing below happens until this
-   comes back approved.**
+1. **Codex review of `8ebf341`/`69a74f6`.** Unchanged from before — still the gate. Verdict
+   must be one of `APPROVED FOR LAPTOP03 CANARY`, `CHANGES REQUIRED`, or `BLOCKED`.
+   **Nothing about Laptop03/Laptop02 happens until this comes back approved.**
 
-2. **Laptop03 canary self-update**, `0640a220d246` → the approved build, through
-   ForgeGrid's own update mechanism (never a manual binary swap unless the updater proves
-   defective and the machine needs recovery). Must capture: pre-update identity/build,
-   update ID, selected artifact + SHA, staged → applying → restarting → verifying →
-   completed transitions, service/worker reconnect, fresh heartbeat, new build SHA, and a
-   real post-update challenge job that reaches `COMPLETED`. If it fails, stop — do not move
-   to Laptop02 — and if rollback fires, prove the old binary actually came back with its own
-   fresh heartbeat.
+2. **Laptop03 canary self-update**, `0640a220d246` → the approved build, through ForgeGrid's
+   own update mechanism only. Full lifecycle evidence required (see prior version of this
+   doc / the original task brief for the exact checklist — unchanged).
 
-3. **Laptop02 canary self-update**, `a2a475978f28` → the approved build, same evidence
-   standard, only after Laptop03 succeeds cleanly.
+3. **Laptop02 canary self-update**, `a2a475978f28` → the approved build, only after Laptop03
+   succeeds cleanly.
 
-4. **Known gap, not yet fixed:** `update.NeedsUpdate()` compares the manifest's semantic
-   `version` string ("0.8.0") only, not the commit. Since every recent build has kept
-   `FORGEGRID_VERSION=0.8.0`, the dashboard currently labels workers "current" even when
-   their commit is stale. This does **not** block explicit queuing (`handleQueueWorkerUpdates`
-   matches on artifact compatibility, not `NeedsUpdate`), so it isn't a blocker for the
-   canaries above, but it makes the dashboard's status column misleading and should be
-   fixed as a small follow-up (compare commit too, or bump version per real release).
+4. **PartyAI first fleet run** (concrete proposal, not yet executed — see below).
 
-5. **Worker capability audit.** Most newly onboarded workers currently show
-   `No usable tools detected yet` on the dashboard even though several (Laptop01,
-   JParrisDesktop) already have git/python/go/node natively. Determine whether this is
-   stale capability detection, a PATH issue, a one-time refresh that hasn't run, or tools
-   genuinely absent — before provisioning anything. Do not install toolchains
-   indiscriminately; build a useful pool sized to what each machine can actually carry
-   (low-end hardware like Laptop09/10 should stay light-duty).
+5. **Scheduler follow-up (small, only if PartyAI actually needs it):** a way to express "this
+   task is fine on a light machine" so unconstrained/small jobs don't default to the
+   heaviest available worker. Only build this if the PartyAI run in step 4 actually shows it
+   matters — don't build it speculatively.
 
-6. **Only after 1–5 are done:** the smallest ForgeGrid extensions actually needed for a
-   real multi-worker development workload — resource-aware job requests (CPU/RAM hints
-   against what each worker already reports), per-task git worktree isolation so parallel
-   workers never collide on the same files, a single integration lane so results merge
-   through review rather than chaos, and a dependency-aware task queue. No speculative
-   architecture beyond what the first real workload needs.
+## PartyAI — Concrete First Fleet Run Proposal
 
-7. **First real workload: PartyAI**, via AgentCouncil + ForgeGrid, deliberately spread
-   across most of the 11 workers (heavier machines building/compiling, lighter machines
-   running simulations/regression tests in parallel) as the actual proof that this fleet
-   is a working distributed development cluster and not just eleven laptops on a shelf.
+Inspected `/home/josh/dev/PartyAI-ForgeGrid` directly (not from memory/assumption). Current
+real contents: a single-file Python prototype (`src/party_ai/game.py`, a small seeded
+turn-based simulation), one test file (`tests/test_game.py`, 2 unit tests), a README that
+*proposes* an 11-lane worker split (combat/AI/map-gen/inventory/etc.) but **no code is
+actually split into those lanes yet** — that's a plan in prose, not existing structure. No
+`pyproject.toml`/`setup.py` exists yet, and the README's documented `python -m unittest`
+command **does not currently work as written** (0 tests discovered — needs `src` on
+`PYTHONPATH` and `-s tests`, or a proper package install). This project appears to be under
+active, very recent construction (all files dated today).
+
+Given that reality, and that **only Laptop01 and Laptop02 have Python today**, the honest
+first fleet run is much smaller than "11 workers, 11 game systems." Proposed concretely:
+
+- **Lane 1 — Unit tests:** `python -m unittest` (fixed to actually discover tests) on
+  Laptop01 or Laptop02, whichever is idle. Proves the existing 2 tests pass through a real
+  ForgeGrid job.
+- **Lane 2 — Deterministic simulation batch:** dispatch many `GameState(seed=N)` playthroughs
+  across different seeds, split between Laptop01 and Laptop02 (the only Python-capable
+  workers) — the natural "many independent parallel runs" workload this tiny prototype
+  already supports today, via `simulate_turn()`'s existing determinism guarantee.
+  This is genuinely the *only* PartyAI-specific work more than 1 worker can do right now.
+- **Lane 3 — Fleet liveness/integration:** the other 9 workers can't run PartyAI's Python
+  code yet. Their honest first-run contribution is what they can already do: a real
+  ForgeGrid challenge job (or, once redeployed, the new `GitVersion`-style profiles) as
+  a liveness/capability check, not game work.
+
+**The real blocker to the bigger 11-worker vision isn't ForgeGrid — it's that 9 of 11
+workers have no Python.** Before building anything bigger, this needs an explicit decision
+(not an autonomous one): provision Python on some subset of the fleet (which ones, and is
+it worth it on Laptop09/10-class hardware), or grow PartyAI's task set to include
+tool-agnostic work (text/data analysis, hashing, file-based checks) that doesn't need
+Python, so the low-spec/no-toolchain machines have real, honest work too.
 
 ## Explicitly Not Doing (Yet)
 
 - No bulk "Update All" — canaries prove the path one machine at a time.
 - No distributed-development architecture built ahead of a real workload needing it.
-- No further work on Laptop09 beyond keeping it online — it works, it's just old and slow.
-- No new permanent artifact-serving route on the coordinator, authenticated or not, unless
-  a real need is proven and it's reviewed (see Security below).
-- No touching Laptop09 beyond what's already done, and no chasing a full hardware/GPU/storage
-  census, unless it's actually needed for a workload decision.
+- No further work on Laptop09 beyond keeping it online.
+- No new permanent artifact-serving route on the coordinator, authenticated or not.
+- No provisioning Python/Go/Node on any additional machine without an explicit decision —
+  see the PartyAI blocker above.
+- No PartyAI feature development — inspection and proposal only, per this round's scope.
 
 ## Security Notes Worth Preserving
 
@@ -126,23 +184,18 @@ untouched pending the review below.
   can't reach any other way, the pattern used successfully in this rollout is a short-lived,
   narrowly-scoped local HTTP server serving only the specific file(s) needed, torn down
   immediately after the transfer completes — never a standing, directory-wide route.
-- Action1 credentials are never persisted to disk by design (see
-  `action1/fedora/action1_client.py` — "DadLAN does not persist the Client Secret"). Don't
-  try to "fix" that; ask for them fresh each session.
+- Action1 credentials are never persisted to disk by design. Don't try to "fix" that; ask
+  for them fresh each session.
 
 ## Risks / Things to Watch
 
 - **mDNS-based SMB hostname resolution on AVANCE-WS7 is unreliable.** `/etc/fstab` entries
-  for the DadLAN mounts use static IPs (not hostnames), and at least one entry (Laptop07)
-  was found pointing at a stale IP. If a laptop's DHCP lease changes, its SMB mount can
-  silently start failing with `cifs_mount failed w/return code = -113` even though the
-  machine is genuinely reachable — check the real IP via Action1 before assuming SMB itself
-  is broken.
+  for the DadLAN mounts use static IPs, and stale-IP failures have been seen (Laptop03,
+  Laptop07). Check the real IP via Action1 before assuming SMB itself is broken.
 - **Avance has two WiFi networks that are not mutually routable:** "Avance Business
-  Technology" (where the coordinator lives) and "Avance Guest" (isolated from it). A laptop
-  on Guest WiFi cannot reach the coordinator at all, which looks like a ForgeGrid pairing
-  bug but isn't — check which network a misbehaving machine is on before debugging code.
-- Laptop01 previously carried a stale worker registration from an old, pre-fix binary that
-  had paired but wasn't reporting properly; it's been cleanly reinstalled, but if other
-  machines show similar stale entries, check for old scheduled tasks or leftover installs
-  before assuming the coordinator is wrong.
+  Technology" (coordinator) and "Avance Guest" (isolated). A laptop on Guest WiFi cannot
+  reach the coordinator at all — check which network a misbehaving machine is on before
+  debugging code.
+- Coordinator restarts are safe and don't require touching any worker — credentials persist
+  in the store and workers reconnect within a few heartbeat cycles automatically. Confirmed
+  live this round (all 11 reconnected within ~10s of a coordinator restart).
