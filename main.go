@@ -184,11 +184,17 @@ func main() {
 		w.SetGitPolicy(*allowedRepos, *allowPush)
 		w.SetLabelsAndCapabilities(*labels, *capabilities)
 
-		err := w.LoadCreds()
-		if err == nil {
-			fmt.Println("Loaded saved worker credentials.")
-			fmt.Printf("Reconnecting to %s as %s...\n", w.CoordinatorURL, w.WorkerID)
-		} else {
+		// LoadCreds only reads local disk, so it's safe to run before the
+		// service reports its status. Pair() is a network call and must not
+		// block here: on Windows, nothing signals the Service Control
+		// Manager that the service is running until worker.RunService below
+		// is reached, so a slow/unreachable coordinator during Pair() can
+		// trip the SCM's start timeout (error 1053) even though the process
+		// is healthy. Pairing is deferred into runFunc, which Windows'
+		// service Execute() already runs in a goroutine after reporting
+		// svc.Running.
+		hasCreds := w.LoadCreds() == nil
+		if !hasCreds {
 			if *coordIP == "" || *code == "" {
 				fmt.Println("Worker mode requires -coordinator and -code flags.")
 				os.Exit(1)
@@ -197,13 +203,16 @@ func main() {
 				fmt.Println("Secure worker mode requires -fingerprint of the coordinator.")
 				os.Exit(1)
 			}
-			if err := w.Pair(*coordIP, *code, *fingerprint); err != nil {
-				fmt.Printf("Failed to pair: %v\n", err)
-				os.Exit(1)
-			}
 		}
 
 		runFunc := func() {
+			if hasCreds {
+				fmt.Println("Loaded saved worker credentials.")
+				fmt.Printf("Reconnecting to %s as %s...\n", w.CoordinatorURL, w.WorkerID)
+			} else if err := w.Pair(*coordIP, *code, *fingerprint); err != nil {
+				fmt.Printf("Failed to pair: %v\n", err)
+				os.Exit(1)
+			}
 			w.Start()
 			// Block forever
 			select {}
