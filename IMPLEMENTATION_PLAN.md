@@ -1,32 +1,130 @@
-# Implementation Plan
+# ForgeGrid Implementation Status and Roadmap
 
-## Phase 1: Core Setup & UI Foundation
-- **Go Project Init**: Create the basic module structure (`cmd`, `internal/node`, `internal/ui`).
-- **First-Run Wizard UI**: Create the Preact/Vanilla TS setup Wizard (Choose mode, name device, workspace location).
-- **Embedded Assets**: Hook up `go:embed` for the dashboard and wizard.
+The original phase plan pre-dated much of the current implementation and mixed shipped features with aspirations. This document now records what exists on the current source branch and what remains.
 
-## Phase 2: Networking & Security
-- **TLS Generation**: Write utilities to generate self-signed certs.
-- **Node Discovery**: Implement UDP broadcast/multicast for local network discovery.
-- **Pairing Protocol**: 6-digit code generation, exchange, and token issuance.
-- **Heartbeat & Status**: Workers send regular 5-second heartbeats containing CPU/RAM/OS status.
+## Implemented foundation
 
-## Phase 3: Project Sync
-- **Mirror Mode**: Implement file hashing (size, mtime, SHA-256) and efficient transfer protocol (chunks).
-- **Git Mode**: Add integration with local git client to clone/fetch.
-- **Manifest Parsing**: Parse and validate `forgegrid.yaml` structure.
+### Core binary and UI
 
-## Phase 4: Job Execution & Scheduling
-- **Scheduler**: Implement multi-criteria job assignment (RAM, CPU, required OS/labels).
-- **Process Execution**: Command runner for Windows and Linux. Headless Godot detection.
-- **Isolation**: Worktree/Branch setup for AI agents.
-- **Artefacts & Logs**: Stream stdout/stderr in real-time. Gather artefacts post-execution.
+- Go project and single binary.
+- Coordinator mode.
+- Worker mode.
+- Embedded static dashboard.
+- Automatic browser opening for coordinator UI.
+- Windows and Linux build/release material.
 
-## Phase 5: Dashboard & UX
-- **Dashboard View**: Real-time cluster status, job history, and node control (Disable, Drain, Retry).
-- **Australian English**: Validate wording.
-- **Browser Automation**: Open browser automatically on launch.
+Not implemented from the original plan: Hybrid mode and the Preact/TypeScript first-run wizard.
 
-## Phase 6: QA & Packaging
-- **Integration Tests**: Simulated workers, parallel jobs, disconnect/reconnect logic.
-- **Build Scripts**: Produce x86-64 builds for Windows (`.exe`) and Linux (`forgegrid`), setup the USB structure (`dist/ForgeGrid-USB`).
+### Networking, pairing and worker state
+
+- Self-signed TLS generation.
+- Worker TLS fingerprint pinning.
+- Six-digit expiring pairing codes.
+- Per-worker identity/token issuance.
+- Persistent worker credentials/reconnect.
+- Five-second worker heartbeats.
+- Offline detection after missed heartbeats.
+- Hardware reporting through `gopsutil`.
+
+Not implemented from the original plan: UDP/multicast coordinator auto-discovery.
+
+### Jobs and manifests
+
+- Persistent jobs in coordinator store.
+- Challenge test jobs with coordinator-side SHA-256 verification.
+- Strict `forgegrid.yaml`-style manifest parsing.
+- One job per manifest task.
+- OS-based worker eligibility.
+- `go`, `node`, `python` and test execution profiles.
+- Command timeout handling.
+- stdout/stderr capture and bounded returned logs.
+- worker job polling and attempt IDs.
+
+Partially implemented:
+
+- cancellation state exists, but running-job cancellation is not yet proven end to end;
+- manifest `min_ram_gb` and `min_cores` are parsed but not enforced;
+- artefact patterns are parsed but not collected/uploaded.
+
+### AgentBridge
+
+Implemented as a separate subsystem in the ForgeGrid binary:
+
+- HTTPS relay server;
+- TLS rotation;
+- agent registration with one-time token display;
+- secure client configuration helpers;
+- send/inbox/ack/complete/fail message lifecycle;
+- Windows bootstrap/security helper work under `.agents/scripts`;
+- polling workflow helpers.
+
+AgentBridge is a message relay, not a remote shell. External coding agents decide what to do with received instructions.
+
+## Remaining roadmap
+
+### Priority 1 — make existing claims fully true
+
+- Enforce `min_ram_gb` and `min_cores` in the Director.
+- Make running-job cancellation reach and terminate the worker process reliably.
+- Add an explicit retry path with attempt history.
+- Preserve trustworthy coordinator-side evidence in physical Windows/LAN verification.
+- Ensure verification scripts fail closed on command errors.
+- Add operator authentication/authorisation for coordinator/dashboard control actions.
+
+### Priority 2 — project/input delivery
+
+Choose and implement the intended model rather than documenting both as already available:
+
+- Mirror-mode differential file transfer; and/or
+- Git clone/fetch/worktree-based project synchronisation.
+
+Until one exists, ForgeGrid assumes the required project/workspace content is already present on the worker.
+
+### Priority 3 — outputs and observability
+
+- Artefact collection/upload from manifest patterns.
+- Near-real-time log delivery if needed (WebSocket/SSE or another explicit mechanism).
+- Clear job-attempt history in the dashboard.
+- Better worker-selection diagnostics when no eligible worker exists.
+
+### Priority 4 — execution hardening
+
+- Dedicated low-privilege worker identity guidance/installer.
+- Stronger process/filesystem isolation if untrusted code is a supported workload.
+- Secret-safe job logging/redaction.
+- Per-job environment policy and validation.
+- Decide whether allowed profiles remain fixed or become signed/admin-configured.
+
+### Priority 5 — richer scheduling and integrations
+
+- RAM/core-aware scheduling.
+- Optional user-defined labels/capabilities.
+- Godot profile/integration only after generic execution/output handling is robust.
+- Multi-stage/dependency-aware manifests if required.
+- Better multi-worker balancing instead of first-eligible selection.
+
+### Priority 6 — AgentBridge orchestration
+
+- Complete reproducible Windows bootstrap flow.
+- Validate unattended polling/scheduling without turning the relay into arbitrary remote execution.
+- Add durable supervisor/reviewer hand-off patterns where an execution agent can be independently checked.
+- Keep AgentBridge authentication/TLS lifecycle separate from main coordinator worker credentials.
+
+## Explicitly not current features
+
+Do not document these as shipped until the code and tests support them:
+
+- Hybrid coordinator+worker mode;
+- automatic coordinator discovery;
+- Mirror or Git project sync;
+- Preact first-run wizard;
+- WebSocket log streaming;
+- artefact upload/collection;
+- RAM/core scheduling;
+- Godot-specific execution;
+- full OS sandboxing;
+- complete operator authentication.
+
+## Documentation rule
+
+When a roadmap item lands, update `README.md`, `ARCHITECTURE.md`, `SECURITY.md`, `ACCEPTANCE_TESTS.md` and `RELEASE_NOTES.md` in the same change where practical. Physical/test status should only be promoted when evidence for that exact claim exists.
