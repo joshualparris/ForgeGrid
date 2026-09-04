@@ -105,6 +105,11 @@ func serveCmd(args []string) {
 
 	mux := http.NewServeMux()
 	server.RegisterRoutes(mux)
+	if uiHandler, err := WebUIHandler(); err != nil {
+		log.Printf("Warning: local AgentBridge GUI unavailable: %v", err)
+	} else {
+		mux.Handle("/", uiHandler)
+	}
 	srv.Handler = mux
 
 	log.Printf("Starting AgentBridge relay on %s", srv.Addr)

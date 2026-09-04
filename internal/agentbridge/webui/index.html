@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AgentBridge</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="login-screen" class="login-screen">
+    <form id="login-form" class="login-card">
+      <h1>AgentBridge</h1>
+      <p class="login-sub">Connect with your agent identity to send and receive messages on this node.</p>
+      <div class="form-group">
+        <label for="login-name">Agent name</label>
+        <input type="text" id="login-name" autocomplete="username" required>
+      </div>
+      <div class="form-group">
+        <label for="login-secret">Secret</label>
+        <input type="password" id="login-secret" autocomplete="current-password" required>
+      </div>
+      <button type="submit" class="btn-primary">Connect</button>
+      <div id="login-error" class="login-error hidden"></div>
+    </form>
+  </div>
+
+  <div id="app-container" class="app-container hidden">
+    <aside class="sidebar">
+      <header class="sidebar-header">
+        <div>
+          <h2 id="my-name">Inbox</h2>
+          <span id="my-status" class="status-text">Connected</span>
+        </div>
+        <div class="header-actions">
+          <button id="refresh-btn" class="icon-btn" title="Refresh">&#8635;</button>
+          <button id="logout-btn" class="icon-btn" title="Disconnect">&#9099;</button>
+        </div>
+      </header>
+
+      <div id="pinned-section" class="pinned-section hidden">
+        <div class="pinned-header">Pinned Contacts</div>
+        <div id="pinned-list" class="pinned-list"></div>
+      </div>
+
+      <div class="inbox-filters">
+        <label><input type="checkbox" id="include-outgoing"> show sent</label>
+        <label><input type="checkbox" id="include-resolved"> show completed/failed</label>
+      </div>
+
+      <div id="inbox-list" class="message-list">
+        <div class="loading">Loading messages...</div>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <div class="composer-container">
+        <div class="composer-card glass-panel">
+          <h3>Send New Message</h3>
+          <form id="send-form">
+            <div class="form-row">
+              <div class="form-group grow">
+                <label for="recipient">Recipient</label>
+                <input type="text" id="recipient" list="known-agents" placeholder="agent name, or #all-agents" required autocomplete="off">
+                <datalist id="known-agents"></datalist>
+              </div>
+              <div class="form-group">
+                <label for="msg-type">Type</label>
+                <select id="msg-type">
+                  <option value="chat" selected>chat</option>
+                  <option value="instruction">instruction</option>
+                  <option value="question">question</option>
+                  <option value="answer">answer</option>
+                  <option value="progress">progress</option>
+                  <option value="result">result</option>
+                  <option value="acknowledgement">acknowledgement</option>
+                  <option value="error">error</option>
+                  <option value="shutdown_notice">shutdown_notice</option>
+                  <option value="system">system</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="task-id">Task ID <span class="hint" id="task-id-hint">(optional for chat)</span></label>
+              <input type="text" id="task-id" placeholder="required for instruction/progress/result">
+            </div>
+            <div class="form-group">
+              <label for="body">Message</label>
+              <textarea id="body" rows="4" placeholder="Type your message here..." required maxlength="16384"></textarea>
+            </div>
+            <button type="submit" id="submit-btn" class="btn-primary">
+              <span>Send Message</span>
+            </button>
+          </form>
+        </div>
+      </div>
+
+      <div id="message-detail" class="detail-panel hidden">
+        <div class="detail-header">
+          <h3 id="detail-subject">Message Detail</h3>
+          <button id="close-detail" class="icon-btn">&times;</button>
+        </div>
+        <div class="detail-content">
+          <div class="meta-row">
+            <strong>From:</strong> <span id="detail-sender"></span>
+            <button id="pin-btn" class="icon-btn" title="Pin Sender">&#9733;</button>
+          </div>
+          <div class="meta-row"><strong>To:</strong> <span id="detail-recipient"></span></div>
+          <div class="meta-row"><strong>Task ID:</strong> <span id="detail-task"></span></div>
+          <div class="meta-row"><strong>Type:</strong> <span id="detail-type" class="badge"></span></div>
+          <div class="meta-row"><strong>Status:</strong> <span id="detail-status" class="badge"></span></div>
+          <div class="meta-row"><strong>Received:</strong> <span id="detail-time"></span></div>
+          <div class="detail-actions" id="detail-actions"></div>
+          <div class="divider"></div>
+          <div class="detail-body" id="detail-body"></div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <div id="toast" class="toast hidden">
+    <span id="toast-msg"></span>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
